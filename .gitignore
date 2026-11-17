@@ -1,0 +1,5 @@
+data/
+.env
+config.json
+node_modules/
+target/

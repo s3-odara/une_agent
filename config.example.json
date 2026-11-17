@@ -1,0 +1,14 @@
+{
+	"matrix": {
+		"homeserver": "https://matrix.example.org",
+		"userId": "@agent:example.org",
+		"deviceName": "agent",
+		"allowedUsers": ["@you:example.org"]
+	},
+	"model": { "provider": "anthropic", "modelId": "claude-fable-5-2" },
+	"personas": {
+		"default": "personas/default.md"
+	},
+	"defaultPersona": "default",
+	"rooms": {}
+}
