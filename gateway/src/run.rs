@@ -19,6 +19,7 @@ use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+use crate::call::{Calls, Control, watch_memberships};
 use crate::config::Config;
 use crate::ipc::{Audio, Command, Event, Message, Outbox, spawn_writer};
 use crate::session;
@@ -34,6 +35,7 @@ struct Shared {
     voice_dir: Arc<PathBuf>,
     /// Per room, the task that keeps its typing notice alive.
     typing: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    calls: Calls,
 }
 
 impl Shared {
@@ -47,17 +49,20 @@ impl Shared {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 pub async fn run(config: &Config) -> Result<()> {
     let client = session::restore(config).await?;
     let state = State::load(&config.data_dir().join("gateway-state.json"))?;
+    let out = spawn_writer();
+    let allowed = Arc::new(config.matrix.allowed_users.clone());
     let shared = Shared {
-        out: spawn_writer(),
+        calls: Calls::new(out.clone(), allowed.clone(), config.data_dir().join("voice").join("call")),
+        out,
         state: Arc::new(Mutex::new(state)),
-        allowed: Arc::new(config.matrix.allowed_users.clone()),
+        allowed,
         voice_dir: Arc::new(config.data_dir().join("voice").join("in")),
         typing: Arc::default(),
     };
@@ -75,6 +80,7 @@ pub async fn run(config: &Config) -> Result<()> {
     client.add_event_handler(on_message);
     client.add_event_handler(on_undecryptable);
     client.add_event_handler(on_invite);
+    watch_memberships(&client, shared.out.clone(), shared.allowed.clone());
 
     let commands = tokio::spawn(read_commands(client.clone(), shared.clone()));
     let sync = client.sync_with_result_callback(SyncSettings::default(), |result| async move {
@@ -260,6 +266,23 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 });
             }
             Command::Typing { room_id, on } => set_typing(&client, &shared, room_id, on),
+            Command::JoinCall { room_id, vad } => match joined_room(&client, &room_id) {
+                Ok(room) => shared.calls.join(room, vad),
+                Err(error) => shared.emit(Event::CallLeft { room_id, reason: format!("{error:#}") }),
+            },
+            Command::LeaveCall { room_id } => {
+                // Not in a call there: nothing to leave.
+                let _ = shared.calls.control(&room_id, Control::Leave);
+            }
+            Command::CallSpeak { room_id, id, path } => {
+                if let Err(error) = shared.calls.control(&room_id, Control::Speak { id: id.clone(), path }) {
+                    shared.emit(Event::CallSpoken { room_id, id, played_ms: 0, interrupted: true });
+                    warn!("{error:#}");
+                }
+            }
+            Command::CallHush { room_id } => {
+                let _ = shared.calls.control(&room_id, Control::Hush);
+            }
         }
     }
     Ok(())

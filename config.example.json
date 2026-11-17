@@ -26,7 +26,11 @@
 	"browser": { "headless": true, "idleMinutes": 10 },
 	"voice": {
 		"stt": { "threads": 6, "beamSize": 5, "language": "ja", "vadSpeechPadMs": 0, "idleMinutes": 10 },
-		"tts": { "url": "http://127.0.0.1:50021", "speaker": 2, "maxChars": 400 }
+		"tts": { "url": "http://127.0.0.1:50021", "speaker": 2, "maxChars": 400 },
+		"call": {
+			"maxChars": 300,
+			"vad": { "threshold": 0.5, "startMs": 208, "endSilenceMs": 800, "minSpeechMs": 300, "maxMs": 30000, "preRollMs": 300 }
+		}
 	},
 	"proactive": {
 		"roomId": "!roomid:example.org",

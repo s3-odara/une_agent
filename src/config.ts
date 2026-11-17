@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { CalendarConfig } from "./calendar.ts";
+import type { CallVad } from "./gateway.ts";
 import { isTimeZone, parseClock } from "./time.ts";
 
 export type Config = {
@@ -76,6 +77,15 @@ export type Config = {
 			readonly speaker: number;
 			/** Longer answers are read up to here; the text reply has the rest. */
 			readonly maxChars: number;
+		};
+		/**
+		 * Present when the bot joins calls: once an allowed user is in a room's call, it joins and talks with the room's
+		 * persona, in the room's conversation. Needs `tts`.
+		 */
+		readonly call?: {
+			/** Longer answers are spoken up to here. */
+			readonly maxChars: number;
+			readonly vad: CallVad;
 		};
 	};
 	/** Messages the agent sends on its own. Without it the agent only answers. */
@@ -202,6 +212,26 @@ function voice(value: unknown, baseDir: string): Config["voice"] {
 						},
 					};
 				})()),
+		...(root.call === undefined ? {} : { call: call(root.call, root.tts !== undefined) }),
+	};
+}
+
+function call(value: unknown, hasTts: boolean): NonNullable<NonNullable<Config["voice"]>["call"]> {
+	if (!hasTts) fail("voice.call needs voice.tts: the bot speaks in calls");
+	const root = object(value, "voice.call");
+	const vad = object(root.vad ?? {}, "voice.call.vad");
+	const threshold = vad.threshold ?? 0.5;
+	if (typeof threshold !== "number" || !(threshold > 0 && threshold < 1)) fail("voice.call.vad.threshold must be between 0 and 1");
+	return {
+		maxChars: limit(root.maxChars, 300, "voice.call.maxChars"),
+		vad: {
+			threshold,
+			startMs: limit(vad.startMs, 208, "voice.call.vad.startMs"),
+			endSilenceMs: limit(vad.endSilenceMs, 800, "voice.call.vad.endSilenceMs"),
+			minSpeechMs: limit(vad.minSpeechMs, 300, "voice.call.vad.minSpeechMs"),
+			maxMs: limit(vad.maxMs, 30_000, "voice.call.vad.maxMs"),
+			preRollMs: nonNegativeInteger(vad.preRollMs ?? 300, "voice.call.vad.preRollMs"),
+		},
 	};
 }
 

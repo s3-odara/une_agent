@@ -12,6 +12,8 @@ export type Speech = {
 export interface Synthesizer {
 	/** `speaker` is a VOICEVOX style ID. */
 	synthesize(text: string, speaker: number): Promise<Speech>;
+	/** Mono 16-bit WAV at `sampleRate`, for playing into a call. */
+	wav(text: string, speaker: number, sampleRate: number): Promise<Buffer>;
 }
 
 export type VoicevoxOptions = {
@@ -38,11 +40,23 @@ export class Voicevox implements Synthesizer {
 	}
 
 	async synthesize(text: string, speaker: number): Promise<Speech> {
-		const signal = AbortSignal.timeout(this.#timeoutMs);
-		const query = await this.#post(`/audio_query?${new URLSearchParams({ text, speaker: String(speaker) })}`, undefined, signal);
-		const wav = await this.#post(`/synthesis?${new URLSearchParams({ speaker: String(speaker) })}`, query, signal);
+		const wav = await this.#synthesis(text, speaker, undefined);
 		const pcm = readWav(wav);
 		return { ogg: await this.#encode(wav), durationMs: Math.round((pcm.samples.length / pcm.sampleRate) * 1000), waveform: waveform(pcm.samples) };
+	}
+
+	wav(text: string, speaker: number, sampleRate: number): Promise<Buffer> {
+		return this.#synthesis(text, speaker, sampleRate);
+	}
+
+	async #synthesis(text: string, speaker: number, sampleRate: number | undefined): Promise<Buffer> {
+		const signal = AbortSignal.timeout(this.#timeoutMs);
+		let query = await this.#post(`/audio_query?${new URLSearchParams({ text, speaker: String(speaker) })}`, undefined, signal);
+		if (sampleRate !== undefined) {
+			// The engine resamples itself: 24 kHz by default.
+			query = Buffer.from(JSON.stringify({ ...JSON.parse(query.toString("utf8")), outputSamplingRate: sampleRate, outputStereo: false }));
+		}
+		return this.#post(`/synthesis?${new URLSearchParams({ speaker: String(speaker) })}`, query, signal);
 	}
 
 	async #post(path: string, body: Buffer | undefined, signal: AbortSignal): Promise<Buffer> {
@@ -123,6 +137,15 @@ export function wavToOggOpus(wav: Buffer): Promise<Buffer> {
  * asterisks, the URLs and every cell of a table. The text reply still carries all of that.
  */
 export function toSpeech(markdown: string, maxChars: number): string {
+	return limitSpeech(speakable(markdown), maxChars);
+}
+
+/** Speech split where a sentence ends, so the first can play while the rest is still being made. */
+export function sentences(speech: string): string[] {
+	return speech.split(/(?<=[。！？!?])/).map((sentence) => sentence.trim()).filter((sentence) => sentence !== "");
+}
+
+function speakable(markdown: string): string {
 	let text = markdown
 		.replace(/```[\s\S]*?```/g, "（コードは文字で送りました）")
 		.replace(/`([^`]*)`/g, "$1")
@@ -143,6 +166,10 @@ export function toSpeech(markdown: string, maxChars: number): string {
 		.filter((line) => line !== "")
 		.map((line) => (/[。！？!?、,.:：]$/.test(line) ? line : `${line}。`))
 		.join("");
+	return text;
+}
+
+function limitSpeech(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text;
 	// Cut at the last sentence end that fits, so the voice does not stop mid-word.
 	const head = text.slice(0, maxChars);

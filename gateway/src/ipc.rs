@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, stdout};
 use tokio::sync::mpsc;
 
+use crate::audio::VadConfig;
+
 /// A line the gateway writes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -17,6 +19,17 @@ pub enum Event {
         request_id: Option<String>,
         message: String,
     },
+    /// The allowed users (not the bot) now in the room's call; empty once they have all left.
+    CallMembers { room_id: String, user_ids: Vec<String> },
+    CallJoined { room_id: String },
+    /// The bot is out of the call: `reason` is empty when it left as asked or because everyone else did.
+    CallLeft { room_id: String, reason: String },
+    /// A participant started speaking. Whatever the bot was saying has been stopped.
+    CallSpeech { room_id: String, user_id: String },
+    /// One utterance, as a 16 kHz mono WAV file. The agent deletes it once done.
+    CallUtterance { room_id: String, user_id: String, path: String, started_at: u64, duration_ms: u64 },
+    /// A `callSpeak` finished playing, or was cut off (`interrupted`) after `played_ms`.
+    CallSpoken { room_id: String, id: String, played_ms: u64, interrupted: bool },
 }
 
 /// A text or voice message from an allowed user.
@@ -76,6 +89,24 @@ pub enum Command {
     Typing {
         room_id: String,
         on: bool,
+    },
+    JoinCall {
+        room_id: String,
+        #[serde(default)]
+        vad: VadConfig,
+    },
+    LeaveCall {
+        room_id: String,
+    },
+    /// Plays a 48 kHz mono 16-bit WAV file in the room's call, after whatever is queued. The file is read at once.
+    CallSpeak {
+        room_id: String,
+        id: String,
+        path: String,
+    },
+    /// Stops what the bot is saying in the call, and what is queued.
+    CallHush {
+        room_id: String,
     },
 }
 
@@ -171,5 +202,41 @@ mod tests {
             serde_json::from_str::<Command>(r#"{"type":"typing","roomId":"!r:example.org","on":true}"#).unwrap(),
             Command::Typing { room_id: "!r:example.org".into(), on: true }
         );
+        assert_eq!(
+            serde_json::from_str::<Command>(
+                r#"{"type":"joinCall","roomId":"!r:example.org","vad":{"threshold":0.6,"startMs":200,"endSilenceMs":700,"minSpeechMs":300,"maxMs":20000,"preRollMs":250}}"#
+            )
+            .unwrap(),
+            Command::JoinCall {
+                room_id: "!r:example.org".into(),
+                vad: VadConfig { threshold: 0.6, start_ms: 200, end_silence_ms: 700, min_speech_ms: 300, max_ms: 20_000, pre_roll_ms: 250 },
+            }
+        );
+        assert_eq!(
+            serde_json::from_str::<Command>(r#"{"type":"callSpeak","roomId":"!r:example.org","id":"s1","path":"/d/s1.wav"}"#).unwrap(),
+            Command::CallSpeak { room_id: "!r:example.org".into(), id: "s1".into(), path: "/d/s1.wav".into() }
+        );
+    }
+
+    #[test]
+    fn call_events_use_the_field_names_the_agent_reads() {
+        let utterance = Event::CallUtterance {
+            room_id: "!r:example.org".into(),
+            user_id: "@me:example.org".into(),
+            path: "/d/u.wav".into(),
+            started_at: 5,
+            duration_ms: 1200,
+        };
+        assert_eq!(
+            serde_json::to_string(&utterance).unwrap(),
+            r#"{"type":"callUtterance","roomId":"!r:example.org","userId":"@me:example.org","path":"/d/u.wav","startedAt":5,"durationMs":1200}"#
+        );
+        let spoken = Event::CallSpoken { room_id: "!r:example.org".into(), id: "s1".into(), played_ms: 900, interrupted: true };
+        assert_eq!(
+            serde_json::to_string(&spoken).unwrap(),
+            r#"{"type":"callSpoken","roomId":"!r:example.org","id":"s1","playedMs":900,"interrupted":true}"#
+        );
+        let members = Event::CallMembers { room_id: "!r:example.org".into(), user_ids: vec!["@me:example.org".into()] };
+        assert_eq!(serde_json::to_string(&members).unwrap(), r#"{"type":"callMembers","roomId":"!r:example.org","userIds":["@me:example.org"]}"#);
     }
 }

@@ -17,7 +17,40 @@ export type GatewayEvent =
 	  }
 	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string; readonly sender: string }
 	| { readonly type: "sent"; readonly requestId: string; readonly eventId: string }
-	| { readonly type: "error"; readonly requestId?: string; readonly message: string };
+	| { readonly type: "error"; readonly requestId?: string; readonly message: string }
+	/** The allowed users (not the bot) now in the room's call; empty once they have all left. */
+	| { readonly type: "callMembers"; readonly roomId: string; readonly userIds: readonly string[] }
+	| { readonly type: "callJoined"; readonly roomId: string }
+	/** Out of the call: `reason` is empty when it left as asked or because everyone else did. */
+	| { readonly type: "callLeft"; readonly roomId: string; readonly reason: string }
+	/** Somebody started speaking; the gateway has already stopped whatever the bot was saying. */
+	| { readonly type: "callSpeech"; readonly roomId: string; readonly userId: string }
+	/** One utterance as a 16 kHz mono WAV file. Delete it once done. */
+	| {
+			readonly type: "callUtterance";
+			readonly roomId: string;
+			readonly userId: string;
+			readonly path: string;
+			readonly startedAt: number;
+			readonly durationMs: number;
+	  }
+	/** A `callSpeak` finished, or was cut off after `playedMs`. */
+	| { readonly type: "callSpoken"; readonly roomId: string; readonly id: string; readonly playedMs: number; readonly interrupted: boolean };
+
+/** How the gateway cuts a participant's audio into utterances. Keep in step with `VadConfig` in `gateway/src/audio.rs`. */
+export type CallVad = {
+	/** The VAD's score (0 to 1) from which a 16 ms frame counts as speech. */
+	readonly threshold: number;
+	/** Speech must last this long to start an utterance, and to stop the bot talking. */
+	readonly startMs: number;
+	/** This much silence ends an utterance. */
+	readonly endSilenceMs: number;
+	/** Utterances with less speech are dropped. */
+	readonly minSpeechMs: number;
+	/** Longer utterances are passed on in parts. */
+	readonly maxMs: number;
+	readonly preRollMs: number;
+};
 
 /** Lines the gateway reads. */
 export type GatewayCommand =
@@ -42,7 +75,12 @@ export type GatewayCommand =
 			readonly durationMs: number;
 			readonly waveform?: readonly number[];
 	  }
-	| { readonly type: "typing"; readonly roomId: string; readonly on: boolean };
+	| { readonly type: "typing"; readonly roomId: string; readonly on: boolean }
+	| { readonly type: "joinCall"; readonly roomId: string; readonly vad: CallVad }
+	| { readonly type: "leaveCall"; readonly roomId: string }
+	/** Plays a 48 kHz mono 16-bit WAV file in the call after what is queued; the gateway reads it at once. */
+	| { readonly type: "callSpeak"; readonly roomId: string; readonly id: string; readonly path: string }
+	| { readonly type: "callHush"; readonly roomId: string };
 
 export interface GatewayLink {
 	send(command: GatewayCommand): void;

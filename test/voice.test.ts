@@ -123,6 +123,9 @@ class FakeSynthesizer implements Synthesizer {
 		this.said.push({ text, speaker });
 		return { ogg: Buffer.from("OggS"), durationMs: 1500, waveform: [0.5, 1] };
 	}
+	async wav(): Promise<Buffer> {
+		throw new Error("voice messages do not use it");
+	}
 }
 
 test("a voice message is transcribed, marked as heard, and answered in text and then in the room persona's voice", async () => {
@@ -229,12 +232,13 @@ test("without voice settings a voice message gets a notice; without speech synth
 		assert.equal(link.of("send")[0]?.body, "音声メッセージには対応していません（設定に voice がありません）。");
 
 		faux.setResponses([fauxAssistantMessage("文字だけです。")]);
-		const voiced = new Bridge({ harness, db, link, config, context, voice: { transcriber: new FakeTranscriber(() => "こんにちは"), outDir: join(dir, "out") } });
+		const voicedLink = new FakeLink();
+		const voiced = new Bridge({ harness, db, link: voicedLink, config, context, voice: { transcriber: new FakeTranscriber(() => "こんにちは"), outDir: join(dir, "out") } });
 		voiced.start();
-		link.emit(voiceMessage("!a:example.org", "$b", recording("b")));
+		voicedLink.emit(voiceMessage("!a:example.org", "$b", recording("b")));
 		await voiced.idle();
-		assert.equal(link.of("send")[1]?.body, "文字だけです。");
-		assert.equal(link.of("sendVoice").length, 0);
+		assert.equal(voicedLink.of("send")[0]?.body, "文字だけです。");
+		assert.equal(voicedLink.of("sendVoice").length, 0);
 		assert.equal(db.isDelivered("$b"), true);
 	} finally {
 		await harness.close(context);

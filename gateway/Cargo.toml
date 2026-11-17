@@ -16,6 +16,17 @@ mime = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Calls (MatrixRTC over LiveKit). AGPL-3.0 (or Element's commercial licence); pulls a prebuilt libwebrtc at build time.
+matrix-rtc-call-sdk = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0", features = ["matrix-sdk"] }
+matrix-rtc-call = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
+matrix-rtc-core = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
+matrix-rtc-transport = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
+# livekit and reqwest bring rustls with `ring`, matrix-sdk with `aws-lc-rs`; with both, rustls cannot pick a provider
+# by itself, so `main` installs this one.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+futures-util = "0.3"
+# Pure Rust: the WebRTC VAD crate bundles C that libwebrtc also contains, and the link fails on duplicate symbols.
+earshot = "1.2"
 
 # matrix-rust-sdk carries this in its own [patch] table, which cargo does not
 # propagate to a consuming workspace. Copied from matrix-rust-sdk@56bc591. Its

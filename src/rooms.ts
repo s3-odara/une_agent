@@ -2,7 +2,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
-import { answerOf } from "./answer.ts";
+import { type Answer, answerOf } from "./answer.ts";
 import { type Config, persona, personaFor, readSoul } from "./config.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
 import { type Delivery, type HostDb, SCHEDULED_PREFIX } from "./hostdb.ts";
@@ -183,6 +183,24 @@ export class Bridge {
 		this.#admissions.set(roomId, settled);
 		this.#track(settled);
 		return admitted;
+	}
+
+	/**
+	 * Puts something said in a call to the room's conversation and resolves with the answer. Nothing is sent to the
+	 * room: the caller speaks it. Not in the delivery ledger either, so an answer still owed when the process stops is
+	 * left in the conversation and not sent later, by which time the call is over.
+	 */
+	async ask(roomId: string, key: string, content: string): Promise<Answer> {
+		const { harness, context } = this.#options;
+		const previous = this.#admissions.get(roomId) ?? Promise.resolve();
+		const submitted = previous.then(async () => (await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key }, context));
+		const settled = submitted.then(
+			() => {},
+			() => {},
+		);
+		this.#admissions.set(roomId, settled);
+		this.#track(settled);
+		return answerOf(harness, await (await submitted).wait(context), context);
 	}
 
 	/** Sends a notice to a room as it is, without the model. The same key again sends nothing new. */

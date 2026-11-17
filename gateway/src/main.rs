@@ -1,6 +1,8 @@
 //! The Matrix side of the agent: logs in as the bot, keeps its E2EE device, and passes messages to and from the agent
 //! process as JSON Lines on stdin and stdout. Logs go to stderr.
 
+mod audio;
+mod call;
 mod config;
 mod ipc;
 mod run;
@@ -59,6 +61,8 @@ fn password() -> Result<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Both rustls crypto providers are in the build (see Cargo.toml); without a choice, the first TLS use panics.
+    rustls::crypto::aws_lc_rs::default_provider().install_default().expect("no crypto provider installed before");
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn,matrix_gateway=info".into()))

@@ -37,6 +37,8 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
   モデルへの指示であり、コードでは強制しない（2026-11-17 決定）
 - 音声認識は **whisper.cpp の whisper-server、large-v3-turbo q8_0、Vulkan（本番は RX570）、VAD あり（余白0）、
   ビーム幅5**（2026-11-18 決定。faster-whisper から置き換え。根拠は「手順5」のベンチマーク）
+- 通話（VC）は**許可ユーザーがルームの通話に入ったら bot も自動で入る**。全員抜けたら抜ける。**ユーザーが話し始めたら bot は話すのを止める**。
+  通話の発言はそのルームの会話の続きとして記録する（2026-11-18 決定）
 - 人格ごとにセッションは分ける
 - Hermes の profile のように、口調を変えたいだけで設定ファイルまで分離されるのは避けたい
 - 既存 cron: Dreaming は毎日 02:00、Proactive は 06:00〜21:00 毎時（Asia/Tokyo）
@@ -274,13 +276,52 @@ large-v3 の q8_0 は配布されていないので、f16 版から `whisper-qua
 `stt/install.sh` で作った whisper-server が4本の録音を同時に受けて台本どおりに文字にすること、音声でないファイルはエラーに
 なってサーバーは動き続けること。VOICEVOX 0.26.2 で合成して Ogg Opus（48kHz モノラル）にできること。
 
-### 手順6（通話）に向けたメモ
+## 手順6の実装（2026-11-18）
 
-- matrix-rust-rtc は `LiveKitCall::join(&room, LiveKitCallOptions)` で `matrix_sdk::Room` から通話に入れる。
-  音声の受信は `crates/matrix-rtc-call-sdk/examples/join_and_record.rs` が出発点
-- homeserver 側に LiveKit SFU と lk-jwt-service が必要
-- matrix-sdk の `automatic-room-key-forwarding` は切らない。切ると進行中の通話が新しいデバイスから見えなくなる
-- matrix-rust-rtc は AGPL-3.0（または Element の商用ライセンス）
+通話。`config.json` の `voice.call` があれば有効（`voice.stt` と `voice.tts` も要る）。
+
+- ゲートウェイ（`gateway/src/call.rs`）が matrix-rust-rtc v0.5.0（git タグ固定）で Element Call の通話に入る。
+  通話の参加者は `org.matrix.msc3401.call.member` のルーム状態（Element Call の「state events」互換形式）で書く。
+  matrix-rust-rtc が Element Call に見える形で書けるのはこの形式だけで、ゲートウェイが動かしている普通の `/sync` で届くのもこの形式だけ
+  （現行形式は sliding sync の sticky events が要る）。**Element Call 側も Developer 設定の互換形式が state events になっている必要がある**
+- 許可ユーザーの参加を状態イベントから見つけると `callMembers` をエージェントに送り、エージェントが `joinCall` で参加させる。
+  期限（`created_ts + expires`）切れの参加は数えない。30秒ごとにも見直す
+- 相手の音声（48kHz）を 16kHz に間引き、earshot（純 Rust の VAD、16ms 単位）で発話を切り出す。設定は `voice.call.vad`
+  （話し始めの判定 208ms、0.8秒の無音で区切り、最長30秒で分割、前に300ms 付ける）。発話は WAV にしてエージェントに渡す
+  （`callUtterance`）。webrtc-vad クレートは libwebrtc と同じ C の関数を持っていてリンクできなかった
+- 話し始めを検知した時点で、ゲートウェイが bot の再生をその場で止める（10ms 単位で送っているので遅れはほぼ無い）
+- エージェント（`src/call.ts`）は発話を whisper-server で文字にし、`[2026-11-18(水) 12:00 通話] 本文` としてルームの会話に入れる
+  （`Bridge.ask`。配送台帳には載せないので、落ちたときに通話の返答を後から文字で送ることはしない）。返答は文ごとに VOICEVOX で
+  48kHz の WAV にし、1文目を流している間に次を作る。`voice.call.maxChars`（300字）で打ち切る
+- 割り込まれたら、次の発言の頭に「（直前の返答は「…」まで話したところで遮られました）」を付けてモデルに伝える。
+  返答ができる前にユーザーがまた話し始めたら、その返答は読み上げず「伝わっていません」と伝える
+- 音声を作れなかったときは返答を文字でルームに送る。通話に入れなかった・落ちたときは理由をルームに通知する
+- gateway は rustls の暗号プロバイダを起動時に選ぶ（livekit と matrix-sdk で2種類入っているため）。
+  ビルド時に libwebrtc のビルド済みバイナリを取得する。livekit 系のクレートは matrix-rust-rtc の Cargo.lock と同じ版に揃えてある
+  （新しい版の組み合わせはコンパイルできなかった）
+- matrix-rust-rtc は AGPL-3.0（または Element の商用ライセンス）。これを含む gateway も AGPL の条件に従う
+
+### 確認したこと
+
+手元に tuwunel 2.0.0、livekit-server 1.13.11、lk-jwt-service 0.10.0 を立て、matrix-rust-rtc の `interop_peer`（state events 形式、
+録音した声を流すように手を加えたもの）を相手にして、ゲートウェイを JSON Lines で直接動かして確認した。
+
+- 相手が通話に入ると参加し、全員抜けると抜ける。メディアの鍵は双方で届く（E2EE）
+- 相手の声を発話ごとに切り出し、文字にできる（5.5秒の発話を約0.94秒で文字に。RX570 ではなくこのホストの GPU）
+- bot の声が相手に届く（相手側の録音を文字にすると、流した文と一致）
+- 33秒の音声を流している途中で相手が話し始めると、その時点で止まる
+- **クロス署名されていないデバイスとはメディアの鍵を交換しない**（MSC4153。ライブラリの既定）。新しいデバイスでログインし直した
+  相手役は、自分のアカウントで検証するまで声が聞こえなかった。Sable などのデバイスは検証しておくこと
+
+### 未検証
+
+- Sable / Element Call との通話（Element Call の互換形式の設定、Sable が state events 形式で参加できるか）
+- 実際の homeserver（tuwunel の MatrixRTC 設定）、実際のモデルが通話向けに短く答えるか、RX570 での速さ
+- 遅延: 話し終えてから区切りまで 0.8秒、文字起こし約1秒、モデルの返答全文を待ってから1文目の合成（約0.5〜1秒）。
+  モデルの返答はストリーミングで受け取っていないので、長い返答ほど待つ
+- 同じルームで複数の許可ユーザーが同時に話す場合（発話はそれぞれ別に会話に入る）
+- 通話の参加者の期限切れ（ブラウザが落ちたまま）: tuwunel が遅延イベント（MSC4140）に対応していないと、期限（既定4時間）まで
+  参加中とみなされ bot も残る
 
 ## 提案（未承認）
 
@@ -345,7 +386,7 @@ dreams.md は 1000 文字以内の「フォローアップ対象リスト」と�
 3. CalDAV と朝ブリーフ / 毎時トリガー / 台帳
 4. ブラウザ
 5. ボイスメッセージ
-6. VC
+6. VC（実装済み、上記）
 
 ## Claude Code への最初の依頼例
 

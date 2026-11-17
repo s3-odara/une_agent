@@ -7,6 +7,7 @@ import { createBrowserExtension } from "./browser-tools.ts";
 import { connectCalDav } from "./caldav.ts";
 import { Calendars } from "./calendar.ts";
 import { createCalendarExtension } from "./calendar-tools.ts";
+import { Calls } from "./call.ts";
 import { loadConfig, persona, personaFor } from "./config.ts";
 import { Credentials } from "./credentials.ts";
 import { spawnGateway } from "./gateway.ts";
@@ -83,18 +84,26 @@ const transcriber =
 	config.voice === undefined
 		? undefined
 		: new WhisperServer({ ...config.voice.stt, socketPath: join(config.dataDir, "stt.sock"), idleMs: config.voice.stt.idleMinutes * 60_000 });
+const synthesizer = config.voice?.tts === undefined ? undefined : new Voicevox({ url: config.voice.tts.url });
 const voice =
 	config.voice === undefined || transcriber === undefined
 		? undefined
-		: {
-				transcriber,
-				...(config.voice.tts === undefined ? {} : { synthesizer: new Voicevox({ url: config.voice.tts.url }) }),
-				outDir: join(config.dataDir, "voice", "out"),
-			};
+		: { transcriber, ...(synthesizer === undefined ? {} : { synthesizer }), outDir: join(config.dataDir, "voice", "out") };
 
 const gateway = spawnGateway(config.gatewayBin, ["run", "--config", configPath]);
 const bridge = new Bridge({ harness, db, link: gateway, config, context, voice });
 bridge.start();
+if (config.voice?.call !== undefined && transcriber !== undefined && synthesizer !== undefined) {
+	new Calls({
+		link: gateway,
+		config,
+		transcriber,
+		synthesizer,
+		ask: (roomId, key, content) => bridge.ask(roomId, key, content),
+		notice: (roomId, key, body) => bridge.notice(roomId, key, body),
+		outDir: join(config.dataDir, "voice", "call-out"),
+	}).start();
+}
 
 const scheduler = new Scheduler({
 	config,

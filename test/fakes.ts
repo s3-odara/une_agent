@@ -5,19 +5,25 @@ import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.t
 export class FakeLink implements GatewayLink {
 	readonly commands: GatewayCommand[] = [];
 	confirmSends = true;
-	#listener: (event: GatewayEvent) => void = () => {};
+	/** Answers a `callSpeak` as the gateway would once it has played (or cut off) the speech; unset, it never does. */
+	speak: ((command: Extract<GatewayCommand, { type: "callSpeak" }>) => GatewayEvent | undefined) | undefined;
+	readonly #listeners: ((event: GatewayEvent) => void)[] = [];
 
 	send(command: GatewayCommand): void {
 		this.commands.push(command);
 		if ((command.type === "send" || command.type === "sendVoice") && this.confirmSends) {
 			queueMicrotask(() => this.emit({ type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` }));
 		}
+		if (command.type === "callSpeak" && this.speak !== undefined) {
+			const reply = this.speak(command);
+			if (reply !== undefined) queueMicrotask(() => this.emit(reply));
+		}
 	}
 	onEvent(listener: (event: GatewayEvent) => void): void {
-		this.#listener = listener;
+		this.#listeners.push(listener);
 	}
 	emit(event: GatewayEvent): void {
-		this.#listener(event);
+		for (const listener of this.#listeners) listener(event);
 	}
 	of<T extends GatewayCommand["type"]>(type: T): Extract<GatewayCommand, { type: T }>[] {
 		return this.commands.filter((command): command is Extract<GatewayCommand, { type: T }> => command.type === type);
