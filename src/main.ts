@@ -2,10 +2,13 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { PlaywrightBrowsers } from "./browser.ts";
+import { createBrowserExtension } from "./browser-tools.ts";
 import { connectCalDav } from "./caldav.ts";
 import { Calendars } from "./calendar.ts";
 import { createCalendarExtension } from "./calendar-tools.ts";
 import { loadConfig, persona, personaFor } from "./config.ts";
+import { Credentials } from "./credentials.ts";
 import { spawnGateway } from "./gateway.ts";
 import { createAgentModels, openAgentHarness } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
@@ -42,7 +45,33 @@ if (config.caldav !== undefined) {
 	const backend = connectCalDav({ url: config.caldav.url, username: config.caldav.username, password, calendars: Object.keys(config.caldav.calendars) });
 	calendars = new Calendars(backend, config.caldav.calendars, config.timezone);
 }
-const extensions = [memory, ...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, weather })])];
+const browsers =
+	config.browser === undefined
+		? undefined
+		: new PlaywrightBrowsers({
+				dir: join(config.dataDir, "browser"),
+				headless: config.browser.headless,
+				executablePath: config.browser.executablePath,
+				timezone: config.timezone,
+				idleMs: config.browser.idleMinutes * 60_000,
+			});
+const extensions = [
+	memory,
+	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, weather })]),
+	...(browsers === undefined
+		? []
+		: [
+				createBrowserExtension({
+					browsers,
+					credentials: new Credentials(join(config.dataDir, "credentials.json")),
+					db,
+					profileOf: (conversationId) => {
+						const roomId = db.roomOf(conversationId);
+						return roomId === undefined ? undefined : persona(config, personaFor(config, roomId)).browserProfile;
+					},
+				}),
+			]),
+];
 
 const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), createAgentModels(), context, extensions);
 // Continue the runs the last process left unfinished before any new message arrives.
@@ -72,6 +101,7 @@ async function shutdown(exitCode: number): Promise<void> {
 	stopping = true;
 	scheduler.stop();
 	gateway.stop();
+	await browsers?.close();
 	await harness.close(context);
 	db.close();
 	process.exit(exitCode);

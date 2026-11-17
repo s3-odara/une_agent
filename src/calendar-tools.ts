@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
-import { defineExtension, defineTool, LiveDoc, section } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import { CalendarError, type Calendars, type EventFields, formatEvent, formatTodo, type ItemChanges, splitId, type TodoFields } from "./calendar.ts";
 import type { HostDb } from "./hostdb.ts";
+import { runInputs } from "./run.ts";
 import { addDays, dateOf, startOfDay } from "./time.ts";
 import { formatForecast, type WeatherSource } from "./weather.ts";
 
@@ -93,8 +94,6 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 		return result;
 	};
 
-	/** The submissions the current run is answering. */
-	const runInputs = async (live: Promise<{ run?: { inputs: readonly unknown[] } } | undefined>): Promise<number[]> => ((await live)?.run?.inputs ?? []).map(Number);
 
 	const tools = [
 		defineTool({
@@ -172,7 +171,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 				const { id, confirm, ...changes } = args;
 				splitId(id);
 				const action = Object.values(changes).some((value) => value !== undefined) ? ({ kind: "update", id, changes } as const) : undefined;
-				return done(await gate("calendar_update", action, confirm, api, await runInputs(api.snapshot(LiveDoc, api.conversationId, context)), context));
+				return done(await gate("calendar_update", action, confirm, api, await runInputs(api, context), context));
 			},
 		}),
 		defineTool({
@@ -186,7 +185,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 			replay: "safe",
 			execute: async (args, api, context) => {
 				splitId(args.id);
-				return done(await gate("calendar_delete", { kind: "delete", id: args.id }, args.confirm, api, await runInputs(api.snapshot(LiveDoc, api.conversationId, context)), context));
+				return done(await gate("calendar_delete", { kind: "delete", id: args.id }, args.confirm, api, await runInputs(api, context), context));
 			},
 		}),
 		defineTool({

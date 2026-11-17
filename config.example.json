@@ -7,7 +7,7 @@
 	},
 	"model": { "provider": "anthropic", "modelId": "claude-fable-5-2" },
 	"personas": {
-		"default": { "soul": "personas/default.md", "privateMemory": false }
+		"default": { "soul": "personas/default.md", "privateMemory": false, "browserProfile": "default" }
 	},
 	"defaultPersona": "default",
 	"rooms": {},
@@ -23,6 +23,7 @@
 		}
 	},
 	"weather": { "jmaOfficeCode": "130000", "areaIndex": 0 },
+	"browser": { "headless": true, "idleMinutes": 10 },
 	"proactive": {
 		"roomId": "!roomid:example.org",
 		"briefTime": "06:00",

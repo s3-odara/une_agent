@@ -44,6 +44,14 @@ export type Config = {
 		/** Which of the office's areas to read, counted from 0. */
 		readonly areaIndex: number;
 	};
+	/** Present when the agent has a web browser. */
+	readonly browser?: {
+		readonly headless: boolean;
+		/** A browser binary to use instead of the Chromium that Playwright installs. */
+		readonly executablePath?: string;
+		/** A browser nobody used for this long is closed; its cookies stay on disk. */
+		readonly idleMinutes: number;
+	};
 	/** Messages the agent sends on its own. Without it the agent only answers. */
 	readonly proactive?: {
 		/** The room they go to; they are written by that room's persona, in that room's conversation. */
@@ -65,14 +73,16 @@ export type ModelRef = { readonly provider: string; readonly modelId: string };
 
 /**
  * A persona is three separate choices, so changing one never forks the others: how it talks (`soul`), what it
- * remembers (shared memory always, plus a memo of its own with `privateMemory`), and what it runs with (`model`,
- * inherited from the base config unless set).
+ * remembers (shared memory always, plus a memo of its own with `privateMemory`), and what it runs with (`model` and
+ * `browserProfile`, inherited from the base config unless set).
  */
 export type Persona = {
 	/** Path of the SOUL file: the persona's tone. */
 	readonly soul: string;
 	readonly privateMemory: boolean;
 	readonly model?: ModelRef;
+	/** The browser profile it uses, and so whose cookies and logins it has. Personas share `default` unless set. */
+	readonly browserProfile: string;
 };
 
 function fail(message: string): never {
@@ -112,6 +122,24 @@ function clock(value: unknown, fallback: string, name: string): number {
 function object(value: unknown, name: string): Record<string, unknown> {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) fail(`${name} must be an object`);
 	return value as Record<string, unknown>;
+}
+
+/** A profile name becomes a directory name under `data/browser/`. */
+function profileName(value: unknown, name: string): string {
+	const profile = str(value, name);
+	if (!/^[A-Za-z0-9_-]+$/.test(profile)) fail(`${name} may only contain letters, digits, "_" and "-"`);
+	return profile;
+}
+
+function browser(value: unknown): Config["browser"] {
+	if (value === undefined) return undefined;
+	const root = object(value, "browser");
+	if (root.headless !== undefined && typeof root.headless !== "boolean") fail("browser.headless must be true or false");
+	return {
+		headless: root.headless !== false,
+		...(root.executablePath === undefined ? {} : { executablePath: str(root.executablePath, "browser.executablePath") }),
+		idleMinutes: limit(root.idleMinutes, 10, "browser.idleMinutes"),
+	};
 }
 
 function caldav(value: unknown): Config["caldav"] {
@@ -167,7 +195,7 @@ function personas(value: unknown): Record<string, Persona> {
 		// The name becomes a file name (`memory/persona/<name>.md`).
 		if (!/^[A-Za-z0-9_-]+$/.test(name)) fail(`persona name "${name}" may only contain letters, digits, "_" and "-"`);
 		if (typeof item === "string") {
-			out[name] = { soul: str(item, `personas.${name}`), privateMemory: false };
+			out[name] = { soul: str(item, `personas.${name}`), privateMemory: false, browserProfile: "default" };
 			continue;
 		}
 		if (typeof item !== "object" || item === null) fail(`personas.${name} must be a path or an object`);
@@ -178,6 +206,7 @@ function personas(value: unknown): Record<string, Persona> {
 		out[name] = {
 			soul: str(persona.soul, `personas.${name}.soul`),
 			privateMemory: persona.privateMemory === true,
+			browserProfile: profileName(persona.browserProfile ?? "default", `personas.${name}.browserProfile`),
 			...(persona.model === undefined ? {} : { model: modelRef(persona.model, `personas.${name}.model`) }),
 		};
 	}
@@ -226,6 +255,7 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 		caldav: caldav(root.caldav),
 		weather: weather(root.weather),
 		proactive: proactive(root.proactive),
+		browser: browser(root.browser),
 	};
 }
 
