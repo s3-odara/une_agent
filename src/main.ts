@@ -2,10 +2,11 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { loadConfig } from "./config.ts";
+import { loadConfig, persona, personaFor } from "./config.ts";
 import { spawnGateway } from "./gateway.ts";
 import { createAgentModels, openAgentHarness } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
+import { createMemoryExtension, MemoryStore } from "./memory.ts";
 import { Bridge } from "./rooms.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -13,8 +14,18 @@ const configPath = process.argv[2] ?? "config.json";
 const config = loadConfig(configPath);
 mkdirSync(config.dataDir, { recursive: true });
 
-const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), createAgentModels(), context);
 const db = new HostDb(join(config.dataDir, "host.sqlite"));
+const memory = createMemoryExtension({
+	store: new MemoryStore(join(config.dataDir, "memory"), { shared: config.memory.sharedLimit, private: config.memory.privateLimit }),
+	// A conversation speaks as the persona of its room, looked up at each use so a config change applies at once.
+	personaOf: (conversationId) => {
+		const roomId = db.roomOf(conversationId);
+		if (roomId === undefined) return undefined;
+		const name = personaFor(config, roomId);
+		return { name, privateMemory: persona(config, name).privateMemory };
+	},
+});
+const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), createAgentModels(), context, [memory]);
 // Continue the runs the last process left unfinished before any new message arrives.
 harness.resume();
 

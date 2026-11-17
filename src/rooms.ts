@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord/context";
 import { AssistantEntry, type Conversation, type Harness } from "@earendil-works/pi-durable";
-import { type Config, personaFor, readPersona } from "./config.ts";
+import { type Config, persona, personaFor, readSoul } from "./config.ts";
 import type { GatewayEvent, GatewayLink } from "./gateway.ts";
 import type { Delivery, HostDb } from "./hostdb.ts";
 
@@ -118,8 +118,9 @@ export class Bridge {
 
 	async #conversationFor(roomId: string): Promise<Conversation> {
 		const { harness, db, config, context } = this.#options;
-		const model = config.model;
-		const instructions = readPersona(config, personaFor(config, roomId));
+		const name = personaFor(config, roomId);
+		const model = persona(config, name).model ?? config.model;
+		const instructions = readSoul(config, name);
 
 		const known = db.conversationOf(roomId);
 		const existing = known === undefined ? undefined : await harness.conversation(idFromNumber<ConversationId>(known), context);

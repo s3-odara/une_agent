@@ -7,8 +7,9 @@
 	},
 	"model": { "provider": "anthropic", "modelId": "claude-fable-5-2" },
 	"personas": {
-		"default": "personas/default.md"
+		"default": { "soul": "personas/default.md", "privateMemory": false }
 	},
 	"defaultPersona": "default",
-	"rooms": {}
+	"rooms": {},
+	"memory": { "sharedLimit": 2000, "privateLimit": 1000 }
 }

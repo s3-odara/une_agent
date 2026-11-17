@@ -38,6 +38,11 @@ export class HostDb {
 		return row === undefined ? undefined : Number(row.conversation_id);
 	}
 
+	roomOf(conversationId: number): string | undefined {
+		const row = this.#db.prepare("SELECT room_id FROM rooms WHERE conversation_id = ?").get(conversationId);
+		return row === undefined ? undefined : String(row.room_id);
+	}
+
 	setConversation(roomId: string, conversationId: number): void {
 		this.#db
 			.prepare("INSERT INTO rooms (room_id, conversation_id) VALUES (?, ?) ON CONFLICT (room_id) DO UPDATE SET conversation_id = excluded.conversation_id")
