@@ -19,16 +19,31 @@ pub enum Event {
     },
 }
 
-/// A text message from an allowed user.
+/// A text or voice message from an allowed user.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
     pub room_id: String,
     pub event_id: String,
     pub sender: String,
+    /// The text; for audio, the file name or description the sender's client gave it.
     pub body: String,
     /// `origin_server_ts`, milliseconds.
     pub ts: u64,
+    /// Present for an audio message: the recording, already downloaded and decrypted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<Audio>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Audio {
+    /// Absolute path of the file. The agent deletes it once it no longer needs it.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mimetype: Option<String>,
+    /// Whether the sender's client marked it as a voice message rather than an audio file.
+    pub voice: bool,
 }
 
 /// A line the gateway reads.
@@ -46,6 +61,17 @@ pub enum Command {
         body: String,
         #[serde(default)]
         notice: bool,
+    },
+    /// Sends an Ogg Opus file as a voice message.
+    SendVoice {
+        request_id: String,
+        room_id: String,
+        txn_id: String,
+        path: String,
+        duration_ms: u64,
+        /// Loudness over time, each between 0 and 1, for the client to draw.
+        #[serde(default)]
+        waveform: Vec<f32>,
     },
     Typing {
         room_id: String,
@@ -84,10 +110,23 @@ mod tests {
             sender: "@me:example.org".into(),
             body: "hi".into(),
             ts: 5,
+            audio: None,
         });
         assert_eq!(
             serde_json::to_string(&message).unwrap(),
             r#"{"type":"message","roomId":"!r:example.org","eventId":"$e","sender":"@me:example.org","body":"hi","ts":5}"#
+        );
+        let voice = Event::Message(Message {
+            room_id: "!r:example.org".into(),
+            event_id: "$v".into(),
+            sender: "@me:example.org".into(),
+            body: "Voice message.ogg".into(),
+            ts: 6,
+            audio: Some(Audio { path: "/d/voice/in/v.ogg".into(), mimetype: Some("audio/ogg".into()), voice: true }),
+        });
+        assert_eq!(
+            serde_json::to_string(&voice).unwrap(),
+            r#"{"type":"message","roomId":"!r:example.org","eventId":"$v","sender":"@me:example.org","body":"Voice message.ogg","ts":6,"audio":{"path":"/d/voice/in/v.ogg","mimetype":"audio/ogg","voice":true}}"#
         );
         let sent = Event::Sent { request_id: "reply:$e".into(), event_id: "$s".into() };
         assert_eq!(serde_json::to_string(&sent).unwrap(), r#"{"type":"sent","requestId":"reply:$e","eventId":"$s"}"#);
@@ -112,6 +151,20 @@ mod tests {
                 txn_id: "reply:$e".into(),
                 body: "hello".into(),
                 notice: false,
+            }
+        );
+        assert_eq!(
+            serde_json::from_str::<Command>(
+                r#"{"type":"sendVoice","requestId":"voice:$e","roomId":"!r:example.org","txnId":"voice:$e","path":"/d/v.ogg","durationMs":1500,"waveform":[0.5]}"#
+            )
+            .unwrap(),
+            Command::SendVoice {
+                request_id: "voice:$e".into(),
+                room_id: "!r:example.org".into(),
+                txn_id: "voice:$e".into(),
+                path: "/d/v.ogg".into(),
+                duration_ms: 1500,
+                waveform: vec![0.5],
             }
         );
         assert_eq!(

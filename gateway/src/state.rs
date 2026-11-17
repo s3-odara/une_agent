@@ -59,6 +59,10 @@ impl State {
         Ok(true)
     }
 
+    pub fn has(&self, event_id: &str) -> bool {
+        self.stored.inbox.contains_key(event_id)
+    }
+
     pub fn ack(&mut self, event_id: &str) -> Result<()> {
         if self.stored.inbox.remove(event_id).is_some() {
             self.save()?;
@@ -89,7 +93,7 @@ mod tests {
     use super::*;
 
     fn message(event_id: &str, ts: u64) -> Message {
-        Message { room_id: "!r:example.org".into(), event_id: event_id.into(), sender: "@me:example.org".into(), body: "hi".into(), ts }
+        Message { room_id: "!r:example.org".into(), event_id: event_id.into(), sender: "@me:example.org".into(), body: "hi".into(), ts, audio: None }
     }
 
     fn temp_path(name: &str) -> PathBuf {

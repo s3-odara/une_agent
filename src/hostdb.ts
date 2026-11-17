@@ -5,6 +5,8 @@ export type Delivery = {
 	readonly eventId: string;
 	readonly roomId: string;
 	readonly submissionId: number;
+	/** The input was a voice message, so the answer is also sent as one. */
+	readonly voice?: boolean;
 };
 
 /** Event IDs of deliveries the scheduler asked for start with this; Matrix event IDs start with `$`. */
@@ -42,7 +44,8 @@ export class HostDb {
 				room_id TEXT NOT NULL,
 				submission_id INTEGER NOT NULL,
 				delivered INTEGER NOT NULL DEFAULT 0,
-				reply_event_id TEXT
+				reply_event_id TEXT,
+				voice INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE TABLE IF NOT EXISTS notified (
 				key TEXT PRIMARY KEY,
@@ -65,6 +68,9 @@ export class HostDb {
 				value TEXT NOT NULL
 			);
 		`);
+		// Ledgers made before voice messages lack the column.
+		const columns = this.#db.prepare("PRAGMA table_info(deliveries)").all().map((row) => String(row.name));
+		if (!columns.includes("voice")) this.#db.exec("ALTER TABLE deliveries ADD COLUMN voice INTEGER NOT NULL DEFAULT 0");
 	}
 
 	conversationOf(roomId: string): number | undefined {
@@ -86,12 +92,17 @@ export class HostDb {
 	/** Records an answer owed to Matrix. A repeat for the same event changes nothing. */
 	addDelivery(delivery: Delivery): void {
 		this.#db
-			.prepare("INSERT OR IGNORE INTO deliveries (event_id, room_id, submission_id) VALUES (?, ?, ?)")
-			.run(delivery.eventId, delivery.roomId, delivery.submissionId);
+			.prepare("INSERT OR IGNORE INTO deliveries (event_id, room_id, submission_id, voice) VALUES (?, ?, ?, ?)")
+			.run(delivery.eventId, delivery.roomId, delivery.submissionId, delivery.voice === true ? 1 : 0);
 	}
 
 	markDelivered(eventId: string, replyEventId: string): void {
 		this.#db.prepare("UPDATE deliveries SET delivered = 1, reply_event_id = ? WHERE event_id = ?").run(replyEventId, eventId);
+	}
+
+	/** Whether the event was admitted, answered yet or not. */
+	hasDelivery(eventId: string): boolean {
+		return this.#db.prepare("SELECT 1 FROM deliveries WHERE event_id = ?").get(eventId) !== undefined;
 	}
 
 	isDelivered(eventId: string): boolean {
@@ -100,11 +111,12 @@ export class HostDb {
 	}
 
 	pendingDeliveries(): Delivery[] {
-		const rows = this.#db.prepare("SELECT event_id, room_id, submission_id FROM deliveries WHERE delivered = 0 ORDER BY rowid").all();
+		const rows = this.#db.prepare("SELECT event_id, room_id, submission_id, voice FROM deliveries WHERE delivered = 0 ORDER BY rowid").all();
 		return rows.map((row) => ({
 			eventId: String(row.event_id),
 			roomId: String(row.room_id),
 			submissionId: Number(row.submission_id),
+			voice: Number(row.voice) === 1,
 		}));
 	}
 

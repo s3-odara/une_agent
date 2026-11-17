@@ -52,6 +52,32 @@ export type Config = {
 		/** A browser nobody used for this long is closed; its cookies stay on disk. */
 		readonly idleMinutes: number;
 	};
+	/** Present when the agent takes voice messages. Its answer to one comes as text and as a voice message. */
+	readonly voice?: {
+		/** whisper.cpp's `whisper-server`, as `stt/install.sh` builds it. */
+		readonly stt: {
+			readonly server: string;
+			readonly model: string;
+			readonly vadModel: string;
+			readonly threads: number;
+			readonly beamSize: number;
+			/** Language code such as `ja`, or `auto`. */
+			readonly language: string;
+			/** Padding VAD adds around speech. 0: the default 30 ms made the model invent words in trailing silence. */
+			readonly vadSpeechPadMs: number;
+			/** The recognizer holds about a gigabyte of memory; one unused for this long is stopped. */
+			readonly idleMinutes: number;
+		};
+		/** Absent: voice messages are understood but answered in text only. */
+		readonly tts?: {
+			/** VOICEVOX Engine. */
+			readonly url: string;
+			/** The VOICEVOX style ID of personas that do not set `voice`. */
+			readonly speaker: number;
+			/** Longer answers are read up to here; the text reply has the rest. */
+			readonly maxChars: number;
+		};
+	};
 	/** Messages the agent sends on its own. Without it the agent only answers. */
 	readonly proactive?: {
 		/** The room they go to; they are written by that room's persona, in that room's conversation. */
@@ -83,6 +109,8 @@ export type Persona = {
 	readonly model?: ModelRef;
 	/** The browser profile it uses, and so whose cookies and logins it has. Personas share `default` unless set. */
 	readonly browserProfile: string;
+	/** The VOICEVOX style ID it speaks with; `voice.tts.speaker` unless set. */
+	readonly voice?: number;
 };
 
 function fail(message: string): never {
@@ -139,6 +167,41 @@ function browser(value: unknown): Config["browser"] {
 		headless: root.headless !== false,
 		...(root.executablePath === undefined ? {} : { executablePath: str(root.executablePath, "browser.executablePath") }),
 		idleMinutes: limit(root.idleMinutes, 10, "browser.idleMinutes"),
+	};
+}
+
+function nonNegativeInteger(value: unknown, name: string): number {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) fail(`${name} must be an integer of 0 or more`);
+	return value;
+}
+
+function voice(value: unknown, baseDir: string): Config["voice"] {
+	if (value === undefined) return undefined;
+	const root = object(value, "voice");
+	const stt = object(root.stt ?? {}, "voice.stt");
+	return {
+		stt: {
+			server: resolve(baseDir, str(stt.server ?? "stt/whisper.cpp/build/bin/whisper-server", "voice.stt.server")),
+			model: resolve(baseDir, str(stt.model ?? "stt/models/ggml-large-v3-turbo-q8_0.bin", "voice.stt.model")),
+			vadModel: resolve(baseDir, str(stt.vadModel ?? "stt/models/ggml-silero-v5.1.2.bin", "voice.stt.vadModel")),
+			threads: limit(stt.threads, 6, "voice.stt.threads"),
+			beamSize: limit(stt.beamSize, 5, "voice.stt.beamSize"),
+			language: str(stt.language ?? "ja", "voice.stt.language"),
+			vadSpeechPadMs: nonNegativeInteger(stt.vadSpeechPadMs ?? 0, "voice.stt.vadSpeechPadMs"),
+			idleMinutes: limit(stt.idleMinutes, 10, "voice.stt.idleMinutes"),
+		},
+		...(root.tts === undefined
+			? {}
+			: (() => {
+					const tts = object(root.tts, "voice.tts");
+					return {
+						tts: {
+							url: str(tts.url ?? "http://127.0.0.1:50021", "voice.tts.url"),
+							speaker: nonNegativeInteger(tts.speaker ?? 2, "voice.tts.speaker"),
+							maxChars: limit(tts.maxChars, 400, "voice.tts.maxChars"),
+						},
+					};
+				})()),
 	};
 }
 
@@ -207,6 +270,7 @@ function personas(value: unknown): Record<string, Persona> {
 			soul: str(persona.soul, `personas.${name}.soul`),
 			privateMemory: persona.privateMemory === true,
 			browserProfile: profileName(persona.browserProfile ?? "default", `personas.${name}.browserProfile`),
+			...(persona.voice === undefined ? {} : { voice: nonNegativeInteger(persona.voice, `personas.${name}.voice`) }),
 			...(persona.model === undefined ? {} : { model: modelRef(persona.model, `personas.${name}.model`) }),
 		};
 	}
@@ -256,6 +320,7 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 		weather: weather(root.weather),
 		proactive: proactive(root.proactive),
 		browser: browser(root.browser),
+		voice: voice(root.voice, baseDir),
 	};
 }
 

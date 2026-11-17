@@ -15,7 +15,9 @@ import { HostDb } from "./hostdb.ts";
 import { createMemoryExtension, MemoryStore } from "./memory.ts";
 import { Bridge } from "./rooms.ts";
 import { Scheduler } from "./scheduler.ts";
+import { WhisperServer } from "./stt.ts";
 import { memoryFingerprint, tidyMemory } from "./tidy.ts";
+import { Voicevox } from "./tts.ts";
 import { jmaForecast } from "./weather.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -77,8 +79,21 @@ const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.d
 // Continue the runs the last process left unfinished before any new message arrives.
 harness.resume();
 
+const transcriber =
+	config.voice === undefined
+		? undefined
+		: new WhisperServer({ ...config.voice.stt, socketPath: join(config.dataDir, "stt.sock"), idleMs: config.voice.stt.idleMinutes * 60_000 });
+const voice =
+	config.voice === undefined || transcriber === undefined
+		? undefined
+		: {
+				transcriber,
+				...(config.voice.tts === undefined ? {} : { synthesizer: new Voicevox({ url: config.voice.tts.url }) }),
+				outDir: join(config.dataDir, "voice", "out"),
+			};
+
 const gateway = spawnGateway(config.gatewayBin, ["run", "--config", configPath]);
-const bridge = new Bridge({ harness, db, link: gateway, config, context });
+const bridge = new Bridge({ harness, db, link: gateway, config, context, voice });
 bridge.start();
 
 const scheduler = new Scheduler({
@@ -101,6 +116,7 @@ async function shutdown(exitCode: number): Promise<void> {
 	stopping = true;
 	scheduler.stop();
 	gateway.stop();
+	transcriber?.close();
 	await browsers?.close();
 	await harness.close(context);
 	db.close();

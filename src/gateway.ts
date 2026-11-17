@@ -9,8 +9,11 @@ export type GatewayEvent =
 			readonly roomId: string;
 			readonly eventId: string;
 			readonly sender: string;
+			/** The text; for audio, the file name or description the sender's client gave it. */
 			readonly body: string;
 			readonly ts: number;
+			/** Present for an audio message: the recording, downloaded and decrypted. Delete it once done. */
+			readonly audio?: { readonly path: string; readonly mimetype?: string; readonly voice: boolean };
 	  }
 	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string; readonly sender: string }
 	| { readonly type: "sent"; readonly requestId: string; readonly eventId: string }
@@ -28,6 +31,16 @@ export type GatewayCommand =
 			readonly body: string;
 			/** Sent as `m.notice` instead of `m.text`. */
 			readonly notice?: boolean;
+	  }
+	| {
+			/** Sends an Ogg Opus file as a voice message. */
+			readonly type: "sendVoice";
+			readonly requestId: string;
+			readonly roomId: string;
+			readonly txnId: string;
+			readonly path: string;
+			readonly durationMs: number;
+			readonly waveform?: readonly number[];
 	  }
 	| { readonly type: "typing"; readonly roomId: string; readonly on: boolean };
 

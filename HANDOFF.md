@@ -35,6 +35,8 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - 以前の Dreaming（毎晩、会話履歴からフォローアップ対象をまとめ直す処理）は作らない。予定とタスクの正は CalDAV
 - ブラウザの操作（クリック、入力、ログイン）は**確認なしで任せる**。取り返しのつかない操作の前の確認は
   モデルへの指示であり、コードでは強制しない（2026-11-17 決定）
+- 音声認識は **whisper.cpp の whisper-server、large-v3-turbo q8_0、Vulkan（本番は RX570）、VAD あり（余白0）、
+  ビーム幅5**（2026-11-18 決定。faster-whisper から置き換え。根拠は「手順5」のベンチマーク）
 - 人格ごとにセッションは分ける
 - Hermes の profile のように、口調を変えたいだけで設定ファイルまで分離されるのは避けたい
 - 既存 cron: Dreaming は毎日 02:00、Proactive は 06:00〜21:00 毎時（Asia/Tokyo）
@@ -42,8 +44,7 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 
 ## 未決定（ユーザーに確認が必要）
 
-- VC は MatrixRTC で参加する方針（matrix-rust-rtc）。ボイスメッセージを先に作るかは未決定
-- ボイスメッセージと VC のどちらを先に作るか
+（なし。ボイスメッセージを VC より先に作ること、音声合成は VOICEVOX にすることは 2026-11-17 に決定）
 
 ## 手順1の実装（2026-11-17）
 
@@ -201,6 +202,77 @@ Web ブラウザ。`config.json` に `browser` があれば有効になる。`sr
 
 未確認: 実在のサイト（重いページ、ボット対策、二段階認証）、画面つきで動かす `browser-login`、
 実際のモデルがツリーを読んで操作できるか。
+
+## 手順5の実装（2026-11-17）
+
+ボイスメッセージ。`config.json` に `voice` があれば有効。音声で届いた発言には、文字の返答のあとに同じ内容の音声も送る。
+
+- ゲートウェイが `m.audio` を受け取り、ダウンロードと復号をして `data/voice/in/` に書いてからエージェントに渡す（20MB まで）
+- 音声認識は whisper.cpp の `whisper-server`（`src/stt.ts`）。最初の音声で `data/stt.sock`（Unix ソケット）に起動し、
+  `idleMinutes`（10分）使われなければ止める（読み込みは1秒未満なので止めても損は小さい）。録音は ffmpeg で
+  16kHz モノラルの WAV にしてから渡す（サーバーは Ogg を読めない）
+- VAD は必須。無いと30秒の区切りで1文を丸ごと落とした。VAD の余白（`vadSpeechPadMs`）は0。既定の30ms では
+  末尾の無音に「はい」という実在しない言葉が出た
+- 文字起こしは `[2026-11-17(火) 09:00 音声] 本文` としてモデルに渡す。`personas/default.md` に、音声には話し言葉で短く答えるよう追記した
+- 認識できなかった・空だったときは通知を返して ack する（モデルは呼ばない）。一度会話に入った音声は、再送されても文字起こしし直さない
+- 音声合成は VOICEVOX Engine の HTTP API。返答の Markdown から記号・URL・表の罫線・コードを除いてから読ませ、
+  `maxChars`（400字）を超える分は文の切れ目で止めて「続きは文字で送りました」と言う。ffmpeg で Ogg Opus にし、波形つきのボイスメッセージとして送る
+- 声は人格の `voice`（VOICEVOX のスタイル ID）、無ければ `voice.tts.speaker`
+- 音声の返答は `voice:<イベントID>` をトランザクション ID にする。作れなかったときは文字の返答を残したまま、理由を通知する
+- 台帳 `deliveries` に `voice` 列を足した（古い `host.sqlite` は起動時に列が追加される）
+
+### 準備
+
+1. ffmpeg を入れる（libopus 対応のもの）
+2. `npm run stt-install`（`stt/install.sh`: whisper.cpp を固定したコミットで `stt/whisper.cpp/` に取得して Vulkan つきで
+   ビルドし、モデル2つをハッシュを照合して `stt/models/` に取得、約0.9GB）。Vulkan のヘッダー、ローダー、glslc（shaderc）、
+   SPIRV-Headers が要る。CPU だけなら `VULKAN=0`。プロセス数に上限がある環境ではシェーダー生成の fork が失敗するので `JOBS=4` などで減らす
+3. VOICEVOX Engine を起動しておく（既定 `http://127.0.0.1:50021`。CPU 版なら `./run --cpu_num_threads 6` など）。
+   公開して使うならキャラクターごとのクレジット表記などの利用規約に従う
+
+### STT のベンチマーク（2026-11-17、このホスト: Ryzen 7 PRO 8840HS、物理6コアに固定）
+
+33秒の日本語の録音1本。CER は句読点を除いた文字誤り率。本番の CPU・GPU とは違うので目安。
+
+| 構成 | 処理時間 | CER | 備考 |
+|---|---|---|---|
+| faster-whisper turbo int8、ビーム5（CPU） | 約8.9秒（読み込み除く） | 0.019 | この時点の比較では唯一「耐性」を正しく認識（VAD の余白を0にする前） |
+| faster-whisper turbo int8、ビーム1（CPU） | ほぼ同じ | 0.033 | |
+| whisper.cpp turbo q8_0 / q5_0（CPU） | 15〜21秒 | 0.11〜0.12 | 30秒の区切りで1文を丸ごと落とす |
+| whisper.cpp turbo q8_0（Vulkan、780M） | 2.6秒 | 0.114 | 同上 |
+| whisper.cpp turbo q8_0 + VAD（Vulkan、780M） | 2.8秒 | 0.043 | 落ちなくなるが、末尾に「はい」が付く |
+| 同上、RX570 にない機能（coopmat、整数ドット積、fp16）を切った条件 | 4.4秒 | 0.043 | RX570 の推定に近づけたもの |
+| whisper.cpp large-v3 q8_0 + VAD（Vulkan、780M / 機能制限） | 7.3秒 / 8.7秒 | 0.043 | turbo より精度は上がらなかった |
+
+VAD の余白を変えた結果（turbo q8_0、Vulkan）: 余白0で「はい」も「耐性→対して」も消え、誤りが faster-whisper と同じ4か所
+（思ってる→思っている、いう→言う、マネージャ→マネージャー、が→は。言い直しや表記の揺れに近い）になった。
+`-nth 0.3`、`--suppress-nst` では「はい」は消えなかった。f16 は q8_0 より良くならなかった。
+
+追加の短い録音3本（3〜6秒）を含む4本での比較（毎回モデルを読み込む計測）:
+
+| 構成 | 33秒 | 3〜6秒の3本 | 4本の合計 CER |
+|---|---|---|---|
+| faster-whisper int8（CPU） | 8.7秒 | 各約3.7秒 | 0.019 |
+| whisper.cpp q8_0 + VAD 余白0（780M） | 2.3秒 | 各1.2〜1.3秒 | **0.015** |
+| 同上、RX570 相当の制限 | 3.1秒 | 各2.0秒 | **0.015** |
+| whisper.cpp q8_0 + VAD 余白既定 | 3.1秒 | 各1.3秒 | 0.034 |
+| whisper.cpp q8_0、VAD なし | 2.9秒 | 各1.2〜1.3秒 | 0.103 |
+
+whisper-server に常駐させると、33秒が約2.0秒、短文が約0.85秒（780M）。whisper.cpp + VAD は文末の「?」が落ちることがある。
+メモリ（最大 RSS）: faster-whisper 約1.7GB、whisper.cpp q8_0（CPU）約1.1GB。GPU で動かすと重みは VRAM に載る（q8_0 で約0.9GB）。
+large-v3 の q8_0 は配布されていないので、f16 版から `whisper-quantize` で作った。
+**実際の RX570 では未計測**。「RX570 相当の制限」は 780M で coopmat・整数ドット積・fp16 を環境変数で切ったもので、目安にすぎない。
+
+### 未検証
+
+- 実際の homeserver でのボイスメッセージの受信（Element の録音）と、送ったボイスメッセージが Element で再生できるか
+- 実際のモデルが音声向けの短い返答を書くか
+
+- 実際の RX570 での whisper-server の速さと、RADV（Polaris）で動くか
+
+実物で確認済み: `test/stt.integration.test.ts`（`STT_TEST_AUDIO` と `STT_TEST_TEXT` に録音と台本を渡したときだけ走る）で、
+`stt/install.sh` で作った whisper-server が4本の録音を同時に受けて台本どおりに文字にすること、音声でないファイルはエラーに
+なってサーバーは動き続けること。VOICEVOX 0.26.2 で合成して Ogg Opus（48kHz モノラル）にできること。
 
 ### 手順6（通話）に向けたメモ
 

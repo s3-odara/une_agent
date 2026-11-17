@@ -12,7 +12,8 @@
 		"typecheck": "tsc --noEmit",
 		"test": "node --test \"test/**/*.test.ts\"",
 		"browser-login": "node --env-file-if-exists=.env src/browser-login.ts",
-		"browser-install": "playwright-core install chromium"
+		"browser-install": "playwright-core install chromium",
+		"stt-install": "sh stt/install.sh"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.5.2",

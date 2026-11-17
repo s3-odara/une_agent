@@ -1,10 +1,14 @@
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
 import { answerOf } from "./answer.ts";
 import { type Config, persona, personaFor, readSoul } from "./config.ts";
-import type { GatewayEvent, GatewayLink } from "./gateway.ts";
+import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
 import { type Delivery, type HostDb, SCHEDULED_PREFIX } from "./hostdb.ts";
+import type { Transcriber } from "./stt.ts";
 import { formatStamp } from "./time.ts";
+import { type Synthesizer, toSpeech } from "./tts.ts";
 
 type ConversationId = Conversation["id"];
 type SubmissionId = Parameters<Harness["submission"]>[0];
@@ -26,6 +30,16 @@ export type BridgeOptions = {
 	/** How long one send waits for the gateway's result before it counts as failed. */
 	readonly sendTimeoutMs?: number;
 	readonly log?: (message: string) => void;
+	/** Without it, voice messages are answered with a notice that they are not supported. */
+	readonly voice?: VoiceOptions;
+};
+
+export type VoiceOptions = {
+	readonly transcriber: Transcriber;
+	/** Without it, a voice message is answered in text only. Its settings are `config.voice.tts`. */
+	readonly synthesizer?: Synthesizer;
+	/** Where spoken answers are written until the gateway has uploaded them. */
+	readonly outDir: string;
 };
 
 /**
@@ -106,21 +120,51 @@ export class Bridge {
 
 	async #admit(message: MessageEvent): Promise<void> {
 		const { db, link, config } = this.#options;
-		if (!db.isDelivered(message.eventId)) {
-			// The time it was sent, so "tomorrow" means something. A system prompt that changed every minute would
-			// defeat the provider's prompt cache; a stamp on the message does not.
-			const stamp = message.ts > 0 ? `[${formatStamp(message.ts, config.timezone)}] ` : "";
-			await this.#submit(message.roomId, message.eventId, `${stamp}${message.body}`);
+		// The time it was sent, so "tomorrow" means something. A system prompt that changed every minute would
+		// defeat the provider's prompt cache; a stamp on the message does not.
+		const time = message.ts > 0 ? formatStamp(message.ts, config.timezone) : undefined;
+		if (message.audio === undefined) {
+			if (!db.isDelivered(message.eventId)) await this.#submit(message.roomId, message.eventId, `${time === undefined ? "" : `[${time}] `}${message.body}`);
+		} else if (!db.hasDelivery(message.eventId)) {
+			// Once admitted, the transcript lives in the conversation; a resent recording is not transcribed again.
+			await this.#admitAudio(message, message.audio.path, time);
 		}
 		link.send({ type: "ack", eventId: message.eventId });
+		if (message.audio !== undefined) await rm(message.audio.path, { force: true });
+	}
+
+	/**
+	 * A recording becomes its transcript, marked as heard rather than typed. When it cannot be, the user is told so and
+	 * the message is acked all the same: a recording that failed once would fail again at every start.
+	 */
+	async #admitAudio(message: MessageEvent, path: string, time: string | undefined): Promise<void> {
+		const { link } = this.#options;
+		const voice = this.#options.voice;
+		const tell = (body: string) => this.#send(message.roomId, `stt:${message.eventId}`, body, true);
+		if (voice === undefined) return void (await tell("音声メッセージには対応していません（設定に voice がありません）。"));
+
+		link.send({ type: "typing", roomId: message.roomId, on: true });
+		let text: string;
+		try {
+			text = (await voice.transcriber.transcribe(path)).trim();
+		} catch (error) {
+			link.send({ type: "typing", roomId: message.roomId, on: false });
+			this.#log(`transcribing ${message.eventId} failed: ${describe(error)}`);
+			return void (await tell(`音声を文字にできませんでした（${describe(error)}）。`));
+		}
+		if (text === "") {
+			link.send({ type: "typing", roomId: message.roomId, on: false });
+			return void (await tell("音声を聞き取れませんでした。"));
+		}
+		await this.#submit(message.roomId, message.eventId, `[${time === undefined ? "" : `${time} `}音声] ${text}`, true);
 	}
 
 	/** Admits one input to a room's conversation and starts delivering its answer. Safe to repeat with the same key. */
-	async #submit(roomId: string, key: string, content: string): Promise<void> {
+	async #submit(roomId: string, key: string, content: string, voice = false): Promise<void> {
 		const { db, context } = this.#options;
 		const conversation = await this.#conversationFor(roomId);
 		const submission = await conversation.submit({ type: "input", content, requestId: key }, context);
-		const delivery: Delivery = { eventId: key, roomId, submissionId: Number(submission.id) };
+		const delivery: Delivery = { eventId: key, roomId, submissionId: Number(submission.id), voice };
 		db.addDelivery(delivery);
 		this.#startDelivery(delivery);
 	}
@@ -187,17 +231,57 @@ export class Bridge {
 	async #deliver(delivery: Delivery): Promise<void> {
 		const { db } = this.#options;
 		const answer = await this.#answerOf(delivery);
-		for (let attempt = 0; ; attempt++) {
+		const replyEventId = await this.#retrying(`the answer to ${delivery.eventId}`, () =>
+			this.#send(delivery.roomId, `reply:${delivery.eventId}`, answer.body, answer.notice),
+		);
+		// The text goes first: it is there at once, while speech takes a while to make.
+		if (delivery.voice === true && !answer.notice) {
 			try {
-				const replyEventId = await this.#send(delivery.roomId, `reply:${delivery.eventId}`, answer.body, answer.notice);
-				db.markDelivered(delivery.eventId, replyEventId);
-				return;
+				await this.#retrying(`the spoken answer to ${delivery.eventId}`, () => this.#sendSpoken(delivery, answer.body));
 			} catch (error) {
-				const delay = this.#retryDelays[attempt];
+				// The text has arrived, so the answer is not lost; say why the voice did not come instead of retrying forever.
+				await this.#send(delivery.roomId, `voicefail:${delivery.eventId}`, `音声の返答を作れませんでした（${describe(error)}）。`, true).catch(
+					(noticeError) => this.#log(`notice for ${delivery.eventId} failed: ${describe(noticeError)}`),
+				);
+			}
+		}
+		db.markDelivered(delivery.eventId, replyEventId);
+	}
+
+	/** Runs `attempt` until it succeeds, waiting between tries; after the last wait, its error is thrown. */
+	async #retrying<T>(what: string, attempt: () => Promise<T>): Promise<T> {
+		for (let tries = 0; ; tries++) {
+			try {
+				return await attempt();
+			} catch (error) {
+				const delay = this.#retryDelays[tries];
 				if (delay === undefined) throw error;
-				this.#log(`sending the answer to ${delivery.eventId} failed, retrying in ${delay} ms: ${describe(error)}`);
+				this.#log(`sending ${what} failed, retrying in ${delay} ms: ${describe(error)}`);
 				await new Promise((resolve) => setTimeout(resolve, delay));
 			}
+		}
+	}
+
+	/** Reads the answer aloud in the room persona's voice and sends it as a voice message. */
+	async #sendSpoken(delivery: Delivery, body: string): Promise<void> {
+		const { config } = this.#options;
+		const synthesizer = this.#options.voice?.synthesizer;
+		const tts = config.voice?.tts;
+		if (synthesizer === undefined || tts === undefined) return;
+		const text = toSpeech(body, tts.maxChars);
+		if (text === "") return;
+		const speaker = persona(config, personaFor(config, delivery.roomId)).voice ?? tts.speaker;
+		const speech = await synthesizer.synthesize(text, speaker);
+
+		const dir = (this.#options.voice as VoiceOptions).outDir;
+		await mkdir(dir, { recursive: true });
+		const path = join(dir, `${delivery.eventId.replace(/[^A-Za-z0-9_-]/g, "_")}.ogg`);
+		await writeFile(path, speech.ogg);
+		try {
+			const txnId = `voice:${delivery.eventId}`;
+			await this.#request(txnId, { type: "sendVoice", requestId: txnId, roomId: delivery.roomId, txnId, path, durationMs: speech.durationMs, waveform: speech.waveform });
+		} finally {
+			await rm(path, { force: true });
 		}
 	}
 
@@ -214,7 +298,11 @@ export class Bridge {
 	/** Sends one message through the gateway and resolves with the ID of the event it became. */
 	#send(roomId: string, txnId: string, body: string, notice: boolean): Promise<string> {
 		// The transaction ID doubles as the request ID: one send per ID is in flight at a time.
-		const requestId = txnId;
+		return this.#request(txnId, { type: "send", requestId: txnId, roomId, txnId, body, notice });
+	}
+
+	/** Passes a command that the gateway answers with `sent` or `error` under its request ID. */
+	#request(requestId: string, command: GatewayCommand): Promise<string> {
 		return new Promise<string>((resolve, reject) => {
 			const timer = setTimeout(() => settle(() => reject(new Error("the gateway did not answer in time"))), this.#sendTimeoutMs);
 			const settle = (finish: () => void) => {
@@ -226,7 +314,7 @@ export class Bridge {
 				resolve: (eventId) => settle(() => resolve(eventId)),
 				reject: (error) => settle(() => reject(error)),
 			});
-			this.#options.link.send({ type: "send", requestId, roomId, txnId, body, notice });
+			this.#options.link.send(command);
 		});
 	}
 }

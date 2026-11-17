@@ -1,22 +1,26 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo};
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
-use matrix_sdk::ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent, Relation, RoomMessageEventContent};
-use matrix_sdk::ruma::{OwnedTransactionId, OwnedUserId, RoomId};
+use matrix_sdk::ruma::events::room::message::{
+    AudioMessageEventContent, MessageType, OriginalSyncRoomMessageEvent, Relation, RoomMessageEventContent,
+};
+use matrix_sdk::ruma::{OwnedTransactionId, OwnedUserId, RoomId, UInt};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomState};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::config::Config;
-use crate::ipc::{Command, Event, Message, Outbox, spawn_writer};
+use crate::ipc::{Audio, Command, Event, Message, Outbox, spawn_writer};
 use crate::session;
 use crate::state::State;
 
@@ -26,6 +30,8 @@ struct Shared {
     out: Outbox,
     state: Arc<Mutex<State>>,
     allowed: Arc<Vec<OwnedUserId>>,
+    /// Where received recordings are written for the agent.
+    voice_dir: Arc<PathBuf>,
     /// Per room, the task that keeps its typing notice alive.
     typing: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
 }
@@ -52,6 +58,7 @@ pub async fn run(config: &Config) -> Result<()> {
         out: spawn_writer(),
         state: Arc::new(Mutex::new(state)),
         allowed: Arc::new(config.matrix.allowed_users.clone()),
+        voice_dir: Arc::new(config.data_dir().join("voice").join("in")),
         typing: Arc::default(),
     };
 
@@ -94,7 +101,11 @@ pub async fn run(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// A text message from an allowed user is stored in the inbox, then passed to the agent.
+/// Larger recordings are refused rather than downloaded: several minutes of speech is far below this.
+const MAX_AUDIO_BYTES: u64 = 20 * 1024 * 1024;
+
+/// A text or audio message from an allowed user is stored in the inbox, then passed to the agent. An audio message is
+/// downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
 async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
     if room.state() != RoomState::Joined || Some(&*event.sender) == client.user_id() || !shared.is_allowed(&event.sender) {
         return;
@@ -103,27 +114,67 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
     if matches!(event.content.relates_to, Some(Relation::Replacement(_))) {
         return;
     }
-    let MessageType::Text(text) = &event.content.msgtype else { return };
     let ts: u64 = event.origin_server_ts.0.into();
-    let message = Message {
-        room_id: room.room_id().to_string(),
-        event_id: event.event_id.to_string(),
-        sender: event.sender.to_string(),
-        body: text.body.clone(),
-        ts,
-    };
-
-    let added = {
-        let mut state = shared.state.lock().unwrap();
-        if state.predates_join(&message.room_id, ts) {
+    let room_id = room.room_id().to_string();
+    let event_id = event.event_id.to_string();
+    {
+        let state = shared.state.lock().unwrap();
+        // Already passed on (a sync can repeat), or history from before the bot joined.
+        if state.has(&event_id) || state.predates_join(&room_id, ts) {
             return;
         }
-        state.add(&message)
+    }
+    let (body, audio) = match &event.content.msgtype {
+        MessageType::Text(text) => (text.body.clone(), None),
+        MessageType::Audio(content) => match download_audio(&client, &shared.voice_dir, &event_id, content).await {
+            Ok(audio) => (content.body.clone(), Some(audio)),
+            Err(error) => {
+                warn!("downloading the audio of {event_id} failed: {error:#}");
+                shared.emit(Event::Undecryptable { room_id, event_id, sender: event.sender.to_string() });
+                return;
+            }
+        },
+        _ => return,
     };
+    let message = Message { room_id, event_id, sender: event.sender.to_string(), body, ts, audio };
+
+    let added = shared.state.lock().unwrap().add(&message);
     match added {
         Ok(true) => shared.emit(Event::Message(message)),
         Ok(false) => {}
         Err(error) => shared.emit(Event::Error { request_id: None, message: format!("storing {} failed: {error:#}", message.event_id) }),
+    }
+}
+
+/// Writes the recording of an audio message to `<dir>/<event>.<ext>` and returns where.
+async fn download_audio(client: &Client, dir: &Path, event_id: &str, content: &AudioMessageEventContent) -> Result<Audio> {
+    let info = content.info.as_deref();
+    if let Some(size) = info.and_then(|info| info.size) {
+        anyhow::ensure!(u64::from(size) <= MAX_AUDIO_BYTES, "the recording is {size} bytes, more than {MAX_AUDIO_BYTES}");
+    }
+    let data = client.media().get_file(content, false).await?.context("the message has no file")?;
+    anyhow::ensure!(data.len() as u64 <= MAX_AUDIO_BYTES, "the recording is {} bytes, more than {MAX_AUDIO_BYTES}", data.len());
+    let mimetype = info.and_then(|info| info.mimetype.clone());
+    let path = dir.join(format!("{}.{}", file_stem(event_id), extension(mimetype.as_deref())));
+    tokio::fs::create_dir_all(dir).await.with_context(|| format!("creating {}", dir.display()))?;
+    tokio::fs::write(&path, data).await.with_context(|| format!("writing {}", path.display()))?;
+    Ok(Audio { path: path.to_string_lossy().into_owned(), mimetype, voice: content.voice.is_some() })
+}
+
+/// An event ID as a file name: anything but letters, digits, `-` and `_` becomes `_`.
+fn file_stem(event_id: &str) -> String {
+    event_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+}
+
+/// Only a hint for whoever looks at the directory; the agent's decoder reads the container itself.
+fn extension(mimetype: Option<&str>) -> &'static str {
+    match mimetype.map(|m| m.split(';').next().unwrap_or("").trim()) {
+        Some("audio/ogg" | "audio/opus") => "ogg",
+        Some("audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac") => "m4a",
+        Some("audio/mpeg" | "audio/mp3") => "mp3",
+        Some("audio/webm") => "webm",
+        Some("audio/wav" | "audio/x-wav") => "wav",
+        _ => "audio",
     }
 }
 
@@ -198,6 +249,16 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                     shared.emit(event);
                 });
             }
+            Command::SendVoice { request_id, room_id, txn_id, path, duration_ms, waveform } => {
+                let (client, shared) = (client.clone(), shared.clone());
+                tokio::spawn(async move {
+                    let event = match send_voice(&client, &room_id, txn_id, &path, duration_ms, waveform).await {
+                        Ok(event_id) => Event::Sent { request_id, event_id },
+                        Err(error) => Event::Error { request_id: Some(request_id), message: format!("{error:#}") },
+                    };
+                    shared.emit(event);
+                });
+            }
             Command::Typing { room_id, on } => set_typing(&client, &shared, room_id, on),
         }
     }
@@ -216,6 +277,22 @@ async fn send(client: &Client, room_id: &str, txn_id: String, body: String, noti
     let content = if notice { RoomMessageEventContent::notice_markdown(body) } else { RoomMessageEventContent::text_markdown(body) };
     let result = room.send(content).with_transaction_id(OwnedTransactionId::from(txn_id)).await?;
     Ok(result.response.event_id.to_string())
+}
+
+/// Uploads the file (encrypted in an encrypted room) and sends it as a voice message. A retry under the same transaction
+/// ID uploads again but still becomes one event.
+async fn send_voice(client: &Client, room_id: &str, txn_id: String, path: &str, duration_ms: u64, waveform: Vec<f32>) -> Result<String> {
+    let room = joined_room(client, room_id)?;
+    let data = tokio::fs::read(path).await.with_context(|| format!("reading {path}"))?;
+    let info = BaseAudioInfo {
+        duration: Some(Duration::from_millis(duration_ms)),
+        size: UInt::new(data.len() as u64),
+        waveform: if waveform.is_empty() { None } else { Some(waveform) },
+    };
+    let config = AttachmentConfig::new().txn_id(OwnedTransactionId::from(txn_id)).info(AttachmentInfo::Voice(info));
+    let mime: mime::Mime = "audio/ogg".parse().expect("a valid MIME type");
+    let response = room.send_attachment("voice-message.ogg", &mime, data, config).await?;
+    Ok(response.event_id.to_string())
 }
 
 /// A typing notice lasts a few seconds on the homeserver, so "on" keeps renewing it until "off".

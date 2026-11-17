@@ -9,7 +9,7 @@ export class FakeLink implements GatewayLink {
 
 	send(command: GatewayCommand): void {
 		this.commands.push(command);
-		if (command.type === "send" && this.confirmSends) {
+		if ((command.type === "send" || command.type === "sendVoice") && this.confirmSends) {
 			queueMicrotask(() => this.emit({ type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` }));
 		}
 	}
