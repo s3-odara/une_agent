@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import { obj, oneOf, str } from "@earendil-works/pi-schema";
@@ -16,7 +16,7 @@ export class MemoryError extends Error {}
 /** `(2026-11-17)` at the end of an entry: when it was written, so a reader can tell how stale it may be. */
 const TAG = / \(\d{4}-\d{2}-\d{2}\)$/;
 
-function withoutTag(entry: string): string {
+export function withoutTag(entry: string): string {
 	return entry.replace(TAG, "");
 }
 
@@ -129,6 +129,24 @@ export class MemoryStore {
 		entries.splice(index, 1);
 		this.#write(scope, persona, entries);
 		return "削除しました。";
+	}
+
+	/**
+	 * Replaces a whole list, as the tidy does, after copying the file it replaces to `history/<label>.md`. Entries that
+	 * carry no date get `date`.
+	 */
+	rewrite(scope: MemoryScope, persona: MemoryPersona, entries: readonly string[], date: string, label: string): void {
+		const path = this.#path(scope, persona);
+		if (existsSync(path)) {
+			const backup = join(this.#dir, "history", `${label}.md`);
+			mkdirSync(dirname(backup), { recursive: true });
+			copyFileSync(path, backup);
+		}
+		this.#write(
+			scope,
+			persona,
+			entries.map(oneLine).filter((entry) => entry !== "").map((entry) => (TAG.test(entry) ? entry : `${entry} (${date})`)),
+		);
 	}
 
 	/** What a persona sees of memory, with how to use it. Changes only when memory changes, which keeps prompt caches warm. */

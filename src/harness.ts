@@ -23,6 +23,8 @@ export function openAgentHarness(
 	models: HarnessOptions["models"],
 	context: Context,
 	extensions: readonly Extension[] = [],
+	/** The clock tools and tasks see; tests pass a fixed one. */
+	now?: () => number,
 ): Promise<Harness> {
 	const registry = createRegistry();
 	for (const extension of extensions) registry.install(extension);
@@ -31,6 +33,7 @@ export function openAgentHarness(
 		{
 			models,
 			registry,
+			now,
 			identity: { attribution: null },
 			onReport: (report) => console.error(`harness report: ${report.kind}`, report.error),
 		},

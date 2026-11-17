@@ -11,5 +11,25 @@
 	},
 	"defaultPersona": "default",
 	"rooms": {},
-	"memory": { "sharedLimit": 2000, "privateLimit": 1000 }
+	"timezone": "Asia/Tokyo",
+	"memory": { "sharedLimit": 2000, "privateLimit": 1000, "tidyTime": "02:00", "tidyEveryDays": 1 },
+	"caldav": {
+		"url": "https://dav.example.org",
+		"username": "you",
+		"calendars": {
+			"Work": { "kind": "events", "description": "学校・仕事などの義務的な予定" },
+			"Home": { "kind": "events", "description": "個人的な予定" },
+			"ToDo": { "kind": "todos", "description": "タスク" }
+		}
+	},
+	"weather": { "jmaOfficeCode": "130000", "areaIndex": 0 },
+	"proactive": {
+		"roomId": "!roomid:example.org",
+		"briefTime": "06:00",
+		"windowStart": "06:00",
+		"windowEnd": "21:00",
+		"tickMinutes": 15,
+		"eventLeadMinutes": 120,
+		"dueLeadDays": [3, 1]
+	}
 }

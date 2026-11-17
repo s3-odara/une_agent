@@ -1,8 +1,10 @@
 import type { Context } from "@earendil-works/chord/context";
-import { AssistantEntry, type Conversation, type Harness } from "@earendil-works/pi-durable";
+import type { Conversation, Harness } from "@earendil-works/pi-durable";
+import { answerOf } from "./answer.ts";
 import { type Config, persona, personaFor, readSoul } from "./config.ts";
 import type { GatewayEvent, GatewayLink } from "./gateway.ts";
-import type { Delivery, HostDb } from "./hostdb.ts";
+import { type Delivery, type HostDb, SCHEDULED_PREFIX } from "./hostdb.ts";
+import { formatStamp } from "./time.ts";
 
 type ConversationId = Conversation["id"];
 type SubmissionId = Parameters<Harness["submission"]>[0];
@@ -103,17 +105,45 @@ export class Bridge {
 	}
 
 	async #admit(message: MessageEvent): Promise<void> {
-		const { db, link, context } = this.#options;
-		if (db.isDelivered(message.eventId)) {
-			link.send({ type: "ack", eventId: message.eventId });
-			return;
+		const { db, link, config } = this.#options;
+		if (!db.isDelivered(message.eventId)) {
+			// The time it was sent, so "tomorrow" means something. A system prompt that changed every minute would
+			// defeat the provider's prompt cache; a stamp on the message does not.
+			const stamp = message.ts > 0 ? `[${formatStamp(message.ts, config.timezone)}] ` : "";
+			await this.#submit(message.roomId, message.eventId, `${stamp}${message.body}`);
 		}
-		const conversation = await this.#conversationFor(message.roomId);
-		const submission = await conversation.submit({ type: "input", content: message.body, requestId: message.eventId }, context);
-		const delivery: Delivery = { eventId: message.eventId, roomId: message.roomId, submissionId: Number(submission.id) };
-		db.addDelivery(delivery);
 		link.send({ type: "ack", eventId: message.eventId });
+	}
+
+	/** Admits one input to a room's conversation and starts delivering its answer. Safe to repeat with the same key. */
+	async #submit(roomId: string, key: string, content: string): Promise<void> {
+		const { db, context } = this.#options;
+		const conversation = await this.#conversationFor(roomId);
+		const submission = await conversation.submit({ type: "input", content, requestId: key }, context);
+		const delivery: Delivery = { eventId: key, roomId, submissionId: Number(submission.id) };
+		db.addDelivery(delivery);
 		this.#startDelivery(delivery);
+	}
+
+	/**
+	 * Asks a room's persona to write something on the scheduler's behalf; the answer is sent to the room like any other.
+	 * Resolves once the request is stored. `key` names the request: the same key again asks for nothing new.
+	 */
+	submitScheduled(roomId: string, key: string, content: string): Promise<void> {
+		const eventId = `${SCHEDULED_PREFIX}${key}`;
+		const previous = this.#admissions.get(roomId) ?? Promise.resolve();
+		const admitted = previous.then(async () => {
+			if (!this.#options.db.isDelivered(eventId)) await this.#submit(roomId, eventId, content);
+		});
+		const settled = admitted.catch(() => {});
+		this.#admissions.set(roomId, settled);
+		this.#track(settled);
+		return admitted;
+	}
+
+	/** Sends a notice to a room as it is, without the model. The same key again sends nothing new. */
+	async notice(roomId: string, key: string, body: string): Promise<void> {
+		await this.#send(roomId, `notice:${key}`, body, true);
 	}
 
 	async #conversationFor(roomId: string): Promise<Conversation> {
@@ -176,19 +206,9 @@ export class Bridge {
 		const submission = await harness.submission(idFromNumber<SubmissionId>(delivery.submissionId), context);
 		if (submission === undefined) return { body: "この発言の記録が見つからず、応答できませんでした。", notice: true };
 
-		const settled = await submission.wait(context);
-		if (settled.status !== "done" || settled.type !== "input") {
-			const reason = settled.status === "unanswered" ? settled.reason : "no answer";
-			const detail = settled.status === "unanswered" && typeof settled.detail === "string" ? `: ${settled.detail}` : "";
-			return { body: `応答できませんでした（${reason}${detail}）`, notice: true };
-		}
-		const entry = await harness.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
-		const text = (entry?.model ?? [])
-			.flatMap((message) => (message.role === "assistant" ? message.content : []))
-			.flatMap((block) => (block.type === "text" ? [block.text] : []))
-			.join("\n\n")
-			.trim();
-		return text === "" ? { body: "（空の応答でした）", notice: true } : { body: text, notice: false };
+		const answer = await answerOf(harness, await submission.wait(context), context);
+		if (answer.ok) return { body: answer.text, notice: false };
+		return { body: answer.reason === "empty answer" ? "（空の応答でした）" : `応答できませんでした（${answer.reason}）`, notice: true };
 	}
 
 	/** Sends one message through the gateway and resolves with the ID of the event it became. */

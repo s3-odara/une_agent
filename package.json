@@ -16,7 +16,9 @@
 		"@earendil-works/chord": "1.5.2",
 		"@earendil-works/pi-ai": "1.5.2",
 		"@earendil-works/pi-durable": "1.5.2",
-		"@earendil-works/pi-schema": "1.5.2"
+		"@earendil-works/pi-schema": "1.5.2",
+		"ical.js": "2.2.1",
+		"tsdav": "2.5.0"
 	},
 	"devDependencies": {
 		"@types/node": "26.6.6",
