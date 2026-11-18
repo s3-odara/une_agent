@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import type { BrowserPage, Browsers, FieldInfo } from "../src/browser.ts";
 import { createBrowserExtension } from "../src/browser-tools.ts";
@@ -14,18 +14,10 @@ import { CredentialError, Credentials } from "../src/credentials.ts";
 import { openAgentHarness } from "../src/harness.ts";
 import { HostDb } from "../src/hostdb.ts";
 import { Bridge } from "../src/rooms.ts";
-import { FakeLink, message } from "./fakes.ts";
+import { call, FakeLink, message, type Request, report } from "./fakes.ts";
 
 const room = "!main:example.org";
 const SECRET = "correct-horse-battery";
-
-type Request = { messages: { role: string; content: unknown }[] };
-const lastToolResult = (request: Request): string => {
-	const result = request.messages.findLast((item) => item.role === "toolResult");
-	return (result?.content as { text?: string }[] | undefined)?.map((block) => block.text ?? "").join("") ?? "";
-};
-const call = (name: string, args: Record<string, string | boolean>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
-const report = (request: Request) => fauxAssistantMessage(lastToolResult(request));
 
 /**
  * A browser that only records. Its one page shows whatever was typed into it, as a real page may, and names three

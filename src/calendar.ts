@@ -59,7 +59,7 @@ export function normalizeEtag(etag: string | undefined): string {
 	return (etag ?? "").replace(/^W\//, "").replace(/^"|"$/g, "");
 }
 
-export function idOf(calendar: string, url: string): string {
+function idOf(calendar: string, url: string): string {
 	const file = url.replace(/\/+$/, "").split("/").pop() ?? "";
 	return `${calendar}/${decodeURIComponent(file)}`;
 }
@@ -383,7 +383,7 @@ export interface CalDavBackend {
 	remove(object: RawObject): Promise<"deleted" | "gone" | "conflict">;
 }
 
-export type CalendarKind = "events" | "todos";
+type CalendarKind = "events" | "todos";
 export type CalendarConfig = Readonly<Record<string, { readonly kind: CalendarKind; readonly description: string }>>;
 
 /** The configured calendars as the agent uses them: typed items in, field changes out. */
@@ -428,19 +428,22 @@ export class Calendars {
 		return lists.flat().sort((a, b) => (a.due?.date ?? "9999").localeCompare(b.due?.date ?? "9999") || a.summary.localeCompare(b.summary));
 	}
 
-	async #object(id: string): Promise<RawObject> {
+	/** The stored object, or `undefined` when it does not exist; the id is checked either way. */
+	async #find(id: string): Promise<RawObject | undefined> {
 		const { calendar, file } = splitId(id);
 		this.#kindOf(calendar);
-		const object = await this.#backend.get(calendar, file);
+		return this.#backend.get(calendar, file);
+	}
+
+	async #object(id: string): Promise<RawObject> {
+		const object = await this.#find(id);
 		if (object === undefined) throw new CalendarError(`「${id}」が見つかりません。calendar_list で id を確かめてください。`);
 		return object;
 	}
 
 	/** The item's current ETag, normalized; `undefined` when it does not exist. */
 	async etag(id: string): Promise<string | undefined> {
-		const { calendar, file } = splitId(id);
-		this.#kindOf(calendar);
-		const object = await this.#backend.get(calendar, file);
+		const object = await this.#find(id);
 		return object === undefined ? undefined : normalizeEtag(object.etag);
 	}
 
@@ -486,35 +489,33 @@ export class Calendars {
 
 	/** Applies changes to the item as it is now. A write that loses a race with another client is retried once. */
 	async update(id: string, changes: ItemChanges, now: number): Promise<void> {
-		for (let attempt = 0; ; attempt++) {
+		await this.#retryOnConflict(async () => {
 			const object = await this.#object(id);
-			const result = await this.#backend.update({ ...object, data: applyChanges(object.data, changes, this.tz, now) });
-			if (result === "updated") return;
-			if (attempt === 1) throw new CalendarError("別の端末が同時にこの項目を変更しました。calendar_list で確かめてからやり直してください。");
-		}
+			return this.#backend.update({ ...object, data: applyChanges(object.data, changes, this.tz, now) });
+		});
 	}
 
 	/** Deletes the item. Succeeds when it is already gone. */
 	async remove(id: string): Promise<void> {
-		const { calendar, file } = splitId(id);
-		this.#kindOf(calendar);
-		for (let attempt = 0; ; attempt++) {
-			const object = await this.#backend.get(calendar, file);
-			if (object === undefined) return;
-			const result = await this.#backend.remove(object);
-			if (result !== "conflict") return;
-			if (attempt === 1) throw new CalendarError("別の端末が同時にこの項目を変更しました。calendar_list で確かめてからやり直してください。");
-		}
+		await this.#retryOnConflict(async () => {
+			const object = await this.#find(id);
+			return object === undefined ? "done" : this.#backend.remove(object);
+		});
 	}
 
 	/** Marks a task completed. Succeeds when it already is. */
 	async complete(id: string, now: number): Promise<void> {
-		for (let attempt = 0; ; attempt++) {
+		await this.#retryOnConflict(async () => {
 			const object = await this.#object(id);
 			const data = completeTodo(object.data, now);
-			if (data === undefined) return;
-			if ((await this.#backend.update({ ...object, data })) === "updated") return;
-			if (attempt === 1) throw new CalendarError("別の端末が同時にこの項目を変更しました。calendar_list で確かめてからやり直してください。");
-		}
+			return data === undefined ? "done" : this.#backend.update({ ...object, data });
+		});
+	}
+
+	/** Reads and writes again when the write lost a race with another client; a second loss is the model's to sort out. */
+	async #retryOnConflict(attempt: () => Promise<string>): Promise<void> {
+		if ((await attempt()) !== "conflict") return;
+		if ((await attempt()) !== "conflict") return;
+		throw new CalendarError("別の端末が同時にこの項目を変更しました。calendar_list で確かめてからやり直してください。");
 	}
 }

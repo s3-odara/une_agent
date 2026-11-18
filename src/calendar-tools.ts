@@ -2,10 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
-import { type Approvals, refusal } from "./approval.ts";
+import type { Approvals } from "./approval.ts";
 import { CalendarError, type Calendars, type EventFields, formatEvent, formatTodo, type ItemChanges, splitId, type TodoFields } from "./calendar.ts";
 import type { HostDb } from "./hostdb.ts";
-import { runInputs } from "./run.ts";
 import { addDays, dateOf, startOfDay } from "./time.ts";
 
 export type CalendarToolsOptions = {
@@ -44,20 +43,6 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 
 	/** After the agent's own write: the watcher must not report it back to the user as news. */
 	const noteOwnWrite = async (id: string) => db.setSeenItem(id, await calendars.etag(id));
-
-	type ApprovalApi = { readonly conversationId: unknown; memo<T extends string>(name: string, candidate: T, context: Context): Promise<T> } & Parameters<typeof runInputs>[0];
-
-	/** Asks the user; resolves with what to tell the model when the answer is not a yes. */
-	const approve = async (tool: string, summary: string, api: ApprovalApi, context: Context): Promise<string | undefined> => {
-		const conversationId = Number(api.conversationId);
-		const roomId = db.roomOf(conversationId);
-		if (roomId === undefined) throw new CalendarError("この会話のルームが分からないため、承認を求められません。");
-		const inputs = await runInputs(api, context);
-		// Remembered with the call, so a rerun after a crash waits on the same request instead of asking again.
-		const id = await api.memo("approval", randomUUID(), context);
-		const outcome = await approvals.ask({ id, roomId, runKey: `${conversationId}:${inputs.join(",")}`, tool, summary });
-		return outcome.approved ? undefined : refusal(outcome);
-	};
 
 	const tools = [
 		defineTool({
@@ -134,7 +119,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 				const { id, ...changes } = args;
 				splitId(id);
 				if (!Object.values(changes).some((value) => value !== undefined)) throw new CalendarError("変更内容がありません。");
-				const no = await approve("calendar_update", `予定・タスクを変更: ${await calendars.describe(id)}（${describeChanges(changes)}）`, api, context);
+				const no = await approvals.forCall("calendar_update", `予定・タスクを変更: ${await calendars.describe(id)}（${describeChanges(changes)}）`, api, context);
 				if (no !== undefined) return done(no);
 				await calendars.update(id, changes, api.now());
 				await noteOwnWrite(id);
@@ -150,7 +135,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 			execute: async (args, api, context) => {
 				splitId(args.id);
 				const target = await calendars.describe(args.id);
-				const no = await approve("calendar_delete", `予定・タスクを削除: ${target}`, api, context);
+				const no = await approvals.forCall("calendar_delete", `予定・タスクを削除: ${target}`, api, context);
 				if (no !== undefined) return done(no);
 				await calendars.remove(args.id);
 				db.setSeenItem(args.id, undefined);

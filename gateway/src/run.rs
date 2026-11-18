@@ -49,6 +49,15 @@ impl Shared {
     fn is_allowed(&self, user: &OwnedUserId) -> bool {
         self.allowed.contains(user)
     }
+
+    /// Whether an event is for the agent: from an allowed user other than the bot, in a joined room, and not history
+    /// from before the bot joined.
+    fn accepts(&self, room: &Room, client: &Client, sender: &OwnedUserId, ts: u64) -> bool {
+        room.state() == RoomState::Joined
+            && Some(&**sender) != client.user_id()
+            && self.is_allowed(sender)
+            && !self.state.lock().unwrap().predates_join(room.room_id().as_str(), ts)
+    }
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -116,22 +125,16 @@ const MAX_AUDIO_BYTES: u64 = 20 * 1024 * 1024;
 /// A text or audio message from an allowed user is stored in the inbox, then passed to the agent. An audio message is
 /// downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
 async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
-    if room.state() != RoomState::Joined || Some(&*event.sender) == client.user_id() || !shared.is_allowed(&event.sender) {
-        return;
-    }
-    // An edit is not a new request.
-    if matches!(event.content.relates_to, Some(Relation::Replacement(_))) {
-        return;
-    }
     let ts: u64 = event.origin_server_ts.0.into();
+    // An edit is not a new request.
+    if !shared.accepts(&room, &client, &event.sender, ts) || matches!(event.content.relates_to, Some(Relation::Replacement(_))) {
+        return;
+    }
     let room_id = room.room_id().to_string();
     let event_id = event.event_id.to_string();
-    {
-        let state = shared.state.lock().unwrap();
-        // Already passed on (a sync can repeat), or history from before the bot joined.
-        if state.has(&event_id) || state.predates_join(&room_id, ts) {
-            return;
-        }
+    // Already passed on: a sync can repeat.
+    if shared.state.lock().unwrap().has(&event_id) {
+        return;
     }
     let (body, audio) = match &event.content.msgtype {
         MessageType::Text(text) => (text.body.clone(), None),
@@ -189,26 +192,20 @@ fn extension(mimetype: Option<&str>) -> &'static str {
 
 /// An `m.room.encrypted` event reaches a handler only when it could not be decrypted.
 async fn on_undecryptable(event: OriginalSyncRoomEncryptedEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
-    if room.state() != RoomState::Joined || Some(&*event.sender) == client.user_id() || !shared.is_allowed(&event.sender) {
+    if !shared.accepts(&room, &client, &event.sender, event.origin_server_ts.0.into()) {
         return;
     }
     let room_id = room.room_id().to_string();
-    if shared.state.lock().unwrap().predates_join(&room_id, event.origin_server_ts.0.into()) {
-        return;
-    }
     warn!("could not decrypt {} in {room_id}", event.event_id);
     shared.emit(Event::Undecryptable { room_id, event_id: event.event_id.to_string(), sender: event.sender.to_string() });
 }
 
 /// Reactions of allowed users, passed on as they come (the agent answers approval requests with them).
 async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
-    if room.state() != RoomState::Joined || Some(&*event.sender) == client.user_id() || !shared.is_allowed(&event.sender) {
+    if !shared.accepts(&room, &client, &event.sender, event.origin_server_ts.0.into()) {
         return;
     }
     let room_id = room.room_id().to_string();
-    if shared.state.lock().unwrap().predates_join(&room_id, event.origin_server_ts.0.into()) {
-        return;
-    }
     shared.emit(Event::Reaction {
         room_id,
         event_id: event.event_id.to_string(),
@@ -266,36 +263,17 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 }
             }
             Command::Send { request_id, room_id, txn_id, body, notice } => {
-                // Sends run beside each other: a slow one must not hold back acks or other rooms.
-                let (client, shared) = (client.clone(), shared.clone());
-                tokio::spawn(async move {
-                    let event = match send(&client, &room_id, txn_id, body, notice).await {
-                        Ok(event_id) => Event::Sent { request_id, event_id },
-                        Err(error) => Event::Error { request_id: Some(request_id), message: format!("{error:#}") },
-                    };
-                    shared.emit(event);
-                });
+                let client = client.clone();
+                respond(&shared, request_id, async move { send(&client, &room_id, txn_id, body, notice).await });
             }
             Command::SendVoice { request_id, room_id, txn_id, path, duration_ms, waveform } => {
-                let (client, shared) = (client.clone(), shared.clone());
-                tokio::spawn(async move {
-                    let event = match send_voice(&client, &room_id, txn_id, &path, duration_ms, waveform).await {
-                        Ok(event_id) => Event::Sent { request_id, event_id },
-                        Err(error) => Event::Error { request_id: Some(request_id), message: format!("{error:#}") },
-                    };
-                    shared.emit(event);
-                });
+                let client = client.clone();
+                respond(&shared, request_id, async move { send_voice(&client, &room_id, txn_id, &path, duration_ms, waveform).await });
             }
             Command::Typing { room_id, on } => set_typing(&client, &shared, room_id, on),
             Command::React { request_id, room_id, txn_id, event_id, key } => {
-                let (client, shared) = (client.clone(), shared.clone());
-                tokio::spawn(async move {
-                    let event = match react(&client, &room_id, txn_id, &event_id, key).await {
-                        Ok(event_id) => Event::Sent { request_id, event_id },
-                        Err(error) => Event::Error { request_id: Some(request_id), message: format!("{error:#}") },
-                    };
-                    shared.emit(event);
-                });
+                let client = client.clone();
+                respond(&shared, request_id, async move { react(&client, &room_id, txn_id, &event_id, key).await });
             }
             Command::JoinCall { room_id, vad } => match joined_room(&client, &room_id) {
                 Ok(room) => shared.calls.join(room, vad),
@@ -311,12 +289,22 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                     warn!("{error:#}");
                 }
             }
-            Command::CallHush { room_id } => {
-                let _ = shared.calls.control(&room_id, Control::Hush);
-            }
         }
     }
     Ok(())
+}
+
+/// Runs a request beside the others (a slow send must not hold back acks or other rooms) and answers it with `sent` or
+/// `error` under its request ID.
+fn respond(shared: &Shared, request_id: String, request: impl Future<Output = Result<String>> + Send + 'static) {
+    let shared = shared.clone();
+    tokio::spawn(async move {
+        let event = match request.await {
+            Ok(event_id) => Event::Sent { request_id, event_id },
+            Err(error) => Event::Error { request_id: Some(request_id), message: format!("{error:#}") },
+        };
+        shared.emit(event);
+    });
 }
 
 fn joined_room(client: &Client, room_id: &str) -> Result<Room> {

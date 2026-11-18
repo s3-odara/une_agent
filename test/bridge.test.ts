@@ -8,37 +8,10 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type Config, parseConfig } from "../src/config.ts";
-import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.ts";
 import { openAgentHarness } from "../src/harness.ts";
 import { HostDb } from "../src/hostdb.ts";
 import { Bridge } from "../src/rooms.ts";
-
-/** A gateway stand-in that records commands and, unless told not to, confirms every send. */
-class FakeLink implements GatewayLink {
-	readonly commands: GatewayCommand[] = [];
-	confirmSends = true;
-	#listener: (event: GatewayEvent) => void = () => {};
-
-	send(command: GatewayCommand): void {
-		this.commands.push(command);
-		if (command.type === "send" && this.confirmSends) {
-			queueMicrotask(() => this.emit({ type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` }));
-		}
-	}
-	onEvent(listener: (event: GatewayEvent) => void): void {
-		this.#listener = listener;
-	}
-	emit(event: GatewayEvent): void {
-		this.#listener(event);
-	}
-	of<T extends GatewayCommand["type"]>(type: T): Extract<GatewayCommand, { type: T }>[] {
-		return this.commands.filter((command): command is Extract<GatewayCommand, { type: T }> => command.type === type);
-	}
-}
-
-function message(roomId: string, eventId: string, body: string): GatewayEvent {
-	return { type: "message", roomId, eventId, sender: "@me:example.org", body, ts: 0 };
-}
+import { FakeLink, message } from "./fakes.ts";
 
 function setup() {
 	const dir = mkdtempSync(join(tmpdir(), "agent-test-"));

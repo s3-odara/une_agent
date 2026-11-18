@@ -1,7 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { request } from "node:http";
+import { ffmpeg } from "./ffmpeg.ts";
 
 /** Turns a recording into text. */
 export interface Transcriber {
@@ -157,20 +159,25 @@ export class WhisperServer implements Transcriber {
 	}
 }
 
-/** Any recording ffmpeg can read, as 16 kHz mono 16-bit WAV. Needs the `ffmpeg` command. */
-export function toWav16k(path: string): Promise<Buffer> {
-	return new Promise((resolve, reject) => {
-		const child = spawn("ffmpeg", ["-nostdin", "-loglevel", "error", "-i", path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"], {
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		const out: Buffer[] = [];
-		const err: Buffer[] = [];
-		child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
-		child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
-		child.once("error", (error) => reject(new Error(`ffmpeg could not be started: ${error.message}`)));
-		child.once("close", (code) => {
-			if (code === 0) resolve(Buffer.concat(out));
-			else reject(new Error(`ffmpeg could not decode the audio: ${Buffer.concat(err).toString().trim()}`));
-		});
-	});
+/**
+ * Any recording ffmpeg can read, as 16 kHz mono 16-bit WAV. Needs the `ffmpeg` command, except for a file that is in
+ * that form already, as a call's utterances are.
+ */
+export async function toWav16k(path: string): Promise<Buffer> {
+	const file = await readFile(path);
+	if (isWav16kMono(file)) return file;
+	return ffmpeg(["-i", path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"]);
+}
+
+/** A plain WAV whose `fmt ` chunk, right after the header, says PCM, one channel, 16 kHz, 16 bits. */
+function isWav16kMono(file: Buffer): boolean {
+	return (
+		file.length >= 36 &&
+		file.toString("latin1", 0, 4) === "RIFF" &&
+		file.toString("latin1", 8, 16) === "WAVEfmt " &&
+		file.readUInt16LE(20) === 1 &&
+		file.readUInt16LE(22) === 1 &&
+		file.readUInt32LE(24) === 16_000 &&
+		file.readUInt16LE(34) === 16
+	);
 }

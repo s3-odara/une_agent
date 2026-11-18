@@ -4,6 +4,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
 import { type Answer, answerOf } from "./answer.ts";
 import type { Approvals } from "./approval.ts";
+import { errorMessage } from "./errors.ts";
 import { type Config, persona, personaFor, readSoul } from "./config.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
 import { type Delivery, type HostDb, SCHEDULED_PREFIX } from "./hostdb.ts";
@@ -90,21 +91,19 @@ export class Bridge {
 
 	#onEvent(event: GatewayEvent): void {
 		switch (event.type) {
-			case "message": {
-				const previous = this.#admissions.get(event.roomId) ?? Promise.resolve();
-				const next = previous.then(() => this.#admit(event)).catch((error) => {
-					// Not acked, so the gateway offers the message again at its next start.
-					this.#log(`admitting ${event.eventId} failed: ${describe(error)}`);
-				});
-				this.#admissions.set(event.roomId, next);
-				this.#track(next);
+			case "message":
+				this.#track(
+					this.#serial(event.roomId, () => this.#admit(event)).catch((error) => {
+						// Not acked, so the gateway offers the message again at its next start.
+						this.#log(`admitting ${event.eventId} failed: ${errorMessage(error)}`);
+					}),
+				);
 				return;
-			}
 			case "undecryptable":
 				this.#track(
 					this.#send(event.roomId, `utd:${event.eventId}`, "このメッセージを復号できませんでした。もう一度送ってください。", true).then(
 						() => {},
-						(error) => this.#log(`notice for ${event.eventId} failed: ${describe(error)}`),
+						(error) => this.#log(`notice for ${event.eventId} failed: ${errorMessage(error)}`),
 					),
 				);
 				return;
@@ -168,8 +167,8 @@ export class Bridge {
 			text = (await voice.transcriber.transcribe(path)).trim();
 		} catch (error) {
 			link.send({ type: "typing", roomId: message.roomId, on: false });
-			this.#log(`transcribing ${message.eventId} failed: ${describe(error)}`);
-			return void (await tell(`音声を文字にできませんでした（${describe(error)}）。`));
+			this.#log(`transcribing ${message.eventId} failed: ${errorMessage(error)}`);
+			return void (await tell(`音声を文字にできませんでした（${errorMessage(error)}）。`));
 		}
 		if (text === "") {
 			link.send({ type: "typing", roomId: message.roomId, on: false });
@@ -194,14 +193,9 @@ export class Bridge {
 	 */
 	submitScheduled(roomId: string, key: string, content: string): Promise<void> {
 		const eventId = `${SCHEDULED_PREFIX}${key}`;
-		const previous = this.#admissions.get(roomId) ?? Promise.resolve();
-		const admitted = previous.then(async () => {
+		return this.#serial(roomId, async () => {
 			if (!this.#options.db.isDelivered(eventId)) await this.#submit(roomId, eventId, content);
 		});
-		const settled = admitted.catch(() => {});
-		this.#admissions.set(roomId, settled);
-		this.#track(settled);
-		return admitted;
 	}
 
 	/**
@@ -211,15 +205,20 @@ export class Bridge {
 	 */
 	async ask(roomId: string, key: string, content: string): Promise<Answer> {
 		const { harness, context } = this.#options;
-		const previous = this.#admissions.get(roomId) ?? Promise.resolve();
-		const submitted = previous.then(async () => (await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key }, context));
-		const settled = submitted.then(
+		const submission = await this.#serial(roomId, async () => (await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key }, context));
+		return answerOf(harness, await submission.wait(context), context);
+	}
+
+	/** Runs `admit` after the room's earlier admissions, so two never race to create its conversation. */
+	#serial<T>(roomId: string, admit: () => Promise<T>): Promise<T> {
+		const result = (this.#admissions.get(roomId) ?? Promise.resolve()).then(admit);
+		const settled = result.then(
 			() => {},
 			() => {},
 		);
 		this.#admissions.set(roomId, settled);
 		this.#track(settled);
-		return answerOf(harness, await (await submitted).wait(context), context);
+		return result;
 	}
 
 	/** Sends a notice under a transaction ID and resolves with its event ID. The same ID again sends nothing new. */
@@ -229,7 +228,7 @@ export class Bridge {
 
 	/** Reacts to an event under a transaction ID. */
 	async react(roomId: string, txnId: string, eventId: string, key: string): Promise<void> {
-		await this.#request(txnId, { type: "react", requestId: txnId, roomId, txnId, eventId, key });
+		await this.#request({ type: "react", requestId: txnId, roomId, txnId, eventId, key });
 	}
 
 	/** Sends a notice to a room as it is, without the model. The same key again sends nothing new. */
@@ -265,7 +264,7 @@ export class Bridge {
 		this.#options.link.send({ type: "typing", roomId: delivery.roomId, on: true });
 		this.#track(
 			this.#deliver(delivery)
-				.catch((error) => this.#log(`delivering the answer to ${delivery.eventId} failed: ${describe(error)}`))
+				.catch((error) => this.#log(`delivering the answer to ${delivery.eventId} failed: ${errorMessage(error)}`))
 				.finally(() => {
 					this.#inFlight.delete(delivery.eventId);
 					if (![...this.#inFlight.values()].includes(delivery.roomId)) {
@@ -287,8 +286,8 @@ export class Bridge {
 				await this.#retrying(`the spoken answer to ${delivery.eventId}`, () => this.#sendSpoken(delivery, answer.body));
 			} catch (error) {
 				// The text has arrived, so the answer is not lost; say why the voice did not come instead of retrying forever.
-				await this.#send(delivery.roomId, `voicefail:${delivery.eventId}`, `音声の返答を作れませんでした（${describe(error)}）。`, true).catch(
-					(noticeError) => this.#log(`notice for ${delivery.eventId} failed: ${describe(noticeError)}`),
+				await this.#send(delivery.roomId, `voicefail:${delivery.eventId}`, `音声の返答を作れませんでした（${errorMessage(error)}）。`, true).catch(
+					(noticeError) => this.#log(`notice for ${delivery.eventId} failed: ${errorMessage(noticeError)}`),
 				);
 			}
 		}
@@ -303,7 +302,7 @@ export class Bridge {
 			} catch (error) {
 				const delay = this.#retryDelays[tries];
 				if (delay === undefined) throw error;
-				this.#log(`sending ${what} failed, retrying in ${delay} ms: ${describe(error)}`);
+				this.#log(`sending ${what} failed, retrying in ${delay} ms: ${errorMessage(error)}`);
 				await new Promise((resolve) => setTimeout(resolve, delay));
 			}
 		}
@@ -326,7 +325,7 @@ export class Bridge {
 		await writeFile(path, speech.ogg);
 		try {
 			const txnId = `voice:${delivery.eventId}`;
-			await this.#request(txnId, { type: "sendVoice", requestId: txnId, roomId: delivery.roomId, txnId, path, durationMs: speech.durationMs, waveform: speech.waveform });
+			await this.#request({ type: "sendVoice", requestId: txnId, roomId: delivery.roomId, txnId, path, durationMs: speech.durationMs, waveform: speech.waveform });
 		} finally {
 			await rm(path, { force: true });
 		}
@@ -345,11 +344,12 @@ export class Bridge {
 	/** Sends one message through the gateway and resolves with the ID of the event it became. */
 	#send(roomId: string, txnId: string, body: string, notice: boolean): Promise<string> {
 		// The transaction ID doubles as the request ID: one send per ID is in flight at a time.
-		return this.#request(txnId, { type: "send", requestId: txnId, roomId, txnId, body, notice });
+		return this.#request({ type: "send", requestId: txnId, roomId, txnId, body, notice });
 	}
 
 	/** Passes a command that the gateway answers with `sent` or `error` under its request ID. */
-	#request(requestId: string, command: GatewayCommand): Promise<string> {
+	#request(command: Extract<GatewayCommand, { requestId: string }>): Promise<string> {
+		const { requestId } = command;
 		return new Promise<string>((resolve, reject) => {
 			const timer = setTimeout(() => settle(() => reject(new Error("the gateway did not answer in time"))), this.#sendTimeoutMs);
 			const settle = (finish: () => void) => {
@@ -364,8 +364,4 @@ export class Bridge {
 			this.#options.link.send(command);
 		});
 	}
-}
-
-function describe(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }

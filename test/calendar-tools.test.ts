@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { Approvals } from "../src/approval.ts";
 import { buildEvent, buildTodo, Calendars } from "../src/calendar.ts";
@@ -16,24 +16,12 @@ import { HostDb } from "../src/hostdb.ts";
 import { Bridge } from "../src/rooms.ts";
 import { localToEpoch } from "../src/time.ts";
 import { createWeatherExtension } from "../src/weather-tools.ts";
-import { FakeLink, MemoryCalDav, message } from "./fakes.ts";
+import { call, FakeLink, MemoryCalDav, message, type Request, report } from "./fakes.ts";
 
 const tz = "Asia/Tokyo";
 const room = "!main:example.org";
 const at = (local: string) => localToEpoch(local, tz);
 
-type Request = { messages: { role: string; content: unknown }[] };
-
-/** The text of the newest tool result the model was given. */
-function lastToolResult(request: Request): string {
-	const result = request.messages.findLast((item) => item.role === "toolResult");
-	return (result?.content as { text?: string }[] | undefined)?.map((block) => block.text ?? "").join("") ?? "";
-}
-
-/** A model turn that calls one tool. */
-const call = (name: string, args: Record<string, string>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
-/** A model turn that answers with what the last tool said, so a test can read it in the room. */
-const report = (request: Request) => fauxAssistantMessage(lastToolResult(request));
 async function setup(options: { approvalTimeoutMs?: number } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "agent-caltools-test-"));
 	writeFileSync(join(dir, "soul.md"), "SOUL");

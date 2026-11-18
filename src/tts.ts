@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { ffmpeg } from "./ffmpeg.ts";
 
 /** A recording ready to send as a voice message. */
 export type Speech = {
@@ -113,23 +113,8 @@ export function waveform(samples: Float32Array, buckets = 64): number[] {
 }
 
 /** Matrix clients play voice messages as Ogg Opus. Needs the `ffmpeg` command. */
-export function wavToOggOpus(wav: Buffer): Promise<Buffer> {
-	return new Promise((resolve, reject) => {
-		const child = spawn("ffmpeg", ["-nostdin", "-loglevel", "error", "-f", "wav", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", "-f", "ogg", "pipe:1"], {
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		const out: Buffer[] = [];
-		const err: Buffer[] = [];
-		child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
-		child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
-		child.once("error", (error) => reject(new Error(`ffmpeg could not be started: ${error.message}`)));
-		child.once("close", (code) => {
-			if (code === 0) resolve(Buffer.concat(out));
-			else reject(new Error(`ffmpeg failed (${code}): ${Buffer.concat(err).toString().trim()}`));
-		});
-		child.stdin.on("error", () => {});
-		child.stdin.end(wav);
-	});
+function wavToOggOpus(wav: Buffer): Promise<Buffer> {
+	return ffmpeg(["-f", "wav", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", "-f", "ogg", "pipe:1"], wav);
 }
 
 /**

@@ -3,6 +3,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { answerOf } from "./answer.ts";
 import type { ModelRef } from "./config.ts";
+import { errorMessage } from "./errors.ts";
 import { type MemoryPersona, type MemoryScope, type MemoryStore, withoutTag } from "./memory.ts";
 
 export type TidyOptions = {
@@ -109,7 +110,7 @@ export async function tidyMemory(options: TidyOptions, date: string): Promise<Ti
 				added: stored.filter((entry) => !before.includes(entry)),
 			});
 		} catch (error) {
-			log(`memory tidy of ${target.label} failed: ${error instanceof Error ? error.message : String(error)}`);
+			log(`memory tidy of ${target.label} failed: ${errorMessage(error)}`);
 		}
 	}
 	return changes;

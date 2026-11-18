@@ -1,35 +1,38 @@
 import { createHash } from "node:crypto";
 import { type CalItem, type Calendars, type EventItem, formatEvent, formatTodo, normalizeEtag, type TodoItem } from "./calendar.ts";
 import type { Config } from "./config.ts";
+import { errorMessage } from "./errors.ts";
 import type { HostDb } from "./hostdb.ts";
 import { formatTidy, type TidyChange } from "./tidy.ts";
 import { addDays, dateOf, daysBetween, formatDay, formatStamp, minutesOfDay, startOfDay } from "./time.ts";
 import { formatForecast, type WeatherSource } from "./weather.ts";
 
 /** One thing worth telling the user, with the ledger key that keeps it from being told twice. */
-export type Trigger = { readonly key: string; readonly line: string };
+/** Something to tell the user: a reminder, or news of an item someone else added or changed. */
+type Trigger = { readonly kind: "reminder" | "change"; readonly key: string; readonly line: string };
 
 /** How far ahead events are read: what "added or changed" covers. */
 const LOOKAHEAD_DAYS = 60;
 
 /** Timed events that start within the lead time. One reminder per occurrence. */
-export function eventReminders(events: readonly EventItem[], now: number, leadMinutes: number, tz: string): Trigger[] {
+function eventReminders(events: readonly EventItem[], now: number, leadMinutes: number, tz: string): Trigger[] {
 	return events
 		.filter((event) => !event.allDay && event.start > now && event.start - now <= leadMinutes * 60_000)
 		.map((event) => ({
+			kind: "reminder" as const,
 			key: `soon:${event.id}:${event.start}`,
 			line: `まもなく開始（約${Math.round((event.start - now) / 60_000)}分後）: ${formatEvent(event, tz)}`,
 		}));
 }
 
 /** Open tasks whose due date is exactly one of the lead days away. One reminder per task, due date and lead. */
-export function dueReminders(todos: readonly TodoItem[], today: string, leadDays: readonly number[], tz: string): Trigger[] {
+function dueReminders(todos: readonly TodoItem[], today: string, leadDays: readonly number[], tz: string): Trigger[] {
 	return todos.flatMap((todo) => {
 		if (todo.done || todo.due === undefined) return [];
 		const days = daysBetween(today, todo.due.date);
 		if (!leadDays.includes(days)) return [];
 		const when = days === 0 ? "今日が期日" : days === 1 ? "明日が期日" : `${days}日後が期日`;
-		return [{ key: `due:${todo.id}:${todo.due.date}:${days}`, line: `${when}: ${formatTodo(todo, tz)}` }];
+		return [{ kind: "reminder" as const, key: `due:${todo.id}:${todo.due.date}:${days}`, line: `${when}: ${formatTodo(todo, tz)}` }];
 	});
 }
 
@@ -40,7 +43,7 @@ export function dueReminders(todos: readonly TodoItem[], today: string, leadDays
  * check. The second condition matters: an event made long ago enters the lookahead window as time passes and is new
  * to the snapshot without being news. An item that does not say when it was written is never reported.
  */
-export function changedItems(items: readonly CalItem[], seen: ReadonlyMap<string, string>, since: number | undefined, tz: string): Trigger[] {
+function changedItems(items: readonly CalItem[], seen: ReadonlyMap<string, string>, since: number | undefined, tz: string): Trigger[] {
 	if (since === undefined) return [];
 	const reported = new Set<string>();
 	return items.flatMap((item) => {
@@ -52,7 +55,7 @@ export function changedItems(items: readonly CalItem[], seen: ReadonlyMap<string
 		reported.add(item.id);
 		const what = seen.has(item.id) ? "変更された" : "追加された";
 		const line = item.kind === "event" ? `${what}予定: ${formatEvent(item, tz)}` : `${what}タスク: ${formatTodo(item, tz)}`;
-		return [{ key: `chg:${item.id}:${etag}`, line }];
+		return [{ kind: "change" as const, key: `chg:${item.id}:${etag}`, line }];
 	});
 }
 
@@ -110,8 +113,8 @@ export class Scheduler {
 		this.#running = true;
 		try {
 			const now = this.#now();
-			await this.#tidy(now).catch((error) => this.#log(`memory tidy failed: ${describe(error)}`));
-			await this.#calendar(now).catch((error) => this.#log(`calendar check failed: ${describe(error)}`));
+			await this.#tidy(now).catch((error) => this.#log(`memory tidy failed: ${errorMessage(error)}`));
+			await this.#calendar(now).catch((error) => this.#log(`calendar check failed: ${errorMessage(error)}`));
 		} finally {
 			this.#running = false;
 		}
@@ -130,7 +133,7 @@ export class Scheduler {
 			const changes = await tidy.run(today);
 			db.setValue("tidy.fingerprint", tidy.fingerprint());
 			if (changes.length > 0 && config.proactive !== undefined) {
-				await this.#options.notice(config.proactive.roomId, `tidy:${today}`, formatTidy(changes)).catch((error) => this.#log(`tidy notice failed: ${describe(error)}`));
+				await this.#options.notice(config.proactive.roomId, `tidy:${today}`, formatTidy(changes)).catch((error) => this.#log(`tidy notice failed: ${errorMessage(error)}`));
 			}
 		}
 		db.setValue("tidy.date", today);
@@ -154,9 +157,9 @@ export class Scheduler {
 		} catch (error) {
 			// Said once a day: a brief that silently never comes is worse than one message about why.
 			const key = `caldav-down:${today}`;
-			this.#log(`calendar fetch failed: ${describe(error)}`);
+			this.#log(`calendar fetch failed: ${errorMessage(error)}`);
 			if (!db.wasNotified(key)) {
-				await this.#options.notice(proactive.roomId, key, `カレンダー（CalDAV）に接続できません: ${describe(error)}\n復旧するまで、ブリーフとリマインドは送れません。`);
+				await this.#options.notice(proactive.roomId, key, `カレンダー（CalDAV）に接続できません: ${errorMessage(error)}\n復旧するまで、ブリーフとリマインドは送れません。`);
 				db.markNotified([key], now);
 			}
 			return;
@@ -212,14 +215,14 @@ export class Scheduler {
 			forecast = await weather().then(
 				(result) => formatForecast(result, [today, tomorrow]),
 				(error) => {
-					this.#log(`weather failed: ${describe(error)}`);
+					this.#log(`weather failed: ${errorMessage(error)}`);
 					return "天気予報を取得できませんでした。";
 				},
 			);
 		}
-		const news = triggers.filter((trigger) => trigger.key.startsWith("chg:"));
+		const news = triggers.filter((trigger) => trigger.kind === "change");
 		// The reminders that fall due now: the brief is sent in their place, so it has to say them.
-		const reminders = triggers.filter((trigger) => !trigger.key.startsWith("chg:"));
+		const reminders = triggers.filter((trigger) => trigger.kind === "reminder");
 
 		return [
 			`[朝ブリーフ ${stamp}]`,
@@ -244,8 +247,4 @@ export class Scheduler {
 			...(news.length === 0 ? [] : ["", "## 前回の確認以降に追加・変更された項目", ...news.map((trigger) => `- ${trigger.line}`)]),
 		].join("\n");
 	}
-}
-
-function describe(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }

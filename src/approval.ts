@@ -1,7 +1,12 @@
+import { randomUUID } from "node:crypto";
+import type { Context } from "@earendil-works/chord/context";
+import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Decision, HostDb } from "./hostdb.ts";
+import { runInputs } from "./run.ts";
+import { errorMessage } from "./errors.ts";
 
 /** The answers, as a reaction to the request and as a command. */
-export const CHOICES: readonly { readonly decision: Decision; readonly emoji: string; readonly command: string; readonly label: string }[] = [
+const CHOICES: readonly { readonly decision: Decision; readonly emoji: string; readonly command: string; readonly label: string }[] = [
 	{ decision: "approve", emoji: "✅", command: "!approve", label: "今回だけ許可" },
 	{ decision: "approve_session", emoji: "🔁", command: "!approve_session", label: "この依頼の間は許可" },
 	{ decision: "approve_always", emoji: "♾️", command: "!approve_always", label: "今後は確認しない" },
@@ -85,6 +90,21 @@ export class Approvals {
 		return outcome(db.approval(request.id));
 	}
 
+	/**
+	 * Asks from inside a tool call, in the room of the call's conversation. Resolves with what to tell the model when
+	 * the answer is not a yes, and with `undefined` on a yes.
+	 */
+	async forCall(tool: string, summary: string, api: Pick<ToolExecutionApi, "conversationId" | "snapshot" | "memo">, context: Context): Promise<string | undefined> {
+		const conversationId = Number(api.conversationId);
+		const roomId = this.#options.db.roomOf(conversationId);
+		if (roomId === undefined) throw new Error("この会話のルームが分からないため、承認を求められません。");
+		const inputs = await runInputs(api, context);
+		// Remembered with the call, so a rerun after a crash waits on the same request instead of asking again.
+		const id = await api.memo("approval", randomUUID(), context);
+		const outcome = await this.ask({ id, roomId, runKey: `${conversationId}:${inputs.join(",")}`, tool, summary });
+		return outcome.approved ? undefined : refusal(outcome);
+	}
+
 	/** Resolves once the request is decided; registered before anything can decide it. */
 	#decided(id: string): { promise: Promise<void>; cancel: () => void } {
 		let wake: () => void = () => {};
@@ -117,7 +137,7 @@ export class Approvals {
 		db.setApprovalPrompt(request.id, eventId);
 		for (const [i, choice] of CHOICES.entries()) {
 			await react(request.roomId, `approval:${request.id}:${i}`, eventId, choice.emoji).catch((error) =>
-				this.#log(`reacting to approval ${request.id} failed: ${error instanceof Error ? error.message : error}`),
+				this.#log(`reacting to approval ${request.id} failed: ${errorMessage(error)}`),
 			);
 		}
 	}

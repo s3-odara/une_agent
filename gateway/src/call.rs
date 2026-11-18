@@ -42,8 +42,6 @@ const PLAY_FRAME: usize = (SAMPLE_RATE / 100) as usize;
 pub enum Control {
     /// Play a 48 kHz mono 16-bit WAV file after whatever is queued.
     Speak { id: String, path: String },
-    /// Stop playing and drop the queue.
-    Hush,
     Leave,
 }
 
@@ -96,6 +94,7 @@ impl Calls {
     }
 
     async fn run(&self, room: &Room, vad: VadConfig, controls: mpsc::UnboundedReceiver<Control>) -> Result<()> {
+        tokio::fs::create_dir_all(&*self.dir).await.with_context(|| format!("creating {}", self.dir.display()))?;
         let options = LiveKitCallOptions { format: MembershipFormat::RoomState, ..LiveKitCallOptions::default() };
         let call = LiveKitCall::join(room, options).await.context("joining the call")?;
         info!("joined the call in {} as {}", room.room_id(), call.local_identity());
@@ -111,7 +110,7 @@ impl Calls {
 
         let mut events = call.subscribe_call_events();
         let mut status = call.subscribe_status();
-        let mut listeners: HashMap<String, Listener> = HashMap::new();
+        let mut listeners: HashMap<String, AbortOnDrop> = HashMap::new();
         self.listen_to_all(call, room_id, vad, &player, &mut listeners);
         loop {
             tokio::select! {
@@ -121,7 +120,6 @@ impl Calls {
                         Ok((_, rate)) => player.refuse(id, &format!("{path} is {rate} Hz, not {SAMPLE_RATE}")),
                         Err(error) => player.refuse(id, &format!("{path}: {error:#}")),
                     },
-                    Some(Control::Hush) => { player.hush(); }
                     Some(Control::Leave) | None => return Ok(()),
                 },
                 event = events.recv() => match event {
@@ -154,7 +152,7 @@ impl Calls {
         }
     }
 
-    fn listen_to_all(&self, call: &LiveKitCall, room_id: &str, vad: VadConfig, player: &Player, listeners: &mut HashMap<String, Listener>) {
+    fn listen_to_all(&self, call: &LiveKitCall, room_id: &str, vad: VadConfig, player: &Player, listeners: &mut HashMap<String, AbortOnDrop>) {
         for participant in call.participants() {
             if !participant.is_local && !listeners.contains_key(&participant.member_id) {
                 self.listen(call, room_id, &participant.member_id, vad, player, listeners);
@@ -163,7 +161,7 @@ impl Calls {
     }
 
     /// Starts cutting a participant's microphone into utterances. Only allowed users are heard.
-    fn listen(&self, call: &LiveKitCall, room_id: &str, member_id: &str, vad: VadConfig, player: &Player, listeners: &mut HashMap<String, Listener>) {
+    fn listen(&self, call: &LiveKitCall, room_id: &str, member_id: &str, vad: VadConfig, player: &Player, listeners: &mut HashMap<String, AbortOnDrop>) {
         let Some(participant) = call.participants().into_iter().find(|p| p.member_id == member_id) else { return };
         if !self.allowed.iter().any(|user| user.as_str() == participant.user_id) {
             return;
@@ -190,7 +188,7 @@ impl Calls {
                 segmenter.push(&first_channel(frame));
             }
         });
-        listeners.insert(member_id.to_owned(), Listener(task));
+        listeners.insert(member_id.to_owned(), AbortOnDrop(task));
     }
 }
 
@@ -199,10 +197,10 @@ fn first_channel(frame: AudioFrame) -> Vec<i16> {
     if channels == 1 { frame.data } else { frame.data.iter().step_by(channels).copied().collect() }
 }
 
-/// Stops listening to a participant when dropped.
-struct Listener(JoinHandle<()>);
+/// A task that stops when its owner is dropped: listening to a participant, or playing into the call.
+struct AbortOnDrop(JoinHandle<()>);
 
-impl Drop for Listener {
+impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
     }
@@ -248,8 +246,7 @@ impl Utterances {
         let duration_ms = samples.len() as u64 * 1000 / u64::from(VAD_RATE);
         let now = crate::run::now_ms();
         let path = self.dir.join(format!("call-{now}-{}.wav", UTTERANCES.fetch_add(1, Ordering::Relaxed)));
-        let written = std::fs::create_dir_all(&*self.dir).map_err(anyhow::Error::from).and_then(|()| write_wav(&path, samples, VAD_RATE));
-        if let Err(error) = written {
+        if let Err(error) = write_wav(&path, samples, VAD_RATE) {
             warn!("writing an utterance failed: {error:#}");
             return;
         }
@@ -269,21 +266,13 @@ struct Player {
     queue: Arc<Mutex<VecDeque<Clip>>>,
     room_id: Arc<str>,
     out: Outbox,
-    _task: Arc<PlayerTask>,
+    _task: Arc<AbortOnDrop>,
 }
 
 struct Clip {
     id: String,
     samples: Vec<i16>,
     position: usize,
-}
-
-struct PlayerTask(JoinHandle<()>);
-
-impl Drop for PlayerTask {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 
 impl Player {
@@ -318,7 +307,7 @@ impl Player {
                 }
             }
         });
-        Self { queue, room_id, out, _task: Arc::new(PlayerTask(task)) }
+        Self { queue, room_id, out, _task: Arc::new(AbortOnDrop(task)) }
     }
 
     fn enqueue(&self, id: String, samples: Vec<i16>) {

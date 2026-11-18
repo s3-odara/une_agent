@@ -8,11 +8,11 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { parseConfig, persona, personaFor } from "../src/config.ts";
-import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.ts";
 import { openAgentHarness } from "../src/harness.ts";
 import { HostDb } from "../src/hostdb.ts";
 import { createMemoryExtension, MemoryError, type MemoryPersona, MemoryStore } from "../src/memory.ts";
 import { Bridge } from "../src/rooms.ts";
+import { FakeLink } from "./fakes.ts";
 
 const calm: MemoryPersona = { name: "calm", privateMemory: true };
 const blunt: MemoryPersona = { name: "blunt", privateMemory: true };
@@ -105,26 +105,6 @@ test("a file edited by hand is read as it is", () => {
 		cleanup();
 	}
 });
-
-class FakeLink implements GatewayLink {
-	readonly commands: GatewayCommand[] = [];
-	#listener: (event: GatewayEvent) => void = () => {};
-	send(command: GatewayCommand): void {
-		this.commands.push(command);
-		if (command.type === "send") {
-			queueMicrotask(() => this.#listener({ type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` }));
-		}
-	}
-	onEvent(listener: (event: GatewayEvent) => void): void {
-		this.#listener = listener;
-	}
-	emit(event: GatewayEvent): void {
-		this.#listener(event);
-	}
-	bodyIn(roomId: string): string {
-		return this.commands.flatMap((command) => (command.type === "send" && command.roomId === roomId ? [command.body] : [])).join("\n");
-	}
-}
 
 test("what one persona remembers through the tool, another persona sees, except its private memo", async () => {
 	const { dir, cleanup } = tempDir();

@@ -88,6 +88,8 @@ export class HostDb {
 		// Ledgers made before voice messages lack the column.
 		const columns = this.#db.prepare("PRAGMA table_info(deliveries)").all().map((row) => String(row.name));
 		if (!columns.includes("voice")) this.#db.exec("ALTER TABLE deliveries ADD COLUMN voice INTEGER NOT NULL DEFAULT 0");
+		// Every browser tool call asks whether its run was started by the user.
+		this.#db.exec("CREATE INDEX IF NOT EXISTS deliveries_submission ON deliveries(submission_id)");
 	}
 
 	conversationOf(roomId: string): number | undefined {

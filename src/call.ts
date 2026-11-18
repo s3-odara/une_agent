@@ -3,6 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { Answer } from "./answer.ts";
 import { type Config, persona, personaFor } from "./config.ts";
+import { errorMessage } from "./errors.ts";
 import type { GatewayEvent, GatewayLink } from "./gateway.ts";
 import type { Transcriber } from "./stt.ts";
 import { formatStamp } from "./time.ts";
@@ -33,6 +34,8 @@ type RoomCall = {
 	tail: Promise<void>;
 	/** What the persona should know about how its last answer came across, told with the next utterance. */
 	note: string | undefined;
+	/** Clips sent to be played, by ID, until the gateway says how far they got. */
+	readonly spoken: Map<string, (spoken: Spoken) => void>;
 };
 
 type Spoken = { readonly playedMs: number; readonly interrupted: boolean };
@@ -47,7 +50,6 @@ export class Calls {
 	readonly #options: CallsOptions;
 	readonly #log: (message: string) => void;
 	readonly #rooms = new Map<string, RoomCall>();
-	readonly #spoken = new Map<string, (spoken: Spoken) => void>();
 	readonly #work = new Set<Promise<void>>();
 
 	constructor(options: CallsOptions) {
@@ -70,7 +72,7 @@ export class Calls {
 			case "callMembers": {
 				const room = this.#rooms.get(event.roomId);
 				if (event.userIds.length > 0 && room === undefined) {
-					this.#rooms.set(event.roomId, { joined: false, turn: 0, tail: Promise.resolve(), note: undefined });
+					this.#rooms.set(event.roomId, { joined: false, turn: 0, tail: Promise.resolve(), note: undefined, spoken: new Map() });
 					link.send({ type: "joinCall", roomId: event.roomId, vad: (config.voice?.call ?? fail()).vad });
 				} else if (event.userIds.length === 0 && room !== undefined) {
 					link.send({ type: "leaveCall", roomId: event.roomId });
@@ -84,8 +86,9 @@ export class Calls {
 				return;
 			}
 			case "callLeft": {
+				const room = this.#rooms.get(event.roomId);
 				this.#rooms.delete(event.roomId);
-				for (const [id, resolve] of this.#spoken) if (id.startsWith(`${event.roomId}|`)) resolve({ playedMs: 0, interrupted: true });
+				for (const resolve of room?.spoken.values() ?? []) resolve({ playedMs: 0, interrupted: true });
 				if (event.reason === "") return this.#log(`left the call in ${event.roomId}`);
 				this.#log(`left the call in ${event.roomId}: ${event.reason}`);
 				this.#track(this.#options.notice(event.roomId, `callleft:${randomUUID()}`, `通話から抜けました（${event.reason}）。`));
@@ -102,19 +105,19 @@ export class Calls {
 					void rm(event.path, { force: true });
 					return;
 				}
-				const next = room.tail.then(() => this.#hear(event, room)).catch((error) => this.#log(`a call utterance in ${event.roomId} failed: ${describe(error)}`));
+				const next = room.tail.then(() => this.#hear(event, room)).catch((error) => this.#log(`a call utterance in ${event.roomId} failed: ${errorMessage(error)}`));
 				room.tail = next;
 				this.#track(next);
 				return;
 			}
 			case "callSpoken":
-				this.#spoken.get(spokenKey(event.roomId, event.id))?.({ playedMs: event.playedMs, interrupted: event.interrupted });
+				this.#rooms.get(event.roomId)?.spoken.get(event.id)?.({ playedMs: event.playedMs, interrupted: event.interrupted });
 				return;
 		}
 	}
 
 	#track(work: Promise<void>): void {
-		const tracked = work.catch((error) => this.#log(describe(error)));
+		const tracked = work.catch((error) => this.#log(errorMessage(error)));
 		this.#work.add(tracked);
 		void tracked.finally(() => this.#work.delete(tracked));
 	}
@@ -170,8 +173,8 @@ export class Calls {
 				wav = await made[i];
 			} catch (error) {
 				// The listener hears nothing more; the room gets the answer in text instead.
-				this.#log(`making speech for a call in ${roomId} failed: ${describe(error)}`);
-				await this.#options.notice(roomId, `callvoice:${randomUUID()}`, `音声を作れなかったので文字で送ります（${describe(error)}）。\n\n${answer}`);
+				this.#log(`making speech for a call in ${roomId} failed: ${errorMessage(error)}`);
+				await this.#options.notice(roomId, `callvoice:${randomUUID()}`, `音声を作れなかったので文字で送ります（${errorMessage(error)}）。\n\n${answer}`);
 				return;
 			}
 			if (wav === undefined || !current()) {
@@ -181,7 +184,7 @@ export class Calls {
 			const id = randomUUID();
 			const path = join(outDir, `call-${id}.wav`);
 			await writeFile(path, wav);
-			const spoken = new Promise<Spoken>((resolve) => this.#spoken.set(spokenKey(roomId, id), resolve));
+			const spoken = new Promise<Spoken>((resolve) => room.spoken.set(id, resolve));
 			try {
 				link.send({ type: "callSpeak", roomId, id, path });
 				const result = await spoken;
@@ -190,7 +193,7 @@ export class Calls {
 					return;
 				}
 			} finally {
-				this.#spoken.delete(spokenKey(roomId, id));
+				room.spoken.delete(id);
 				await rm(path, { force: true });
 			}
 			said.push(part);
@@ -202,14 +205,6 @@ function interrupted(heard: string): string {
 	return heard === "" ? "直前の返答は、話し始める前に遮られました" : `直前の返答は「${heard}」まで話したところで遮られました`;
 }
 
-function spokenKey(roomId: string, id: string): string {
-	return `${roomId}|${id}`;
-}
-
 function fail(): never {
 	throw new Error("calls need voice.call and voice.tts in config.json");
-}
-
-function describe(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }

@@ -66,18 +66,19 @@ function describeField(node: unknown): FieldInfo {
  * otherwise be handed to the model. Fields are told apart by asking the page about each ref, not by matching values.
  */
 async function hidePasswords(page: Page, tree: string): Promise<string> {
-	const lines = tree.split("\n");
-	for (const [index, line] of lines.entries()) {
-		const match = VALUED_TEXTBOX.exec(line);
-		if (match === null) continue;
-		const [, head, ref] = match as unknown as [string, string, string];
-		// A field that cannot be asked about is hidden too: showing a text value is not worth risking a password.
-		const kind = await page.getByRef(ref).evaluate(describeField, undefined, { timeout: 2_000 }).then(
-			(field) => field.kind,
-			() => "password",
-		);
-		if (kind === "password") lines[index] = `${head}: ${HIDDEN}`;
-	}
+	const lines = await Promise.all(
+		tree.split("\n").map(async (line) => {
+			const match = VALUED_TEXTBOX.exec(line);
+			if (match === null) return line;
+			const [, head, ref] = match as unknown as [string, string, string];
+			// A field that cannot be asked about is hidden too: showing a text value is not worth risking a password.
+			const kind = await page.getByRef(ref).evaluate(describeField, undefined, { timeout: 2_000 }).then(
+				(field) => field.kind,
+				() => "password",
+			);
+			return kind === "password" ? `${head}: ${HIDDEN}` : line;
+		}),
+	);
 	return lines.join("\n");
 }
 

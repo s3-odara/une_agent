@@ -1,3 +1,4 @@
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { CalDavBackend, RawObject } from "../src/calendar.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.ts";
 
@@ -115,3 +116,16 @@ export class MemoryCalDav implements CalDavBackend {
 export function ics(...lines: string[]): string {
 	return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//test//EN", ...lines, "END:VCALENDAR", ""].join("\r\n");
 }
+
+export type Request = { messages: { role: string; content: unknown }[] };
+
+/** The text of the newest tool result the model was given. */
+export function lastToolResult(request: Request): string {
+	const result = request.messages.findLast((item) => item.role === "toolResult");
+	return (result?.content as { text?: string }[] | undefined)?.map((block) => block.text ?? "").join("") ?? "";
+}
+
+/** A model turn that calls one tool. */
+export const call = (name: string, args: Record<string, string | boolean>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
+/** A model turn that answers with what the last tool said, so a test can read it in the room. */
+export const report = (request: Request) => fauxAssistantMessage(lastToolResult(request));

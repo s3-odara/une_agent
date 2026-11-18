@@ -114,10 +114,6 @@ pub enum Command {
         id: String,
         path: String,
     },
-    /// Stops what the bot is saying in the call, and what is queued.
-    CallHush {
-        room_id: String,
-    },
 }
 
 pub type Outbox = mpsc::UnboundedSender<Event>;

@@ -11,6 +11,7 @@ import { Calls } from "./call.ts";
 import { Approvals } from "./approval.ts";
 import { loadConfig, persona, personaFor } from "./config.ts";
 import { Credentials } from "./credentials.ts";
+import { errorMessage } from "./errors.ts";
 import { spawnGateway } from "./gateway.ts";
 import { createAgentModels, openAgentHarness } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
@@ -31,15 +32,16 @@ mkdirSync(config.dataDir, { recursive: true });
 const db = new HostDb(join(config.dataDir, "host.sqlite"));
 const personas = Object.entries(config.personas).map(([name, item]) => ({ name, privateMemory: item.privateMemory }));
 const store = new MemoryStore(join(config.dataDir, "memory"), { shared: config.memory.sharedLimit, private: config.memory.privateLimit });
+/** A conversation speaks as the persona of its room, looked up at each use so a config change applies at once. */
+function personaOfConversation(conversationId: number) {
+	const roomId = db.roomOf(conversationId);
+	if (roomId === undefined) return undefined;
+	const name = personaFor(config, roomId);
+	return { name, ...persona(config, name) };
+}
 const memory = createMemoryExtension({
 	store,
-	// A conversation speaks as the persona of its room, looked up at each use so a config change applies at once.
-	personaOf: (conversationId) => {
-		const roomId = db.roomOf(conversationId);
-		if (roomId === undefined) return undefined;
-		const name = personaFor(config, roomId);
-		return { name, privateMemory: persona(config, name).privateMemory };
-	},
+	personaOf: personaOfConversation,
 });
 
 const weather = config.weather === undefined ? undefined : jmaForecast(config.weather.jmaOfficeCode, config.timezone, config.weather.areaIndex);
@@ -79,10 +81,7 @@ const extensions = [
 					browsers,
 					credentials: new Credentials(join(config.dataDir, "credentials.json")),
 					db,
-					profileOf: (conversationId) => {
-						const roomId = db.roomOf(conversationId);
-						return roomId === undefined ? undefined : persona(config, personaFor(config, roomId)).browserProfile;
-					},
+					profileOf: (conversationId) => personaOfConversation(conversationId)?.browserProfile,
 				}),
 			]),
 ];
@@ -97,7 +96,7 @@ const transcriber =
 		: new WhisperServer({ ...config.voice.stt, socketPath: join(config.dataDir, "stt.sock"), idleMs: config.voice.stt.idleMinutes * 60_000 });
 const synthesizer = config.voice?.tts === undefined ? undefined : new Voicevox({ url: config.voice.tts.url });
 const voice =
-	config.voice === undefined || transcriber === undefined
+	transcriber === undefined
 		? undefined
 		: { transcriber, ...(synthesizer === undefined ? {} : { synthesizer }), outDir: join(config.dataDir, "voice", "out") };
 
@@ -154,7 +153,7 @@ gateway.exited.then(
 		void shutdown(stopping ? 0 : 1);
 	},
 	(error) => {
-		console.error(`gateway could not be started (${config.gatewayBin}): ${error instanceof Error ? error.message : error}`);
+		console.error(`gateway could not be started (${config.gatewayBin}): ${errorMessage(error)}`);
 		console.error("build it with: npm run build:gateway");
 		void shutdown(1);
 	},

@@ -90,8 +90,7 @@ export type GatewayCommand =
 	| { readonly type: "joinCall"; readonly roomId: string; readonly vad: CallVad }
 	| { readonly type: "leaveCall"; readonly roomId: string }
 	/** Plays a 48 kHz mono 16-bit WAV file in the call after what is queued; the gateway reads it at once. */
-	| { readonly type: "callSpeak"; readonly roomId: string; readonly id: string; readonly path: string }
-	| { readonly type: "callHush"; readonly roomId: string };
+	| { readonly type: "callSpeak"; readonly roomId: string; readonly id: string; readonly path: string };
 
 export interface GatewayLink {
 	send(command: GatewayCommand): void;
