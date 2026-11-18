@@ -1,5 +1,4 @@
-import { readFileSync } from "node:fs";
-import { writeFileAtomic } from "./files.ts";
+import { readJsonObject, writeFileAtomic } from "./files.ts";
 
 export type Credential = { readonly username: string; readonly password: string };
 
@@ -24,22 +23,14 @@ export class Credentials {
 	}
 
 	#raw(): Record<string, unknown> {
-		let text: string;
 		try {
-			text = readFileSync(this.#path, "utf8");
+			return readJsonObject(this.#path);
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+			// The parser's message can quote the file, so it is not passed on.
+			if (error instanceof SyntaxError) throw new CredentialError("認証情報ファイルが JSON として読めません。");
+			if (error instanceof TypeError) throw new CredentialError("認証情報ファイルはオブジェクトである必要があります。");
 			throw new CredentialError(`認証情報ファイルを読めません: ${(error as NodeJS.ErrnoException).code ?? "error"}`);
 		}
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(text);
-		} catch {
-			// The parser's message can quote the file, so it is not passed on.
-			throw new CredentialError("認証情報ファイルが JSON として読めません。");
-		}
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new CredentialError("認証情報ファイルはオブジェクトである必要があります。");
-		return parsed as Record<string, unknown>;
 	}
 
 	#load(raw = this.#raw()): Map<string, Credential> {

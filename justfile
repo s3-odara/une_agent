@@ -64,6 +64,10 @@ login *args: gateway
 browser-login url profile="default":
     AGENT_CONFIG={{ config }} node --env-file-if-exists=.env src/browser-login.ts {{ quote(url) }} {{ quote(profile) }}
 
+# Log in to a subscription model provider (OpenAI Codex by default) and store it in the data directory's auth.json.
+model-login provider="openai-codex":
+    AGENT_CONFIG={{ config }} node src/model-login.ts {{ quote(provider) }}
+
 # Show the GPUs the speech recognizer can use, through the same Vulkan driver it uses.
 vulkan:
     nix run .#vulkan-check
@@ -87,6 +91,10 @@ setup:
 # Log the deployed gateway in (the password is asked for, or taken from MATRIX_PASSWORD).
 deployed-login *args:
     cd {{ deployed }} && nix run {{ justfile_directory() }}#gateway -- login --config config.json {{ args }}
+
+# Log the deployed agent in to a subscription model provider (OpenAI Codex by default) through a browser.
+deployed-model-login provider="openai-codex":
+    AGENT_CONFIG={{ deployed }}/config.json nix shell .#agent -c agent-model-login {{ quote(provider) }}
 
 # Open a browser window on the deployed agent's profile to log in by hand (needs a display; stops the agent meanwhile).
 deployed-browser-login url profile="default":

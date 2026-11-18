@@ -5,7 +5,7 @@
 		"deviceName": "agent",
 		"allowedUsers": ["@you:example.org"]
 	},
-	"model": { "provider": "anthropic", "modelId": "claude-fable-5-2" },
+	"model": "anthropic/claude-fable-5-2",
 	"personas": {
 		"default": { "soul": "personas/default.md", "privateMemory": false, "browserProfile": "default", "voice": 2 }
 	},

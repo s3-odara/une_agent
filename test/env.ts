@@ -25,7 +25,7 @@ export function testConfig(dir: string, overrides: Record<string, unknown> = {})
 	return parseConfig(
 		{
 			matrix: { homeserver: "https://example.org", userId: "@agent:example.org", allowedUsers: [ME] },
-			model: { provider: "faux", modelId: "faux-1" },
+			model: "faux/faux-1",
 			personas: { default: "soul.md" },
 			timezone: "Asia/Tokyo",
 			...overrides,
@@ -47,7 +47,7 @@ export async function agentEnv(options: EnvOptions = {}) {
 	for (const [name, soul] of Object.entries({ "soul.md": "SOUL", ...options.souls })) writeFileSync(join(dir.path, name), soul);
 	const faux = fauxProvider();
 	const model = faux.getModel();
-	const config = testConfig(dir.path, { model: { provider: model.provider, modelId: model.id }, ...options.config });
+	const config = testConfig(dir.path, { model: `${model.provider}/${model.id}`, ...options.config });
 	mkdirSync(config.dataDir, { recursive: true });
 	const models = createModels();
 	models.setProvider(faux.provider);

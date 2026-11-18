@@ -456,6 +456,42 @@ Teredo、6to4、文書用を除いたものだけ（IPv4 を IPv6 で書いた�
   ユーザーが削除したあとに消えるかを確かめること
 - Nix での gateway の再ビルド（`cargo test` は通った）
 
+## OpenAI Codex のモデル（2026-11-18）
+
+実機で `openai-codex/gpt-6.2-sol` を指定したところ "Model … is not available" になった。原因は3つ。
+
+- `src/harness.ts` が Anthropic しか登録していなかった。今は `openaiCodexProvider()` も登録する
+- pi-ai の既定の認証情報ストアはメモリだけで、`pi-ai login openai-codex` が書く `auth.json` を読まない。
+  今は `src/model-auth.ts` の `FileCredentialStore` が `dataDir/auth.json`（pi-ai の CLI と同じ形）を読み書きする。
+  OAuth の更新トークンは使うたびに変わるので、更新した認証情報もファイルに書き戻す（0600、置き換えで書く）
+- **pi-ai 1.5.2 に組み込みのカタログに `gpt-6.2-sol` は無い**（`gpt-6.1-sol` まで）。pi 本体（`pi update --models`）は
+  pi.dev の最新カタログ（`https://pi.dev/api/models/providers/<id>?types=chat,image,classifier`）を重ねて使っており、
+  そちらにはある。pi-ai のライブラリだけではそれをしない。今は `src/model-catalog.ts` の `withRemoteCatalog` が
+  同じことをする。`dataDir/model-catalog.json` に保存し、pi-ai の版を一緒に書く（版が変わったら捨てる。
+  古い版向けのカタログが新しい組み込みのものを上書きしないように）。
+  pi.dev は User-Agent の版でカタログを絞る（`pi/1.0.0` では 6.2 が出ない）ので、pi-ai 自身の
+  `pi/1.5.2 (…)` を送る。この pi-ai が話せない API のモデルは出てこない
+- 起動時の `prepareModels`（`src/harness.ts`）: 設定が使うプロバイダー（人格ごとの指定も含む）だけを対象に、
+  1. ログインか API キーが無ければ止まる（`just model-login …` を案内）
+  2. 保存したカタログを読む
+  3. 設定のモデルが全部あればそのまま起動し、pi.dev からの更新は裏で行う。
+     無いモデルがあるときだけ pi.dev を最大15秒待ち、それでも無ければ使えるモデルの一覧を出して止まる
+
+ログイン: `just model-login`（常駐中のものは `just deployed-model-login`）。表示される URL をブラウザで開いて
+ChatGPT のアカウントでログインする。`pi-ai login openai-codex` で作った `auth.json` を `dataDir` に置いてもよい。
+OpenAI に送るインストールの ID は `dataDir/device-id` に保存し、ログインし直しても同じものを使う。
+
+OpenRouter も登録している（`"model": "openrouter/anthropic/claude-fable-5.2"` のように、`openrouter/` のあとに OpenRouter でのモデル名）。
+鍵は環境変数 `OPENROUTER_API_KEY`。カタログは上と同じく pi.dev のものを重ねる。
+
+**設定の書き方を変えた（2026-11-18、破壊的変更）**: モデルは `"model": "anthropic/claude-fable-5-2"` のように
+`"プロバイダー/モデル"` の文字列で書く（人格ごとの `model` も同じ）。区切るのは最初の `/` だけ。以前の
+`{ "provider": …, "modelId": … }` は読み込み時にエラーになるので、配置済みの `~/.config/agent/config.json` も書き換える。
+
+確認したこと: 実際の pi.dev から取ったカタログで `openai-codex/gpt-6.2-sol` が見つかること（2026-11-18）。
+
+未検証: 実際の ChatGPT アカウントでのログイン、Codex のモデルでの会話とトークンの更新。
+
 ## Nix と just（2026-11-18）
 
 動かす先は Ubuntu 26.04 LTS の VM（GPU は Vulkan と virtio native context で使える）。NixOS ではないので、
@@ -478,9 +514,12 @@ Nix はビルドと開発環境に使い、常駐は systemd のユーザーサ�
 - 開発: `nix develop`（direnv なら `.envrc`）で Node、Rust、clang、ffmpeg、Radicale、just が入る。
   `just check`、`just test-caldav`（Radicale を立てて CalDAV テスト）、`just test-stt 録音:… 台本:…`、`just run`
 - 常駐（Ubuntu の VM で、初回）:
+  0. 使うユーザーを `nix-users` グループに入れる（`sudo usermod -aG nix-users $USER` のあと、ログインし直す）。
+     入っていないと Nix のデーモンに接続できず、`getting status of "/nix/var/nix/daemon-socket/socket": Permission denied`
+     で止まる（2026-11-18、実機で確認）
   1. `just setup`（linger を有効にし、`~/.config/agent/` に config・人格・秘密情報の雛形を置く）
   2. `~/.config/agent/config.json` と `~/.config/agent/env`（`ANTHROPIC_API_KEY`、`CALDAV_PASSWORD` など）を書く
-  3. `just deployed-login`
+  3. `just deployed-login`。Codex のモデルを使うなら `just deployed-model-login` も
   4. `just vulkan` で GPU が見えるか確かめる（`AMD …（RADV …）` が出ればよい。llvmpipe だけなら CPU で動く）
   5. `just install`。更新は `git pull` してもう一度 `just install`。ログは `just logs`
 - 確認済み（Gentoo のこのマシン）

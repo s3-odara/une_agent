@@ -10,7 +10,7 @@ import { Calendars } from "./calendar.ts";
 import { createCalendarExtension } from "./calendar-tools.ts";
 import { Calls } from "./call.ts";
 import { Approvals } from "./approval.ts";
-import { loadConfig, persona, personaFor } from "./config.ts";
+import { loadConfig, persona, personaFor, usedModels } from "./config.ts";
 import { CodeRequests } from "./codes.ts";
 import { CredentialCommands } from "./credential-commands.ts";
 import { Credentials } from "./credentials.ts";
@@ -18,7 +18,7 @@ import { EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
 import { PlaywrightReader } from "./extract.ts";
 import { spawnGateway } from "./gateway.ts";
-import { createAgentModels, openAgentHarness } from "./harness.ts";
+import { createAgentModels, openAgentHarness, prepareModels } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
 import { McpServers, serversFromConfig } from "./mcp.ts";
 import { createMemoryExtension, MemoryStore } from "./memory.ts";
@@ -35,6 +35,8 @@ const context = BACKGROUND_CONTEXT;
 const configPath = process.argv[2] ?? "config.json";
 const config = loadConfig(configPath);
 mkdirSync(config.dataDir, { recursive: true });
+const models = createAgentModels(config.dataDir);
+await prepareModels(models, usedModels(config));
 
 const db = new HostDb(join(config.dataDir, "host.sqlite"));
 const personas = Object.entries(config.personas).map(([name, item]) => ({ name, privateMemory: item.privateMemory }));
@@ -102,7 +104,7 @@ const extensions = [
 ];
 
 const registry = createRegistry();
-const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), createAgentModels(), context, { extensions, registry });
+const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), models, context, { extensions, registry });
 // Their tools are installed when each server answers; the agent does not wait for them.
 const mcp = new McpServers({
 	registry,

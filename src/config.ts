@@ -124,10 +124,12 @@ function stringMap(value: unknown, name: string): Record<string, string> {
 	return out;
 }
 
+/** `"provider/model"`. Only the first slash splits, since OpenRouter's model IDs have one of their own. */
 function modelRef(value: unknown, name: string): ModelRef {
-	if (typeof value !== "object" || value === null) fail(`${name} must be an object`);
-	const model = value as Record<string, unknown>;
-	return { provider: str(model.provider, `${name}.provider`), modelId: str(model.modelId, `${name}.modelId`) };
+	const slash = typeof value === "string" ? value.indexOf("/") : -1;
+	const text = value as string;
+	if (slash <= 0 || slash === text.length - 1) fail(`${name} must be "provider/model", such as "anthropic/claude-fable-5-2"`);
+	return { provider: text.slice(0, slash), modelId: text.slice(slash + 1) };
 }
 
 function limit(value: unknown, fallback: number, name: string): number {
@@ -397,4 +399,9 @@ export function persona(config: Config, name: string): Persona {
 /** Read at each use so an edit applies without a restart. */
 export function readSoul(config: Config, name: string): string {
 	return readFileSync(resolve(config.baseDir, persona(config, name).soul), "utf8").trim();
+}
+
+/** Every model the config names: the default and each persona's own. */
+export function usedModels(config: Config): ModelRef[] {
+	return [config.model, ...Object.values(config.personas).flatMap((persona) => (persona.model === undefined ? [] : [persona.model]))];
 }

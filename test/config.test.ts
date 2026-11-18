@@ -18,3 +18,10 @@ test("a call's VAD setting that is given replaces only that setting", () => {
 	const vadOf = (vad: Record<string, unknown>) => testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { vad } } }).voice?.call?.vad;
 	assert.deepEqual(vadOf({ endSilenceMs: 700 }), { ...vadOf({}), endSilenceMs: 700 });
 });
+
+test("a model is written as provider/model, and only the first slash splits it", () => {
+	assert.deepEqual(testConfig("/nowhere", { model: "openrouter/anthropic/claude-fable-5.2" }).model, { provider: "openrouter", modelId: "anthropic/claude-fable-5.2" });
+	for (const model of ["claude-fable-5-2", "/x", "anthropic/", { provider: "anthropic", modelId: "x" }]) {
+		assert.throws(() => testConfig("/nowhere", { model }), /provider\/model/, JSON.stringify(model));
+	}
+});
