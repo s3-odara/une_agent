@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createRegistry } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { PlaywrightBrowsers } from "./browser.ts";
 import { createBrowserExtension } from "./browser-tools.ts";
@@ -11,10 +12,13 @@ import { Calls } from "./call.ts";
 import { Approvals } from "./approval.ts";
 import { loadConfig, persona, personaFor } from "./config.ts";
 import { Credentials } from "./credentials.ts";
+import { EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
+import { PlaywrightReader } from "./extract.ts";
 import { spawnGateway } from "./gateway.ts";
 import { createAgentModels, openAgentHarness } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
+import { McpServers, serversFromConfig } from "./mcp.ts";
 import { createMemoryExtension, MemoryStore } from "./memory.ts";
 import { Bridge } from "./rooms.ts";
 import { Scheduler } from "./scheduler.ts";
@@ -23,6 +27,7 @@ import { memoryFingerprint, tidyMemory } from "./tidy.ts";
 import { Voicevox } from "./tts.ts";
 import { jmaForecast } from "./weather.ts";
 import { createWeatherExtension } from "./weather-tools.ts";
+import { createWebExtension } from "./web-tools.ts";
 
 const context = BACKGROUND_CONTEXT;
 const configPath = process.argv[2] ?? "config.json";
@@ -63,6 +68,17 @@ const browsers =
 				timezone: config.timezone,
 				idleMs: config.browser.idleMinutes * 60_000,
 			});
+// Pages read with web_extract open in a browser of their own, whose connections can reach only public addresses.
+const egress = config.web === undefined ? undefined : await EgressProxy.start();
+const reader =
+	egress === undefined
+		? undefined
+		: new PlaywrightReader({
+				egress,
+				timezone: config.timezone,
+				executablePath: config.browser?.executablePath,
+				idleMs: (config.browser?.idleMinutes ?? 10) * 60_000,
+			});
 // The bridge is made after the harness, which needs the tools; approvals reach it once it exists.
 let bridge: Bridge | undefined;
 const viaBridge = () => bridge ?? fail("the bridge is not running yet");
@@ -85,9 +101,17 @@ const extensions = [
 					profileOf: (conversationId) => personaOfConversation(conversationId)?.browserProfile,
 				}),
 			]),
+	...(reader === undefined || config.web === undefined ? [] : [createWebExtension({ reader, dir: join(config.dataDir, "web"), maxChars: config.web.maxChars })]),
 ];
 
-const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), createAgentModels(), context, extensions);
+const registry = createRegistry();
+const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), createAgentModels(), context, extensions, undefined, registry);
+// Their tools are installed when each server answers; the agent does not wait for them.
+const mcp = new McpServers({
+	registry,
+	servers: serversFromConfig(config.mcp, process.env),
+});
+void mcp.start();
 // Continue the runs the last process left unfinished before any new message arrives.
 harness.resume();
 
@@ -138,6 +162,9 @@ async function shutdown(exitCode: number): Promise<void> {
 	gateway.stop();
 	transcriber?.close();
 	await browsers?.close();
+	await reader?.close();
+	await egress?.close();
+	await mcp.close();
 	await harness.close(context);
 	db.close();
 	process.exit(exitCode);

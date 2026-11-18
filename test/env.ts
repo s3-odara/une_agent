@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import type { Extension, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, type Extension, type Harness, type Registry } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type Config, parseConfig } from "../src/config.ts";
 import { openAgentHarness } from "../src/harness.ts";
@@ -65,9 +65,18 @@ export async function agentEnv(options: EnvOptions = {}) {
 	let db!: HostDb;
 	let harness!: Harness;
 	let link!: FakeLink;
+	let registry!: Registry;
 	const open = async () => {
 		db = new HostDb(join(dir.path, "host.sqlite"));
-		harness = await openAgentHarness(await openNodeSqliteStorage(join(dir.path, "session.sqlite")), models, context, options.extensions?.({ config, db }) ?? [], options.now);
+		registry = createRegistry();
+		harness = await openAgentHarness(
+			await openNodeSqliteStorage(join(dir.path, "session.sqlite")),
+			models,
+			context,
+			options.extensions?.({ config, db }) ?? [],
+			options.now,
+			registry,
+		);
 		link = new FakeLink();
 	};
 	const close = async () => {
@@ -84,6 +93,10 @@ export async function agentEnv(options: EnvOptions = {}) {
 		},
 		get harness() {
 			return harness;
+		},
+		/** The extensions of this start, to install more into while it runs. */
+		get registry() {
+			return registry;
 		},
 		/** The gateway of the current start. */
 		get link() {

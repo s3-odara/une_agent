@@ -1,7 +1,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, type Registry } from "@earendil-works/pi-durable";
 
 type HarnessOptions = Parameters<typeof Harness.open>[1];
 type Storage = Parameters<typeof Harness.open>[0];
@@ -25,8 +25,9 @@ export function openAgentHarness(
 	extensions: readonly Extension[] = [],
 	/** The clock tools and tasks see; tests pass a fixed one. */
 	now?: () => number,
+	/** Extensions installed later, such as an MCP server's once it answers, go into this. */
+	registry: Registry = createRegistry(),
 ): Promise<Harness> {
-	const registry = createRegistry();
 	for (const extension of extensions) registry.install(extension);
 	return Harness.open(
 		storage,

@@ -24,6 +24,15 @@
 	},
 	"weather": { "jmaOfficeCode": "130000", "areaIndex": 0 },
 	"browser": { "headless": true, "idleMinutes": 10 },
+	"web": { "maxChars": 15000 },
+	"mcp": {
+		"keenable": {
+			"url": "https://api.keenable.ai/mcp",
+			"headersFromEnv": { "X-API-Key": "KEENABLE_API_KEY" },
+			"tools": ["search_web_pages"],
+			"replay": "safe"
+		}
+	},
 	"voice": {
 		"stt": { "threads": 6, "beamSize": 5, "language": "ja", "vadSpeechPadMs": 0, "idleMinutes": 10 },
 		"tts": { "url": "http://127.0.0.1:50021", "speaker": 2, "maxChars": 400 },

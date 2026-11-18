@@ -53,6 +53,13 @@ export type Config = {
 		/** A browser nobody used for this long is closed; its cookies stay on disk. */
 		readonly idleMinutes: number;
 	};
+	/** Present when the agent reads web pages with `web_extract`, in a browser of its own with no logins. */
+	readonly web?: {
+		/** Longest part of a page one result carries, in characters; the model reads on with `offset`. */
+		readonly maxChars: number;
+	};
+	/** MCP servers over Streamable HTTP, by name; their tools are offered as `mcp__<name>__<tool>`. */
+	readonly mcp: Readonly<Record<string, McpServerConfig>>;
 	/** Present when the agent takes voice messages. Its answer to one comes as text and as a voice message. */
 	readonly voice?: {
 		/** whisper.cpp's `whisper-server`, as `stt/install.sh` builds it. */
@@ -103,6 +110,18 @@ export type Config = {
 		/** How many days before a task's due date its reminders are sent. */
 		readonly dueLeadDays: readonly number[];
 	};
+};
+
+export type McpServerConfig = {
+	readonly url: string;
+	/** Headers sent as they are. */
+	readonly headers: Readonly<Record<string, string>>;
+	/** Headers whose value is the environment variable named, such as an API key; left out when it is not set. */
+	readonly headersFromEnv: Readonly<Record<string, string>>;
+	/** Only these of its tools are offered; absent offers them all. */
+	readonly tools?: readonly string[];
+	/** `safe` when its tools only read, so a call a crash cut off may be made again; otherwise it is not. */
+	readonly replay: "safe" | "unsafe";
 };
 
 export type ModelRef = { readonly provider: string; readonly modelId: string };
@@ -178,6 +197,38 @@ function browser(value: unknown): Config["browser"] {
 		...(root.executablePath === undefined ? {} : { executablePath: str(root.executablePath, "browser.executablePath") }),
 		idleMinutes: limit(root.idleMinutes, 10, "browser.idleMinutes"),
 	};
+}
+
+function web(value: unknown): Config["web"] {
+	if (value === undefined) return undefined;
+	const root = object(value, "web");
+	return { maxChars: limit(root.maxChars, 15_000, "web.maxChars") };
+}
+
+function mcp(value: unknown): Config["mcp"] {
+	if (value === undefined) return {};
+	const out: Record<string, McpServerConfig> = {};
+	for (const [name, item] of Object.entries(object(value, "mcp"))) {
+		// The name becomes part of tool names, which allow only these.
+		if (!/^[A-Za-z0-9_-]+$/.test(name)) fail(`mcp server name "${name}" may only contain letters, digits, "_" and "-"`);
+		const server = object(item, `mcp.${name}`);
+		const url = str(server.url, `mcp.${name}.url`);
+		if (!/^https?:\/\//.test(url)) fail(`mcp.${name}.url must be an http or https URL`);
+		const tools = server.tools;
+		if (tools !== undefined && (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || tool === ""))) {
+			fail(`mcp.${name}.tools must be a list of tool names`);
+		}
+		const replay = server.replay ?? "unsafe";
+		if (replay !== "safe" && replay !== "unsafe") fail(`mcp.${name}.replay must be "safe" or "unsafe"`);
+		out[name] = {
+			url,
+			headers: stringMap(server.headers, `mcp.${name}.headers`),
+			headersFromEnv: stringMap(server.headersFromEnv, `mcp.${name}.headersFromEnv`),
+			...(tools === undefined ? {} : { tools: tools as string[] }),
+			replay,
+		};
+	}
+	return out;
 }
 
 function nonNegativeInteger(value: unknown, name: string): number {
@@ -360,6 +411,8 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 		weather: weather(root.weather),
 		proactive: proactive(root.proactive),
 		browser: browser(root.browser),
+		web: web(root.web),
+		mcp: mcp(root.mcp),
 		voice: voice(root.voice, baseDir),
 	};
 }

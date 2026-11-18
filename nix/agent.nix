@@ -23,7 +23,7 @@ buildNpmPackage {
     ];
   };
   nodejs = nodejs_26;
-  npmDepsHash = "sha256-1fJ1VIAPuUQiPwIZi2dB4ewKcko638Ag/E/dnP74x+g=";
+  npmDepsHash = "sha256-iRMxu/K2OO121IU1f2dACcFhiRGdk9ry5HfDZE4Z2bY=";
   dontNpmBuild = true;
   nativeBuildInputs = [ makeWrapper ];
   installPhase = ''

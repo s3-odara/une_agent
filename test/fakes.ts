@@ -177,7 +177,7 @@ export function lastToolResult(request: Request): { readonly text: string; reado
 }
 
 /** A model turn that calls one tool. */
-export const call = (name: string, args: Record<string, string | boolean>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
+export const call = (name: string, args: Record<string, string | boolean | number>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
 export type ToolResult = ReturnType<typeof lastToolResult>;
 /** A model turn that keeps the tool result it was given in `results`, and its request in `requests`, and says "ok". */
 export const noting =

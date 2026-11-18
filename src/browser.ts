@@ -83,7 +83,7 @@ async function hidePasswords(page: Page, tree: string): Promise<string> {
 }
 
 /** Lets a page settle after something that may have navigated it, without waiting on pages that never go quiet. */
-async function settle(page: Page): Promise<void> {
+export async function settle(page: Page): Promise<void> {
 	await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
 	await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
 }
