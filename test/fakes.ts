@@ -15,7 +15,7 @@ export class FakeLink implements GatewayLink {
 	send(command: GatewayCommand): void {
 		this.commands.push(command);
 		this.#waiters = this.#waiters.filter((waiter) => !waiter(command));
-		if (command.type === "send" || command.type === "sendVoice" || command.type === "react") {
+		if (command.type === "send" || command.type === "sendVoice" || command.type === "sendImage" || command.type === "react") {
 			const reply: GatewayEvent = this.failSends
 				? { type: "error", requestId: command.requestId, message: "the homeserver cannot be reached" }
 				: { type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` };
@@ -56,8 +56,8 @@ export class FakeLink implements GatewayLink {
 	}
 }
 
-export function message(roomId: string, eventId: string, body: string, ts = 0): GatewayEvent {
-	return { type: "message", roomId, eventId, sender: "@me:example.org", body, ts };
+export function message(roomId: string, eventId: string, body: string, ts = 0, replyTo?: string): GatewayEvent {
+	return { type: "message", roomId, eventId, sender: "@me:example.org", body, ts, ...(replyTo === undefined ? {} : { replyTo }) };
 }
 
 /**

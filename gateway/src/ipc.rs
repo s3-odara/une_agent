@@ -48,6 +48,9 @@ pub struct Message {
     /// Present for an audio message: the recording, already downloaded and decrypted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<Audio>,
+    /// The event this message replies to, if it is a reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,6 +91,17 @@ pub enum Command {
         /// Loudness over time, each between 0 and 1, for the client to draw.
         #[serde(default)]
         waveform: Vec<f32>,
+    },
+    /// Sends a PNG file as an image.
+    SendImage {
+        request_id: String,
+        room_id: String,
+        txn_id: String,
+        path: String,
+        /// The file name the client shows.
+        name: String,
+        width: u32,
+        height: u32,
     },
     Typing {
         room_id: String,

@@ -11,6 +11,8 @@ import { createCalendarExtension } from "./calendar-tools.ts";
 import { Calls } from "./call.ts";
 import { Approvals } from "./approval.ts";
 import { loadConfig, persona, personaFor } from "./config.ts";
+import { CodeRequests } from "./codes.ts";
+import { CredentialCommands } from "./credential-commands.ts";
 import { Credentials } from "./credentials.ts";
 import { EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
@@ -87,6 +89,9 @@ const approvals = new Approvals({
 	notice: (roomId, txnId, body) => viaBridge().post(roomId, txnId, body),
 	react: (roomId, txnId, eventId, key) => viaBridge().react(roomId, txnId, eventId, key),
 });
+// Taken before the model sees anything: `!cred` commands, which may hold a password, and one-time codes.
+const credentials = new Credentials(join(config.dataDir, "credentials.json"));
+const codes = new CodeRequests({ notice: (roomId, txnId, body) => viaBridge().post(roomId, txnId, body) });
 const extensions = [
 	memory,
 	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
@@ -96,9 +101,11 @@ const extensions = [
 		: [
 				createBrowserExtension({
 					browsers,
-					credentials: new Credentials(join(config.dataDir, "credentials.json")),
+					credentials,
 					db,
 					profileOf: (conversationId) => personaOfConversation(conversationId)?.browserProfile,
+					codes,
+					screenshots: { send: (roomId, txnId, image) => viaBridge().sendImage(roomId, txnId, image), dir: join(config.dataDir, "browser-shots") },
 				}),
 			]),
 	...(reader === undefined || config.web === undefined ? [] : [createWebExtension({ reader, dir: join(config.dataDir, "web"), maxChars: config.web.maxChars })]),
@@ -126,7 +133,7 @@ const voice =
 		: { transcriber, ...(synthesizer === undefined ? {} : { synthesizer }), outDir: join(config.dataDir, "voice", "out") };
 
 const gateway = spawnGateway(config.gatewayBin, ["run", "--config", configPath]);
-bridge = new Bridge({ harness, db, link: gateway, config, context, voice, approvals });
+bridge = new Bridge({ harness, db, link: gateway, config, context, voice, approvals, handlers: [new CredentialCommands(credentials), codes] });
 bridge.start();
 if (config.voice?.call !== undefined && transcriber !== undefined && synthesizer !== undefined) {
 	new Calls({

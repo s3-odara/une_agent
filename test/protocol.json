@@ -39,6 +39,15 @@
 			}
 		},
 		{
+			"type": "message",
+			"roomId": "!r:example.org",
+			"eventId": "$reply",
+			"sender": "@me:example.org",
+			"body": "AB12CD",
+			"ts": 8,
+			"replyTo": "$p"
+		},
+		{
 			"type": "undecryptable",
 			"roomId": "!r:example.org",
 			"eventId": "$e",
@@ -127,6 +136,16 @@
 				0.5,
 				0.25
 			]
+		},
+		{
+			"type": "sendImage",
+			"requestId": "q",
+			"roomId": "!r:example.org",
+			"txnId": "t",
+			"path": "/d/s.png",
+			"name": "screenshot.png",
+			"width": 1280,
+			"height": 800
 		},
 		{
 			"type": "typing",

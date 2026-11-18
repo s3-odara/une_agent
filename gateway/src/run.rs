@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo};
+use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseImageInfo};
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::ruma::api::error::ErrorKind;
@@ -148,7 +148,11 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
         },
         _ => return,
     };
-    let message = Message { room_id, event_id, sender: event.sender.to_string(), body, ts, audio };
+    let reply_to = match &event.content.relates_to {
+        Some(Relation::Reply(reply)) => Some(reply.in_reply_to.event_id.to_string()),
+        _ => None,
+    };
+    let message = Message { room_id, event_id, sender: event.sender.to_string(), body, ts, audio, reply_to };
 
     let added = shared.state.lock().unwrap().add(&message);
     match added {
@@ -270,6 +274,10 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 let client = client.clone();
                 respond(&shared, request_id, async move { send_voice(&client, &room_id, txn_id, &path, duration_ms, waveform).await });
             }
+            Command::SendImage { request_id, room_id, txn_id, path, name, width, height } => {
+                let client = client.clone();
+                respond(&shared, request_id, async move { send_image(&client, &room_id, txn_id, &path, &name, width, height).await });
+            }
             Command::Typing { room_id, on } => set_typing(&client, &shared, room_id, on),
             Command::React { request_id, room_id, txn_id, event_id, key } => {
                 let client = client.clone();
@@ -342,6 +350,22 @@ async fn send_voice(client: &Client, room_id: &str, txn_id: String, path: &str, 
     let config = AttachmentConfig::new().txn_id(OwnedTransactionId::from(txn_id)).info(AttachmentInfo::Voice(info));
     let mime: mime::Mime = "audio/ogg".parse().expect("a valid MIME type");
     let response = room.send_attachment("voice-message.ogg", &mime, data, config).await?;
+    Ok(response.event_id.to_string())
+}
+
+/// Uploads a PNG file (encrypted in an encrypted room) and sends it as an image.
+async fn send_image(client: &Client, room_id: &str, txn_id: String, path: &str, name: &str, width: u32, height: u32) -> Result<String> {
+    let room = joined_room(client, room_id)?;
+    let data = tokio::fs::read(path).await.with_context(|| format!("reading {path}"))?;
+    let info = BaseImageInfo {
+        width: Some(UInt::from(width)),
+        height: Some(UInt::from(height)),
+        size: UInt::new(data.len() as u64),
+        blurhash: None,
+        is_animated: Some(false),
+    };
+    let config = AttachmentConfig::new().txn_id(OwnedTransactionId::from(txn_id)).info(AttachmentInfo::Image(info));
+    let response = room.send_attachment(name, &mime::IMAGE_PNG, data, config).await?;
     Ok(response.event_id.to_string())
 }
 

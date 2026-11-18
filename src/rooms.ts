@@ -36,7 +36,22 @@ export type BridgeOptions = {
 	readonly voice?: VoiceOptions;
 	/** Gets reactions and the user's messages first: they may answer an approval request. */
 	readonly approvals?: Approvals;
+	/**
+	 * Get each text message before approvals and the model, in order; the first that takes it ends its way. One that is
+	 * taken is acked and never reaches the conversation.
+	 */
+	readonly handlers?: readonly MessageHandler[];
 };
+
+/** What a handler did with a message: passed it on, or took it, with a notice to reply with. */
+export type Handled = { readonly handled: false } | { readonly handled: true; readonly reply?: string };
+
+/** Something that may take a user's message before the model sees it, such as a command. */
+export interface MessageHandler {
+	onMessage(message: { readonly roomId: string; readonly body: string; readonly replyTo?: string }): Handled;
+	/** The user sent a voice message, which no handler takes. */
+	interrupt?(roomId: string): void;
+}
 
 export type VoiceOptions = {
 	readonly transcriber: Transcriber;
@@ -128,6 +143,21 @@ export class Bridge {
 		// The time it was sent, so "tomorrow" means something. A system prompt that changed every minute would
 		// defeat the provider's prompt cache; a stamp on the message does not.
 		const time = message.ts > 0 ? formatStamp(message.ts, config.timezone) : undefined;
+		// A message that already went to the conversation is resent after a crash; it was not one of these.
+		if (!db.hasDelivery(message.eventId)) {
+			for (const handler of this.#options.handlers ?? []) {
+				if (message.audio !== undefined) {
+					handler.interrupt?.(message.roomId);
+					continue;
+				}
+				const result = handler.onMessage({ roomId: message.roomId, body: message.body, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) });
+				if (result.handled) {
+					if (result.reply !== undefined) await this.#send(message.roomId, `cmd:${message.eventId}`, result.reply, true);
+					link.send({ type: "ack", eventId: message.eventId });
+					return;
+				}
+			}
+		}
 		const approvals = this.#options.approvals;
 		if (approvals !== undefined && !db.hasDelivery(message.eventId)) {
 			if (message.audio !== undefined) approvals.interrupt(message.roomId);
@@ -224,6 +254,11 @@ export class Bridge {
 	/** Sends a notice under a transaction ID and resolves with its event ID. The same ID again sends nothing new. */
 	post(roomId: string, txnId: string, body: string): Promise<string> {
 		return this.#send(roomId, txnId, body, true);
+	}
+
+	/** Sends a PNG file as an image under a transaction ID and resolves with its event ID. */
+	sendImage(roomId: string, txnId: string, image: { readonly path: string; readonly name: string; readonly width: number; readonly height: number }): Promise<string> {
+		return this.#request({ type: "sendImage", requestId: txnId, roomId, txnId, ...image });
 	}
 
 	/** Reacts to an event under a transaction ID. */

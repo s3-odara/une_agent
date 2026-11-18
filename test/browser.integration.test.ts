@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { type BrowserPage, PlaywrightBrowsers } from "../src/browser.ts";
-import { createBrowserExtension } from "../src/browser-tools.ts";
+import { createBrowserExtension, pngSize } from "../src/browser-tools.ts";
 import { Credentials } from "../src/credentials.ts";
 import { errorMessage } from "../src/errors.ts";
 import { agentEnv, tempDir } from "./env.ts";
@@ -212,4 +212,14 @@ test("the tools log in on a real page with a stored password the model never see
 
 	assert.match(lastToolResult(requests[0]!).text, /ようこそ、me さん/);
 	assert.doesNotMatch(everything(requests[0]!), /correct-horse/);
+});
+
+test("a screenshot is a PNG of the window, or of the whole page when asked", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/login");
+	const shot = await tab.screenshot(false);
+	assert.equal(shot.subarray(1, 4).toString(), "PNG");
+	assert.deepEqual(pngSize(shot), { width: 1280, height: 800 });
+	assert.ok(pngSize(await tab.screenshot(true)).height >= 1);
 });

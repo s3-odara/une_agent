@@ -14,6 +14,8 @@ export type GatewayEvent =
 			readonly ts: number;
 			/** Present for an audio message: the recording, downloaded and decrypted. Delete it once done. */
 			readonly audio?: { readonly path: string; readonly mimetype?: string; readonly voice: boolean };
+			/** The event this message replies to, if it is a reply. */
+			readonly replyTo?: string;
 	  }
 	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string; readonly sender: string }
 	| { readonly type: "sent"; readonly requestId: string; readonly eventId: string }
@@ -83,6 +85,18 @@ export type GatewayCommand =
 			readonly path: string;
 			readonly durationMs: number;
 			readonly waveform?: readonly number[];
+	  }
+	| {
+			/** Sends a PNG file as an image. */
+			readonly type: "sendImage";
+			readonly requestId: string;
+			readonly roomId: string;
+			readonly txnId: string;
+			readonly path: string;
+			/** The file name the client shows. */
+			readonly name: string;
+			readonly width: number;
+			readonly height: number;
 	  }
 	| { readonly type: "typing"; readonly roomId: string; readonly on: boolean }
 	/** Reacts to an event; answered with `sent` or `error` under `requestId`. */

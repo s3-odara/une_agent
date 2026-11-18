@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
 export type Credential = { readonly username: string; readonly password: string };
 
@@ -14,7 +14,7 @@ const HIDDEN = "［伏せ字］";
  *
  * The key is the site's origin. The file is read at each use, so an edit applies at once. Nothing here hands a password
  * to the model: the browser tools type it into the page themselves, and `scrub()` removes it from everything they
- * return.
+ * return. `set()` and `remove()` write it for the `!cred` commands; the file stays readable by its owner only.
  */
 export class Credentials {
 	readonly #path: string;
@@ -23,12 +23,13 @@ export class Credentials {
 		this.#path = path;
 	}
 
-	#load(): Map<string, Credential> {
+	/** The file as it is, keys as written. */
+	#raw(): Record<string, unknown> {
 		let text: string;
 		try {
 			text = readFileSync(this.#path, "utf8");
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Map();
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
 			throw new CredentialError(`認証情報ファイルを読めません: ${(error as NodeJS.ErrnoException).code ?? "error"}`);
 		}
 		let parsed: unknown;
@@ -39,9 +40,12 @@ export class Credentials {
 			throw new CredentialError("認証情報ファイルが JSON として読めません。");
 		}
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new CredentialError("認証情報ファイルはオブジェクトである必要があります。");
+		return parsed as Record<string, unknown>;
+	}
 
+	#load(): Map<string, Credential> {
 		const found = new Map<string, Credential>();
-		for (const [site, value] of Object.entries(parsed)) {
+		for (const [site, value] of Object.entries(this.#raw())) {
 			let origin: string;
 			try {
 				origin = new URL(site).origin;
@@ -55,6 +59,52 @@ export class Credentials {
 			found.set(origin, { username: entry.username, password: entry.password });
 		}
 		return found;
+	}
+
+	/**
+	 * Stores the credential of `origin`, replacing the one it had, whatever key that was written under. A file that
+	 * cannot be read is left alone rather than overwritten. Resolves with whether one was replaced.
+	 */
+	set(origin: string, credential: Credential): boolean {
+		this.#load();
+		const raw = this.#raw();
+		const replaced = this.#keysOf(raw, origin);
+		for (const key of replaced) delete raw[key];
+		raw[origin] = { username: credential.username, password: credential.password };
+		this.#write(raw);
+		return replaced.length > 0;
+	}
+
+	/** Removes the credential of `origin`. Resolves with whether there was one. */
+	remove(origin: string): boolean {
+		this.#load();
+		const raw = this.#raw();
+		const keys = this.#keysOf(raw, origin);
+		for (const key of keys) delete raw[key];
+		if (keys.length > 0) this.#write(raw);
+		return keys.length > 0;
+	}
+
+	/** The usernames by origin. Not secret: the user is shown them with `!cred list`. */
+	usernames(): [origin: string, username: string][] {
+		return [...this.#load()].map(([origin, credential]): [string, string] => [origin, credential.username]).sort(([a], [b]) => a.localeCompare(b));
+	}
+
+	#keysOf(raw: Record<string, unknown>, origin: string): string[] {
+		return Object.keys(raw).filter((key) => {
+			try {
+				return new URL(key).origin === origin;
+			} catch {
+				return false;
+			}
+		});
+	}
+
+	/** Written whole to a file beside it and moved over it, so a crash never leaves half a file. */
+	#write(raw: Record<string, unknown>): void {
+		const temporary = `${this.#path}.${process.pid}.tmp`;
+		writeFileSync(temporary, `${JSON.stringify(raw, null, "\t")}\n`, { mode: 0o600 });
+		renameSync(temporary, this.#path);
 	}
 
 	/** The origins that have a credential. Not secret: the model is told where it can log in. */

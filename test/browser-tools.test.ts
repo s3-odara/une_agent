@@ -3,11 +3,16 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { BrowserPage, Browsers, FieldInfo } from "../src/browser.ts";
-import { createBrowserExtension, UNTRUSTED } from "../src/browser-tools.ts";
+import { createBrowserExtension, pngSize, UNTRUSTED } from "../src/browser-tools.ts";
+import { CodeRequests, noCode } from "../src/codes.ts";
 import { persona, personaFor } from "../src/config.ts";
+import type { Bridge } from "../src/rooms.ts";
 import { CredentialError, Credentials } from "../src/credentials.ts";
 import { agentEnv, tempDir } from "./env.ts";
-import { call, everything, instructionsOf, message, noting, type Request, type ToolResult } from "./fakes.ts";
+import { call, everything, instructionsOf, lastInput, message, noting, type Request, type ToolResult } from "./fakes.ts";
+
+/** The header of a PNG image of 640 x 480: all a reader of its size looks at. */
+const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 2, 128, 0, 0, 1, 224])]);
 
 const ROOM = "!main:example.org";
 const SECRET = "correct-horse-battery";
@@ -44,6 +49,10 @@ class FakeBrowsers implements Browsers {
 				this.values.set(ref, text);
 			},
 			press: async (key, ref) => void this.log.push(`press ${key} ${ref ?? ""}`.trim()),
+			screenshot: async (fullPage) => {
+				this.log.push(`screenshot${fullPage ? " full" : ""}`);
+				return PNG;
+			},
 			field: async (ref): Promise<FieldInfo> => {
 				const kind = fields[ref];
 				if (kind === undefined) throw new Error(`no element with ref ${ref}`);
@@ -60,6 +69,10 @@ class FakeBrowsers implements Browsers {
  */
 async function setup() {
 	const browsers = new FakeBrowsers();
+	// The bridge posts the code requests; it is made once the agent is.
+	let bridge: Bridge | undefined;
+	const viaBridge = () => bridge as Bridge;
+	const codes = new CodeRequests({ notice: (roomId, txnId, body) => viaBridge().post(roomId, txnId, body), timeoutMs: 60_000 });
 	const env = await agentEnv({
 		config: { personas: { default: "soul.md", work: { soul: "soul.md", browserProfile: "work" } }, rooms: { "!work:example.org": "work" }, browser: {} },
 		extensions: ({ config, db }) => {
@@ -75,18 +88,20 @@ async function setup() {
 						return roomId === undefined ? undefined : persona(config, personaFor(config, roomId)).browserProfile;
 					},
 					maxChars: 400,
+					codes,
+					screenshots: { send: (roomId, txnId, image) => viaBridge().sendImage(roomId, txnId, image), dir: join(config.dataDir, "shots") },
 				}),
 			];
 		},
 	});
-	const bridge = env.bridge();
+	bridge = env.bridge({ handlers: [codes] });
 	/** Every request the model got, and the tool results in them. */
 	const requests: Request[] = [];
 	const results: ToolResult[] = [];
 	let n = 0;
 	return {
 		env,
-		bridge,
+		bridge: bridge as Bridge,
 		browsers,
 		requests,
 		results,
@@ -94,7 +109,16 @@ async function setup() {
 		noting: noting(results, requests),
 		say: async (body: string, roomId = ROOM) => {
 			env.link.emit(message(roomId, `$${++n}`, body));
-			await bridge.idle();
+			await viaBridge().idle();
+		},
+		/** Says `body` and, once the bot asks for a code, sends `answer`: a reply to the request, or a message of its own. */
+		sayThenAnswer: async (body: string, answer: string, asReply: boolean) => {
+			env.link.emit(message(ROOM, `$${++n}`, body));
+			const request = await env.link.waitFor("send", (command) => command.txnId.startsWith("code:"));
+			// A person can only reply once the request is in the room: let the gateway's answer to the send arrive.
+			await new Promise((resolve) => setImmediate(resolve));
+			env.link.emit(message(ROOM, `$${++n}`, answer, 0, asReply ? `$sent-${request.txnId}` : undefined));
+			await viaBridge().idle();
 		},
 		[Symbol.asyncDispose]: () => env[Symbol.asyncDispose](),
 	};
@@ -287,3 +311,38 @@ for (const [what, content] of [
 		assert.throws(() => t.credentials.origins(), CredentialError);
 	});
 }
+
+for (const [how, code, asReply] of [
+	["as a reply to the request", "AB 12-cd", true],
+	["as a message of one word", "Q7X-29K", false],
+] as const) {
+	test(`a code the user sends ${how} is typed into the field, and the model never sees it`, async () => {
+		await using t = await setup();
+		t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), call("browser_request_code", { ref: "search", submit: true }), t.noting, t.noting]);
+		await t.sayThenAnswer("ログインして", code, asReply);
+		const typed = code.replace(/\s+/g, "");
+		assert.equal(t.browsers.values.get("search"), typed);
+		assert.ok(t.browsers.log.includes("press Enter search"));
+		assert.ok(t.requests.every((request) => !everything(request).includes(typed)));
+	});
+}
+
+test("a message that is not a code ends the request, and reaches the model as said", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), call("browser_request_code", { ref: "search" }), t.noting, t.noting]);
+	await t.sayThenAnswer("ログインして", "やっぱりやめて", false);
+	assert.equal(t.results[0]?.text, noCode("message"));
+	assert.equal(t.browsers.values.get("search"), undefined);
+	assert.ok(lastInput(t.requests.at(-1) as Request).includes("やっぱりやめて"));
+});
+
+test("a screenshot of the page goes to the room of the conversation, as an image of its size", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), call("browser_screenshot", { fullPage: true }), t.noting]);
+	await t.say("画面を見せて");
+	assert.ok(t.browsers.log.includes("screenshot full"));
+	const [sent] = t.env.link.of("sendImage");
+	assert.equal(sent?.roomId, ROOM);
+	assert.deepEqual({ width: sent?.width, height: sent?.height }, pngSize(PNG));
+	assert.equal(t.results[0]?.isError, false);
+});

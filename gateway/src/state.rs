@@ -93,7 +93,7 @@ mod tests {
     use super::*;
 
     fn message(event_id: &str, ts: u64) -> Message {
-        Message { room_id: "!r:example.org".into(), event_id: event_id.into(), sender: "@me:example.org".into(), body: "hi".into(), ts, audio: None }
+        Message { room_id: "!r:example.org".into(), event_id: event_id.into(), sender: "@me:example.org".into(), body: "hi".into(), ts, audio: None, reply_to: None }
     }
 
     fn temp_path(name: &str) -> PathBuf {

@@ -27,6 +27,8 @@ export interface BrowserPage {
 	fill(ref: string, text: string): Promise<void>;
 	press(key: string, ref?: string): Promise<void>;
 	field(ref: string): Promise<FieldInfo>;
+	/** The page as a PNG image, password fields blacked out. */
+	screenshot(fullPage: boolean): Promise<Buffer>;
 }
 
 export interface Browsers {
@@ -187,6 +189,11 @@ export class PlaywrightBrowsers implements Browsers {
 			},
 			field: async (ref) =>
 				(await current()).getByRef(ref).evaluate(describeField),
+			screenshot: async (fullPage) => {
+				const page = await current();
+				// A field whose password is shown in clear (a "show password" button) is covered too: it keeps its name.
+				return page.screenshot({ type: "png", fullPage, animations: "disabled", mask: [page.locator('input[type="password"], input[name*="pass" i]')] });
+			},
 		};
 	}
 
