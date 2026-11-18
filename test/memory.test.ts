@@ -118,6 +118,8 @@ test("what one persona remembers through the tool, another persona sees, except 
 			model: { provider: model.provider, modelId: model.id },
 			personas: { calm: { soul: "calm.md", privateMemory: true }, blunt: "blunt.md" },
 			defaultPersona: "calm",
+			// Far enough east that its date is ahead of the server's, wherever that is.
+			timezone: "Pacific/Kiritimati",
 			rooms: { "!blunt:example.org": "blunt" },
 		},
 		dir,
@@ -134,8 +136,10 @@ test("what one persona remembers through the tool, another persona sees, except 
 			const name = personaFor(config, roomId);
 			return { name, privateMemory: persona(config, name).privateMemory };
 		},
+		tz: config.timezone,
 	});
-	const harness = await openAgentHarness(new MemoryStorage(), models, context, [memory]);
+	// 12:00 UTC on 11/17 is already 11/18 in the user's time zone.
+	const harness = await openAgentHarness(new MemoryStorage(), models, context, [memory], () => Date.parse("2026-11-17T12:00:00Z"));
 	try {
 		const seen = (request: { messages: unknown }) => fauxAssistantMessage(JSON.stringify(request.messages));
 		faux.setResponses([
@@ -159,7 +163,7 @@ test("what one persona remembers through the tool, another persona sees, except 
 		link.emit({ type: "message", roomId: "!calm:example.org", eventId: "$1", sender: "@me:example.org", body: "緑茶が好き", ts: 0 });
 		await bridge.idle();
 		assert.equal(link.bodyIn("!calm:example.org"), "覚えました");
-		assert.match(store.entries("shared", calm)[0] ?? "", /^ユーザーは緑茶を好む \(\d{4}-\d{2}-\d{2}\)$/);
+		assert.match(store.entries("shared", calm)[0] ?? "", /^ユーザーは緑茶を好む \(2026-11-18\)$/);
 		assert.equal(store.entries("private", calm).length, 1);
 
 		link.emit({ type: "message", roomId: "!blunt:example.org", eventId: "$2", sender: "@me:example.org", body: "何を知ってる?", ts: 0 });

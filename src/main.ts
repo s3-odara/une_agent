@@ -42,6 +42,7 @@ function personaOfConversation(conversationId: number) {
 const memory = createMemoryExtension({
 	store,
 	personaOf: personaOfConversation,
+	tz: config.timezone,
 });
 
 const weather = config.weather === undefined ? undefined : jmaForecast(config.weather.jmaOfficeCode, config.timezone, config.weather.areaIndex);

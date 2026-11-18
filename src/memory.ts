@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFil
 import { dirname, join } from "node:path";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import { obj, oneOf, str } from "@earendil-works/pi-schema";
+import { dateOf } from "./time.ts";
 
 export type MemoryScope = "shared" | "private";
 
@@ -179,18 +180,15 @@ export type MemoryExtensionOptions = {
 	readonly store: MemoryStore;
 	/** The persona a conversation speaks as; `undefined` for a conversation without one, which then has no memory. */
 	readonly personaOf: (conversationId: number) => MemoryPersona | undefined;
+	/** The user's time zone: entries are dated by the user's calendar, not the server's. */
+	readonly tz: string;
 };
-
-function localDate(epochMs: number): string {
-	// The Swedish locale formats a date as YYYY-MM-DD, in the process's time zone.
-	return new Date(epochMs).toLocaleDateString("sv-SE");
-}
 
 const scope = oneOf(["shared", "private"], { description: "shared: 全人格が読む。private: この人格だけが読む（持たない人格もある）。" });
 
 /** Memory as a prompt section plus the three tools that change it. All three are safe to rerun after a crash. */
 export function createMemoryExtension(options: MemoryExtensionOptions) {
-	const { store, personaOf } = options;
+	const { store, personaOf, tz } = options;
 	const persona = (conversationId: unknown): MemoryPersona => {
 		const found = personaOf(Number(conversationId));
 		if (found === undefined) throw new MemoryError("この会話には記憶がありません。");
@@ -212,7 +210,7 @@ export function createMemoryExtension(options: MemoryExtensionOptions) {
 				description: "長期記憶に1項目追加する。今後の会話でも役に立つことだけを、中立な1文で書く。",
 				parameters: obj({ scope, text: str({ description: "記憶する内容。1文。", minLength: 1 }) }),
 				replay: "safe",
-				execute: async (args, api) => done(store.add(args.scope, persona(api.conversationId), args.text, localDate(api.now()))),
+				execute: async (args, api) => done(store.add(args.scope, persona(api.conversationId), args.text, dateOf(api.now(), tz))),
 			}),
 			defineTool({
 				name: "memory_replace",
@@ -224,7 +222,7 @@ export function createMemoryExtension(options: MemoryExtensionOptions) {
 				}),
 				replay: "safe",
 				execute: async (args, api) =>
-					done(store.replace(args.scope, persona(api.conversationId), args.match, args.text, localDate(api.now()))),
+					done(store.replace(args.scope, persona(api.conversationId), args.match, args.text, dateOf(api.now(), tz))),
 			}),
 			defineTool({
 				name: "memory_remove",
