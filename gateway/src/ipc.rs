@@ -63,6 +63,7 @@ pub struct Audio {
 
 /// A line the gateway reads.
 #[derive(Debug, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(Serialize))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Command {
     Ack {
@@ -102,7 +103,6 @@ pub enum Command {
     },
     JoinCall {
         room_id: String,
-        #[serde(default)]
         vad: VadConfig,
     },
     LeaveCall {
@@ -137,131 +137,33 @@ pub fn spawn_writer() -> Outbox {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
-    #[test]
-    fn events_use_the_field_names_the_agent_reads() {
-        let message = Event::Message(Message {
-            room_id: "!r:example.org".into(),
-            event_id: "$e".into(),
-            sender: "@me:example.org".into(),
-            body: "hi".into(),
-            ts: 5,
-            audio: None,
-        });
-        assert_eq!(
-            serde_json::to_string(&message).unwrap(),
-            r#"{"type":"message","roomId":"!r:example.org","eventId":"$e","sender":"@me:example.org","body":"hi","ts":5}"#
-        );
-        let voice = Event::Message(Message {
-            room_id: "!r:example.org".into(),
-            event_id: "$v".into(),
-            sender: "@me:example.org".into(),
-            body: "Voice message.ogg".into(),
-            ts: 6,
-            audio: Some(Audio { path: "/d/voice/in/v.ogg".into(), mimetype: Some("audio/ogg".into()), voice: true }),
-        });
-        assert_eq!(
-            serde_json::to_string(&voice).unwrap(),
-            r#"{"type":"message","roomId":"!r:example.org","eventId":"$v","sender":"@me:example.org","body":"Voice message.ogg","ts":6,"audio":{"path":"/d/voice/in/v.ogg","mimetype":"audio/ogg","voice":true}}"#
-        );
-        let sent = Event::Sent { request_id: "reply:$e".into(), event_id: "$s".into() };
-        assert_eq!(serde_json::to_string(&sent).unwrap(), r#"{"type":"sent","requestId":"reply:$e","eventId":"$s"}"#);
-        let error = Event::Error { request_id: None, message: "boom".into() };
-        assert_eq!(serde_json::to_string(&error).unwrap(), r#"{"type":"error","message":"boom"}"#);
+    /// The lines of `test/protocol.json`, which the agent's tests check against its own types.
+    fn examples(kind: &str) -> Vec<Value> {
+        let all: Value = serde_json::from_str(include_str!("../../test/protocol.json")).unwrap();
+        all[kind].as_array().unwrap().clone()
+    }
+
+    /// Read and written back unchanged: no field is missing, misnamed, dropped or added on either side.
+    fn assert_round_trips<T: serde::de::DeserializeOwned + Serialize>(example: &Value) {
+        let read: T = serde_json::from_value(example.clone()).unwrap_or_else(|error| panic!("{example}: {error}"));
+        assert_eq!(&serde_json::to_value(&read).unwrap(), example);
     }
 
     #[test]
-    fn commands_parse_from_the_lines_the_agent_writes() {
-        assert_eq!(
-            serde_json::from_str::<Command>(r#"{"type":"ack","eventId":"$e"}"#).unwrap(),
-            Command::Ack { event_id: "$e".into() }
-        );
-        assert_eq!(
-            serde_json::from_str::<Command>(
-                r#"{"type":"send","requestId":"reply:$e","roomId":"!r:example.org","txnId":"reply:$e","body":"hello","notice":false}"#
-            )
-            .unwrap(),
-            Command::Send {
-                request_id: "reply:$e".into(),
-                room_id: "!r:example.org".into(),
-                txn_id: "reply:$e".into(),
-                body: "hello".into(),
-                notice: false,
-            }
-        );
-        assert_eq!(
-            serde_json::from_str::<Command>(
-                r#"{"type":"sendVoice","requestId":"voice:$e","roomId":"!r:example.org","txnId":"voice:$e","path":"/d/v.ogg","durationMs":1500,"waveform":[0.5]}"#
-            )
-            .unwrap(),
-            Command::SendVoice {
-                request_id: "voice:$e".into(),
-                room_id: "!r:example.org".into(),
-                txn_id: "voice:$e".into(),
-                path: "/d/v.ogg".into(),
-                duration_ms: 1500,
-                waveform: vec![0.5],
-            }
-        );
-        assert_eq!(
-            serde_json::from_str::<Command>(r#"{"type":"typing","roomId":"!r:example.org","on":true}"#).unwrap(),
-            Command::Typing { room_id: "!r:example.org".into(), on: true }
-        );
-        assert_eq!(
-            serde_json::from_str::<Command>(
-                r#"{"type":"joinCall","roomId":"!r:example.org","vad":{"threshold":0.6,"startMs":200,"endSilenceMs":700,"minSpeechMs":300,"maxMs":20000,"preRollMs":250}}"#
-            )
-            .unwrap(),
-            Command::JoinCall {
-                room_id: "!r:example.org".into(),
-                vad: VadConfig { threshold: 0.6, start_ms: 200, end_silence_ms: 700, min_speech_ms: 300, max_ms: 20_000, pre_roll_ms: 250 },
-            }
-        );
-        assert_eq!(
-            serde_json::from_str::<Command>(r#"{"type":"callSpeak","roomId":"!r:example.org","id":"s1","path":"/d/s1.wav"}"#).unwrap(),
-            Command::CallSpeak { room_id: "!r:example.org".into(), id: "s1".into(), path: "/d/s1.wav".into() }
-        );
+    fn every_event_is_written_as_the_agent_reads_it() {
+        for example in examples("events") {
+            assert_round_trips::<Event>(&example);
+        }
     }
 
     #[test]
-    fn reactions_use_the_field_names_the_agent_reads() {
-        let reaction = Event::Reaction {
-            room_id: "!r:example.org".into(),
-            event_id: "$x".into(),
-            relates_to: "$p".into(),
-            key: "✅".into(),
-            sender: "@me:example.org".into(),
-        };
-        assert_eq!(
-            serde_json::to_string(&reaction).unwrap(),
-            r#"{"type":"reaction","roomId":"!r:example.org","eventId":"$x","relatesTo":"$p","key":"✅","sender":"@me:example.org"}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<Command>(r#"{"type":"react","requestId":"q","roomId":"!r:example.org","txnId":"t","eventId":"$p","key":"❌"}"#).unwrap(),
-            Command::React { request_id: "q".into(), room_id: "!r:example.org".into(), txn_id: "t".into(), event_id: "$p".into(), key: "❌".into() }
-        );
-    }
-
-    #[test]
-    fn call_events_use_the_field_names_the_agent_reads() {
-        let utterance = Event::CallUtterance {
-            room_id: "!r:example.org".into(),
-            user_id: "@me:example.org".into(),
-            path: "/d/u.wav".into(),
-            started_at: 5,
-            duration_ms: 1200,
-        };
-        assert_eq!(
-            serde_json::to_string(&utterance).unwrap(),
-            r#"{"type":"callUtterance","roomId":"!r:example.org","userId":"@me:example.org","path":"/d/u.wav","startedAt":5,"durationMs":1200}"#
-        );
-        let spoken = Event::CallSpoken { room_id: "!r:example.org".into(), id: "s1".into(), played_ms: 900, interrupted: true };
-        assert_eq!(
-            serde_json::to_string(&spoken).unwrap(),
-            r#"{"type":"callSpoken","roomId":"!r:example.org","id":"s1","playedMs":900,"interrupted":true}"#
-        );
-        let members = Event::CallMembers { room_id: "!r:example.org".into(), user_ids: vec!["@me:example.org".into()] };
-        assert_eq!(serde_json::to_string(&members).unwrap(), r#"{"type":"callMembers","roomId":"!r:example.org","userIds":["@me:example.org"]}"#);
+    fn every_command_the_agent_writes_is_read() {
+        for example in examples("commands") {
+            assert_round_trips::<Command>(&example);
+        }
     }
 }

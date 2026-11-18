@@ -1,0 +1,167 @@
+{
+	"events": [
+		{
+			"type": "ready",
+			"userId": "@agent:example.org",
+			"deviceId": "DEVICE"
+		},
+		{
+			"type": "message",
+			"roomId": "!r:example.org",
+			"eventId": "$text",
+			"sender": "@me:example.org",
+			"body": "hi",
+			"ts": 5
+		},
+		{
+			"type": "message",
+			"roomId": "!r:example.org",
+			"eventId": "$voice",
+			"sender": "@me:example.org",
+			"body": "Voice message.ogg",
+			"ts": 6,
+			"audio": {
+				"path": "/d/v.ogg",
+				"mimetype": "audio/ogg",
+				"voice": true
+			}
+		},
+		{
+			"type": "message",
+			"roomId": "!r:example.org",
+			"eventId": "$file",
+			"sender": "@me:example.org",
+			"body": "song.mp3",
+			"ts": 7,
+			"audio": {
+				"path": "/d/f.audio",
+				"voice": false
+			}
+		},
+		{
+			"type": "undecryptable",
+			"roomId": "!r:example.org",
+			"eventId": "$e",
+			"sender": "@me:example.org"
+		},
+		{
+			"type": "sent",
+			"requestId": "q",
+			"eventId": "$s"
+		},
+		{
+			"type": "error",
+			"requestId": "q",
+			"message": "boom"
+		},
+		{
+			"type": "error",
+			"message": "boom"
+		},
+		{
+			"type": "reaction",
+			"roomId": "!r:example.org",
+			"eventId": "$x",
+			"relatesTo": "$p",
+			"key": "✅",
+			"sender": "@me:example.org"
+		},
+		{
+			"type": "callMembers",
+			"roomId": "!r:example.org",
+			"userIds": [
+				"@me:example.org"
+			]
+		},
+		{
+			"type": "callJoined",
+			"roomId": "!r:example.org"
+		},
+		{
+			"type": "callLeft",
+			"roomId": "!r:example.org",
+			"reason": "no LiveKit focus"
+		},
+		{
+			"type": "callSpeech",
+			"roomId": "!r:example.org",
+			"userId": "@me:example.org"
+		},
+		{
+			"type": "callUtterance",
+			"roomId": "!r:example.org",
+			"userId": "@me:example.org",
+			"path": "/d/u.wav",
+			"startedAt": 5,
+			"durationMs": 1200
+		},
+		{
+			"type": "callSpoken",
+			"roomId": "!r:example.org",
+			"id": "s1",
+			"playedMs": 900,
+			"interrupted": true
+		}
+	],
+	"commands": [
+		{
+			"type": "ack",
+			"eventId": "$e"
+		},
+		{
+			"type": "send",
+			"requestId": "q",
+			"roomId": "!r:example.org",
+			"txnId": "t",
+			"body": "hello",
+			"notice": true
+		},
+		{
+			"type": "sendVoice",
+			"requestId": "q",
+			"roomId": "!r:example.org",
+			"txnId": "t",
+			"path": "/d/v.ogg",
+			"durationMs": 1500,
+			"waveform": [
+				0.5,
+				0.25
+			]
+		},
+		{
+			"type": "typing",
+			"roomId": "!r:example.org",
+			"on": true
+		},
+		{
+			"type": "react",
+			"requestId": "q",
+			"roomId": "!r:example.org",
+			"txnId": "t",
+			"eventId": "$p",
+			"key": "❌"
+		},
+		{
+			"type": "joinCall",
+			"roomId": "!r:example.org",
+			"vad": {
+				"threshold": 0.5,
+				"startMs": 200,
+				"endSilenceMs": 700,
+				"minSpeechMs": 300,
+				"maxMs": 20000,
+				"preRollMs": 250
+			}
+		},
+		{
+			"type": "leaveCall",
+			"roomId": "!r:example.org"
+		},
+		{
+			"type": "callSpeak",
+			"roomId": "!r:example.org",
+			"id": "s1",
+			"path": "/d/s1.wav"
+		}
+	]
+}

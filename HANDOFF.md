@@ -172,7 +172,7 @@ CalDAV、朝ブリーフ、定時チェック、通知済み台帳、記憶の�
 
 ### 未検証
 
-- `src/caldav.ts` は Radicale 3.9.1 に対する往復テスト（`test/caldav.integration.test.ts`）が通っている
+- `src/caldav.ts` は Radicale 3.9.1 と 3.9.2 に対する往復テスト（`test/caldav.integration.test.ts`）が通っている
   （`CALDAV_TEST_URL` を設定したときだけ走る。手順はファイル冒頭）。**実際に使う CalDAV サーバーでは未確認**。
   サーバーによって探索や ETag の返し方が違うので、初回接続時に同じテストを当てるとよい
 - スケジューラと記憶の整理は、偽の時計と偽のモデルでのテストだけ。実際のモデルが書くブリーフの質は未確認
@@ -346,6 +346,23 @@ large-v3 の q8_0 は配布されていないので、f16 版から `whisper-qua
 - 同じルームで複数の許可ユーザーが同時に話す場合（発話はそれぞれ別に会話に入る）
 - 通話の参加者の期限切れ（ブラウザが落ちたまま）: tuwunel が遅延イベント（MSC4140）に対応していないと、期限（既定4時間）まで
   参加中とみなされ bot も残る
+
+## テストの方針（2026-11-18）
+
+- 1つのテストで1つの振る舞いを確かめ、名前はその振る舞いを文で書く。入力だけ違う場合は表にして1件ずつのテストにする
+- 外から見える結果で確かめる: ルームに送られたもの、モデルに渡った内容、カレンダーや記憶ファイルの状態、
+  再起動しても送り直さないこと。内部の DB、送信 ID の書式、iCalendar の文字列はテストで見ない
+  （例外: 人が手で編集する記憶ファイルの形と、他のクライアントに新しい版だと伝える `SEQUENCE`）
+- 文言は写さない。モデルに渡す決まった文は本体の定数や関数（`refusal()`、`OVERTAKEN`、`UNTRUSTED`）と比べる。
+  ユーザー向けの通知は「通知であること」と「理由やデータを含むこと」までを確かめる
+- ライブラリが保証することはテストしない
+- 時間は偽の時計か偽のタイマーで進める。もう決まっているはずの結果は待たずに確かめ、待ち続けないようにする。
+  `npm test` は1テスト60秒で打ち切る
+- 共通の準備は `test/env.ts`（`agentEnv`、`testConfig`、`tempDir`。`using` / `await using` で後片付け）、
+  偽物とモデル側の補助は `test/fakes.ts`
+- gateway と agent がやり取りする行は `test/protocol.ts` に型つきで書き、`test/protocol.json` に書き出したものを
+  gateway の往復テストが読む。`protocol.ts` を変えたら次で作り直す（ずれていると `test/protocol.test.ts` が落ちる）:
+  `node -e 'import("./test/protocol.ts").then(m => process.stdout.write(JSON.stringify(m.protocolJson(), null, "\t") + "\n"))' > test/protocol.json`
 
 ## 提案（未承認）
 

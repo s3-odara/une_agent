@@ -143,7 +143,7 @@ export class Calls {
 			return;
 		}
 		if (room.turn !== turn) {
-			room.note = "直前の返答は、読み上げる前にユーザーが話し始めたので伝わっていません";
+			room.note = OVERTAKEN;
 			return;
 		}
 		await this.#speak(utterance.roomId, room, turn, answer.text);
@@ -201,6 +201,10 @@ export class Calls {
 	}
 }
 
+/** Told with the next utterance when the answer was not spoken because the user had started speaking again. */
+export const OVERTAKEN = "直前の返答は、読み上げる前にユーザーが話し始めたので伝わっていません";
+
+/** Told with the next utterance when the user talked over the answer after `heard` of it. */
 function interrupted(heard: string): string {
 	return heard === "" ? "直前の返答は、話し始める前に遮られました" : `直前の返答は「${heard}」まで話したところで遮られました`;
 }

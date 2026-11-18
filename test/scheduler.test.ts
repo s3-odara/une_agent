@@ -1,333 +1,284 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { MemoryStorage } from "@earendil-works/pi-durable";
 import { buildEvent, buildTodo, Calendars } from "../src/calendar.ts";
-import { parseConfig } from "../src/config.ts";
-import { openAgentHarness } from "../src/harness.ts";
 import { HostDb } from "../src/hostdb.ts";
-import { MemoryStore } from "../src/memory.ts";
 import { Scheduler } from "../src/scheduler.ts";
-import { memoryFingerprint, tidyMemory } from "../src/tidy.ts";
 import { localToEpoch } from "../src/time.ts";
-import { parseJmaForecast } from "../src/weather.ts";
+import { tempDir, testConfig } from "./env.ts";
 import { ics, MemoryCalDav } from "./fakes.ts";
 
 const tz = "Asia/Tokyo";
-const room = "!main:example.org";
+const ROOM = "!main:example.org";
 const at = (local: string) => localToEpoch(local, tz);
+/** Written well before the tests' days, so nothing counts as news unless a test says so. */
+const LONG_AGO = at("2026-10-01T09:00");
 
-function setup(extra: Record<string, unknown> = {}) {
-	const dir = mkdtempSync(join(tmpdir(), "agent-scheduler-test-"));
-	const config = parseConfig(
-		{
-			matrix: { homeserver: "https://example.org", userId: "@agent:example.org", allowedUsers: ["@me:example.org"] },
-			model: { provider: "faux", modelId: "faux-1" },
-			personas: { default: "soul.md" },
-			timezone: tz,
-			caldav: {
-				url: "https://dav.example.org",
-				username: "me",
-				calendars: { Work: { kind: "events" }, Home: { kind: "events" }, ToDo: { kind: "todos" } },
-			},
-			proactive: { roomId: room },
-			...extra,
-		},
-		dir,
-	);
-	const db = new HostDb(join(dir, "host.sqlite"));
+/**
+ * A scheduler on a CalDAV server in memory, with what it asks the room's persona to say (`submitted`) and what it
+ * tells the room itself (`notices`) recorded. The clock is moved by `tickAt`, which also runs one check.
+ */
+function setup(proactive: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) {
+	const dir = tempDir();
+	const config = testConfig(dir.path, {
+		caldav: { url: "https://dav.example.org", username: "me", calendars: { Work: { kind: "events" }, Home: { kind: "events" }, ToDo: { kind: "todos" } } },
+		proactive: { roomId: ROOM, ...proactive },
+		...extra,
+	});
+	const db = new HostDb(join(dir.path, "host.sqlite"));
 	const backend = new MemoryCalDav();
-	const calendars = new Calendars(backend, config.caldav!.calendars, tz);
-	const submitted: { key: string; content: string }[] = [];
-	const notices: { key: string; body: string }[] = [];
+	const submitted: string[] = [];
+	const notices: string[] = [];
 	let now = at("2026-11-17T05:00");
 	const scheduler = new Scheduler({
 		config,
 		db,
-		calendars,
+		calendars: new Calendars(backend, config.caldav!.calendars, tz),
 		weather: async () => ({ area: "東京地方", reportedAt: "2026-11-17T05:00:00+09:00", days: [{ date: "2026-11-17", weather: "くもり昼過ぎから雨", rain: ["12-18時 70%"], maxTemp: "15" }] }),
-		submit: async (_room, key, content) => void submitted.push({ key, content }),
-		notice: async (_room, key, body) => void notices.push({ key, body }),
+		submit: async (_room, _key, content) => void submitted.push(content),
+		notice: async (_room, _key, body) => void notices.push(body),
 		now: () => now,
 		log: () => {},
 	});
 	return {
-		dir,
 		config,
 		db,
 		backend,
-		calendars,
-		scheduler,
 		submitted,
 		notices,
+		event: (file: string, summary: string, start: string, written = LONG_AGO) => backend.put(file === "meeting" ? "Work" : "Home", `${file}.ics`, buildEvent(file, { summary, start }, tz, written)),
+		task: (file: string, summary: string, due?: string, written = LONG_AGO) => backend.put("ToDo", `${file}.ics`, buildTodo(file, { summary, ...(due === undefined ? {} : { due }) }, tz, written)),
 		/** Moves the clock and runs one check. */
 		tickAt: async (local: string) => {
 			now = at(local);
 			await scheduler.tick();
 		},
-		cleanup: () => {
+		/** Runs the checks through a day, every 15 minutes, from `from` to `to`. */
+		ticksFrom: async (from: string, to: string) => {
+			for (let time = at(from); time <= at(to); time += 15 * 60_000) {
+				now = time;
+				await scheduler.tick();
+			}
+		},
+		[Symbol.dispose]() {
 			db.close();
-			rmSync(dir, { recursive: true, force: true });
+			dir[Symbol.dispose]();
 		},
 	};
 }
 
-test("the morning brief goes out once, with the day's data, and covers the reminders due at that moment", async () => {
-	const t = setup();
-	try {
-		const made = at("2026-11-10T09:00");
-		t.backend.put("Home", "dentist.ics", buildEvent("dentist", { summary: "歯医者", start: "2026-11-17T07:30", location: "駅前" }, tz, made));
-		t.backend.put("Work", "meeting.ics", buildEvent("meeting", { summary: "定例", start: "2026-11-18T10:00" }, tz, made));
-		t.backend.put("Home", "far.ics", buildEvent("far", { summary: "来週の予定", start: "2026-11-25T10:00" }, tz, made));
-		t.backend.put("ToDo", "report.ics", buildTodo("report", { summary: "レポート提出", due: "2026-11-20" }, tz, made));
-		t.backend.put("ToDo", "late.ics", buildTodo("late", { summary: "払込", due: "2026-11-15" }, tz, made));
-		t.backend.put("ToDo", "someday.ics", buildTodo("someday", { summary: "本棚の整理" }, tz, made));
-
-		await t.tickAt("2026-11-17T05:45");
-		assert.equal(t.submitted.length, 0);
-
-		await t.tickAt("2026-11-17T06:00");
-		assert.equal(t.submitted.length, 1);
-		const brief = t.submitted[0]!;
-		assert.equal(brief.key, "brief:2026-11-17");
-		assert.match(brief.content, /## 今日 11\/17\(火\) の予定\n- 11\/17\(火\) 07:30–08:30 歯医者 @駅前\n/);
-		assert.match(brief.content, /## 明日 11\/18\(水\) の予定\n- 11\/18\(水\) 10:00–11:00 定例\n/);
-		assert.doesNotMatch(brief.content, /来週の予定/);
-		assert.match(brief.content, /- レポート提出 期日 11\/20\(金\)\n/);
-		assert.match(brief.content, /- 払込 期日 11\/15\(日\)（期日を2日過ぎている）/);
-		assert.match(brief.content, /期日なしの未完了タスクが 1 件/);
-		assert.match(brief.content, /くもり昼過ぎから雨 最高15℃ 降水確率 12-18時 70%/);
-
-		// The dentist is within two hours and the report is three days out: both were due, and the brief said them.
-		await t.tickAt("2026-11-17T06:15");
-		await t.tickAt("2026-11-17T06:30");
-		assert.equal(t.submitted.length, 1);
-	} finally {
-		t.cleanup();
-	}
+test("the brief is sent once a day, at its time", async () => {
+	using t = setup();
+	await t.tickAt("2026-11-17T05:45");
+	assert.equal(t.submitted.length, 0);
+	await t.ticksFrom("2026-11-17T06:00", "2026-11-17T20:45");
+	assert.equal(t.submitted.length, 1);
+	await t.tickAt("2026-11-18T06:00");
+	assert.equal(t.submitted.length, 2);
 });
 
-test("a brief missed while the agent was down is sent at the next check that day, not the next day's twice", async () => {
-	const t = setup();
-	try {
-		await t.tickAt("2026-11-17T09:20");
-		assert.deepEqual(t.submitted.map((item) => item.key), ["brief:2026-11-17"]);
-		await t.tickAt("2026-11-17T21:30");
-		await t.tickAt("2026-11-18T06:05");
-		assert.deepEqual(t.submitted.map((item) => item.key), ["brief:2026-11-17", "brief:2026-11-18"]);
-		assert.match(t.submitted[1]!.content, /## 今日 11\/18\(水\) の予定\n- なし/);
-	} finally {
-		t.cleanup();
-	}
+test("a brief missed while the agent was down is sent at the next check that day, and the next day's comes as usual", async () => {
+	using t = setup();
+	await t.tickAt("2026-11-17T09:20");
+	await t.tickAt("2026-11-17T20:30");
+	assert.equal(t.submitted.length, 1);
+	await t.tickAt("2026-11-18T06:05");
+	assert.equal(t.submitted.length, 2);
 });
 
-test("reminders are sent once: two hours before an event, three days and one day before a due date", async () => {
-	const t = setup();
-	try {
-		const made = at("2026-11-10T09:00");
-		t.backend.put("Home", "dentist.ics", buildEvent("dentist", { summary: "歯医者", start: "2026-11-17T15:30" }, tz, made));
-		t.backend.put("Home", "late.ics", buildEvent("late", { summary: "夜の予定", start: "2026-11-17T22:30" }, tz, made));
-		t.backend.put("Home", "allday.ics", buildEvent("allday", { summary: "誕生日", start: "2026-11-17" }, tz, made));
-		t.backend.put("ToDo", "report.ics", buildTodo("report", { summary: "レポート提出", due: "2026-11-21" }, tz, made));
-		await t.tickAt("2026-11-17T06:00");
-		t.submitted.length = 0;
+test("the brief has today's and tomorrow's events, the open tasks, and the forecast, and leaves out later events", async () => {
+	using t = setup();
+	t.event("dentist", "歯医者", "2026-11-17T15:30");
+	t.event("meeting", "定例", "2026-11-18T10:00");
+	t.event("far", "来週の予定", "2026-11-25T10:00");
+	t.task("report", "レポート提出", "2026-11-20");
+	await t.tickAt("2026-11-17T06:00");
 
-		await t.tickAt("2026-11-17T13:15");
-		assert.equal(t.submitted.length, 0);
-
-		await t.tickAt("2026-11-17T13:30");
-		assert.equal(t.submitted.length, 1);
-		assert.match(t.submitted[0]!.content, /^\[定時チェック 2026-11-17\(火\) 13:30\]/);
-		assert.match(t.submitted[0]!.content, /- まもなく開始（約120分後）: 11\/17\(火\) 15:30–16:30 歯医者/);
-		assert.doesNotMatch(t.submitted[0]!.content, /誕生日|レポート/);
-		await t.tickAt("2026-11-17T13:45");
-		assert.equal(t.submitted.length, 1);
-
-		// 20:30 is inside the window, so the 22:30 event is still announced; at 21:15 nothing would be.
-		await t.tickAt("2026-11-17T20:30");
-		assert.match(t.submitted[1]!.content, /夜の予定/);
-
-		// A due-date reminder falls due with the first check of its day, which is the brief: the brief carries it.
-		await t.tickAt("2026-11-18T06:00");
-		assert.match(t.submitted.at(-1)!.content, /## いま知らせること\n- 3日後が期日: レポート提出 期日 11\/21\(土\)/);
-		await t.tickAt("2026-11-18T12:00");
-		await t.tickAt("2026-11-19T06:00");
-		assert.doesNotMatch(t.submitted.at(-1)!.content, /いま知らせること/);
-		await t.tickAt("2026-11-20T06:00");
-		assert.match(t.submitted.at(-1)!.content, /- 明日が期日: レポート提出/);
-		assert.deepEqual(t.submitted.slice(2).map((item) => item.key), ["brief:2026-11-18", "brief:2026-11-19", "brief:2026-11-20"]);
-
-		// A task added after the day's brief still gets its reminder that day.
-		t.backend.put("ToDo", "new.ics", buildTodo("new", { summary: "切符を買う", due: "2026-11-21" }, tz, made));
-		await t.tickAt("2026-11-20T12:00");
-		assert.match(t.submitted.at(-1)!.content, /^\[定時チェック[^\n]*\]\n[^\n]*\n\n- 明日が期日: 切符を買う/);
-	} finally {
-		t.cleanup();
-	}
+	const brief = t.submitted[0] ?? "";
+	for (const expected of ["歯医者", "定例", "レポート提出", "くもり昼過ぎから雨"]) assert.ok(brief.includes(expected), expected);
+	assert.ok(!brief.includes("来週の予定"));
 });
 
-test("only what someone else just added or changed is reported as news", async () => {
-	const t = setup();
-	try {
-		const old = at("2026-10-01T09:00");
-		t.backend.put("Home", "known.ics", buildEvent("known", { summary: "前からある予定", start: "2026-11-30T10:00" }, tz, old));
-		// The first check has nothing to compare against: it only takes the snapshot.
-		await t.tickAt("2026-11-17T06:00");
-		await t.tickAt("2026-11-17T10:00");
-		t.submitted.length = 0;
-
-		// Added from a phone a few minutes ago.
-		t.backend.put("Home", "new.ics", buildEvent("new", { summary: "美容院", start: "2026-11-22T14:00" }, tz, at("2026-11-17T10:05")));
-		// Written by the agent itself: its tool records the new ETag at once.
-		await t.calendars.create("Work", "own", { summary: "自分で登録した予定", start: "2026-11-21T09:00" }, at("2026-11-17T10:06"));
-		t.db.setSeenItem("Work/own.ics", await t.calendars.etag("Work/own.ics"));
-		// Made long ago for a date that only now comes into view: new to the snapshot, but not news.
-		t.backend.put("Home", "entering.ics", buildEvent("entering", { summary: "ずっと前に入れた予定", start: "2027-01-15T10:00" }, tz, old));
-		// Completed elsewhere: nothing to act on.
-		t.backend.put("ToDo", "done.ics", ics("BEGIN:VTODO", "UID:done", "SUMMARY:済んだこと", "STATUS:COMPLETED", "DTSTAMP:20261117T010600Z", "END:VTODO"));
-
-		await t.tickAt("2026-11-17T10:15");
-		assert.equal(t.submitted.length, 1);
-		assert.match(t.submitted[0]!.content, /- 追加された予定: 11\/22\(日\) 14:00–15:00 美容院/);
-		assert.doesNotMatch(t.submitted[0]!.content, /自分で登録|ずっと前|済んだこと|前からある/);
-
-		t.backend.put("Home", "new.ics", buildEvent("new", { summary: "美容院", start: "2026-11-22T16:00" }, tz, at("2026-11-17T10:20")));
-		await t.tickAt("2026-11-17T10:30");
-		assert.match(t.submitted[1]!.content, /- 変更された予定: 11\/22\(日\) 16:00–17:00 美容院/);
-		await t.tickAt("2026-11-17T10:45");
-		assert.equal(t.submitted.length, 2);
-	} finally {
-		t.cleanup();
-	}
+test("a task past its due date is in the brief with how long ago that was", async () => {
+	using t = setup();
+	t.task("late", "払込", "2026-11-15");
+	await t.tickAt("2026-11-17T06:00");
+	assert.match(t.submitted[0] ?? "", /払込[^\n]*2日/);
 });
 
-test("an unreachable calendar is said once a day instead of a brief that silently never comes", async () => {
-	const t = setup();
-	try {
-		t.backend.down = true;
-		await t.tickAt("2026-11-17T06:00");
-		await t.tickAt("2026-11-17T06:15");
-		assert.equal(t.submitted.length, 0);
-		assert.deepEqual(t.notices.map((notice) => notice.key), ["caldav-down:2026-11-17"]);
-		assert.match(t.notices[0]!.body, /接続できません: connect ECONNREFUSED/);
+test("an event is reminded once, from two hours before it starts", async () => {
+	using t = setup();
+	t.event("dentist", "歯医者", "2026-11-17T15:30");
+	await t.tickAt("2026-11-17T06:00");
+	t.submitted.length = 0;
 
-		t.backend.down = false;
-		await t.tickAt("2026-11-17T06:30");
-		assert.deepEqual(t.submitted.map((item) => item.key), ["brief:2026-11-17"]);
-	} finally {
-		t.cleanup();
-	}
+	await t.tickAt("2026-11-17T13:15");
+	assert.equal(t.submitted.length, 0);
+	await t.tickAt("2026-11-17T13:30");
+	await t.tickAt("2026-11-17T13:45");
+	assert.equal(t.submitted.length, 1);
+	assert.match(t.submitted[0]!, /歯医者/);
 });
 
-test("the memory tidy takes a second look at what was written, and trusts the answer only so far", async () => {
-	const dir = mkdtempSync(join(tmpdir(), "agent-tidy-test-"));
-	const faux = fauxProvider();
-	const model = faux.getModel();
-	const models = createModels();
-	models.setProvider(faux.provider);
-	const harness = await openAgentHarness(new MemoryStorage(), models, context);
-	try {
-		const store = new MemoryStore(dir, { shared: 2000, private: 1000 });
-		const personas = [{ name: "calm", privateMemory: true }];
-		const calm = personas[0]!;
-		store.add("shared", calm, "ユーザーは緑茶を好む", "2026-11-10");
-		store.add("shared", calm, "ユーザーは緑茶がとても好きで、コーヒーよりも緑茶をよく飲むとのこと", "2026-11-16");
-		store.add("shared", calm, "ユーザーは今日は眠いと言っていた", "2026-11-16");
-		store.add("private", calm, "calm との合言葉は山", "2026-11-12");
-		const options = { harness, store, personas, model: { provider: model.provider, modelId: model.id }, context, log: () => {} };
-		const sharedBefore = store.entries("shared", calm);
-
-		// Not a list, then a list longer than the original: both leave memory untouched.
-		faux.setResponses([fauxAssistantMessage("整理しました！"), fauxAssistantMessage("- calm との合言葉は山\n- それに加えて、ユーザーについての長い長い説明をここに書き足します")]);
-		assert.deepEqual(await tidyMemory(options, "2026-11-17"), []);
-		assert.deepEqual(store.entries("shared", calm), sharedBefore);
-		assert.deepEqual(store.entries("private", calm), ["calm との合言葉は山 (2026-11-12)"]);
-
-		// A real tidy of the shared list; the private memo comes back as it was, without its date.
-		const before = memoryFingerprint(store, personas);
-		faux.setResponses([fauxAssistantMessage("- ユーザーは緑茶を好む\n- ユーザーはコーヒーより緑茶をよく飲む"), fauxAssistantMessage("- calm との合言葉は山")]);
-		const changes = await tidyMemory(options, "2026-11-17");
-		assert.deepEqual(store.entries("shared", calm), ["ユーザーは緑茶を好む (2026-11-10)", "ユーザーはコーヒーより緑茶をよく飲む (2026-11-17)"]);
-		assert.deepEqual(store.entries("private", calm), ["calm との合言葉は山 (2026-11-12)"]);
-		assert.deepEqual(changes.map((change) => change.label), ["shared"]);
-		assert.equal(changes[0]?.removed.length, 2);
-		assert.deepEqual(changes[0]?.added, ["ユーザーはコーヒーより緑茶をよく飲む (2026-11-17)"]);
-		assert.notEqual(memoryFingerprint(store, personas), before);
-		assert.deepEqual(readdirSync(join(dir, "history")), ["shared-2026-11-17.md"]);
-	} finally {
-		await harness.close(context);
-		rmSync(dir, { recursive: true, force: true });
-	}
+test("what falls due when the brief goes out is in the brief and not sent again", async () => {
+	using t = setup();
+	t.event("dentist", "歯医者", "2026-11-17T07:30");
+	await t.ticksFrom("2026-11-17T06:00", "2026-11-17T07:30");
+	assert.equal(t.submitted.length, 1);
+	assert.match(t.submitted[0]!, /歯医者/);
 });
 
-test("the tidy runs at its hour, at most once per interval, and only when memory was written since", async () => {
-	const t = setup({ memory: { tidyTime: "02:00", tidyEveryDays: 1 } });
-	try {
-		let fingerprint = "a";
-		const runs: string[] = [];
-		const scheduler = new Scheduler({
-			config: t.config,
-			db: t.db,
-			submit: async () => {},
-			notice: async (_room, key, body) => void t.notices.push({ key, body }),
-			tidy: {
-				fingerprint: () => fingerprint,
-				run: async (date) => {
-					runs.push(date);
-					fingerprint = `${fingerprint}'`;
-					return [{ label: "shared", removed: ["古い項目 (2026-11-01)"], added: [] }];
-				},
+test("an all-day event is not reminded", async () => {
+	using t = setup();
+	t.event("birthday", "誕生日", "2026-11-17");
+	await t.tickAt("2026-11-17T06:00");
+	t.submitted.length = 0;
+	await t.ticksFrom("2026-11-17T06:15", "2026-11-17T20:45");
+	assert.equal(t.submitted.length, 0);
+});
+
+test("a task is reminded three days and one day before its due date", async () => {
+	// The brief comes after the first check, so the reminders are sent on their own.
+	using t = setup({ briefTime: "20:00", windowStart: "07:00" });
+	t.task("report", "レポート提出", "2026-11-21");
+	const remindedOn = async (day: string) => {
+		const before = t.submitted.length;
+		await t.ticksFrom(`${day}T07:00`, `${day}T12:00`);
+		return t.submitted.slice(before).some((content) => content.includes("レポート提出"));
+	};
+	assert.deepEqual(
+		[await remindedOn("2026-11-17"), await remindedOn("2026-11-18"), await remindedOn("2026-11-19"), await remindedOn("2026-11-20"), await remindedOn("2026-11-21")],
+		[false, true, false, true, false],
+	);
+});
+
+test("a task added after the day's brief is still reminded that day", async () => {
+	using t = setup();
+	await t.tickAt("2026-11-20T06:00");
+	t.submitted.length = 0;
+	t.task("ticket", "切符を買う", "2026-11-21");
+	await t.tickAt("2026-11-20T12:00");
+	assert.equal(t.submitted.length, 1);
+	assert.match(t.submitted[0]!, /切符を買う/);
+});
+
+test("an item someone else just added is reported once, and again when it is changed", async () => {
+	using t = setup();
+	await t.tickAt("2026-11-17T10:00");
+	t.submitted.length = 0;
+
+	t.event("salon", "美容院", "2026-11-22T14:00", at("2026-11-17T10:05"));
+	await t.tickAt("2026-11-17T10:15");
+	await t.tickAt("2026-11-17T10:30");
+	assert.equal(t.submitted.length, 1);
+	assert.match(t.submitted[0]!, /美容院/);
+
+	t.event("salon", "美容院", "2026-11-22T16:00", at("2026-11-17T10:35"));
+	await t.tickAt("2026-11-17T10:45");
+	assert.equal(t.submitted.length, 2);
+	assert.match(t.submitted[1]!, /16:00/);
+});
+
+test("an item made long ago that only now comes into view is not news", async () => {
+	using t = setup();
+	await t.tickAt("2026-11-17T10:00");
+	t.submitted.length = 0;
+	// Its date is past the window the scheduler looks at until the next day.
+	t.event("entering", "ずっと前に入れた予定", "2027-01-16T10:00");
+	await t.tickAt("2026-11-17T10:15");
+	await t.tickAt("2026-11-18T10:00");
+	assert.ok(t.submitted.every((content) => !content.includes("ずっと前に入れた予定")));
+});
+
+test("a task completed elsewhere is not news", async () => {
+	using t = setup();
+	await t.tickAt("2026-11-17T10:00");
+	t.submitted.length = 0;
+	t.backend.put("ToDo", "done.ics", ics("BEGIN:VTODO", "UID:done", "SUMMARY:済んだこと", "STATUS:COMPLETED", "DTSTAMP:20261117T010600Z", "END:VTODO"));
+	await t.tickAt("2026-11-17T10:15");
+	assert.equal(t.submitted.length, 0);
+});
+
+test("the first check only takes note of what is there: none of it is news", async () => {
+	using t = setup();
+	t.event("salon", "美容院", "2026-11-22T14:00", at("2026-11-17T09:55"));
+	await t.tickAt("2026-11-17T10:00");
+	t.submitted.length = 0;
+	await t.tickAt("2026-11-17T10:15");
+	assert.equal(t.submitted.length, 0);
+});
+
+test("an unreachable calendar is told to the room once a day, with the reason", async () => {
+	using t = setup();
+	t.backend.down = true;
+	await t.ticksFrom("2026-11-17T06:00", "2026-11-17T08:00");
+	assert.equal(t.submitted.length, 0);
+	assert.equal(t.notices.length, 1);
+	assert.match(t.notices[0]!, /ECONNREFUSED/);
+
+	await t.tickAt("2026-11-18T06:00");
+	assert.equal(t.notices.length, 2);
+});
+
+test("the brief goes out once the calendar can be reached again", async () => {
+	using t = setup();
+	t.backend.down = true;
+	await t.tickAt("2026-11-17T06:00");
+	t.backend.down = false;
+	await t.tickAt("2026-11-17T06:15");
+	assert.equal(t.submitted.length, 1);
+});
+
+/** A scheduler with only the memory tidy, whose fingerprint and runs the test controls. */
+function tidySetup() {
+	const t = setup({}, { memory: { tidyTime: "02:00", tidyEveryDays: 1 } });
+	let fingerprint = "a";
+	const runs: string[] = [];
+	let clock = 0;
+	const scheduler = new Scheduler({
+		config: t.config,
+		db: t.db,
+		submit: async () => {},
+		notice: async (_room, _key, body) => void t.notices.push(body),
+		tidy: {
+			fingerprint: () => fingerprint,
+			run: async (date) => {
+				runs.push(date);
+				fingerprint = `${fingerprint}'`;
+				return [{ label: "shared", removed: ["古い項目 (2026-11-01)"], added: [] }];
 			},
-			now: () => clock,
-			log: () => {},
-		});
-		let clock = at("2026-11-17T01:45");
-		const tickAt = async (local: string) => {
+		},
+		now: () => clock,
+		log: () => {},
+	});
+	return {
+		...t,
+		runs,
+		/** Memory written since the last look. */
+		write: () => void (fingerprint = `${fingerprint}+`),
+		tickAt: async (local: string) => {
 			clock = at(local);
 			await scheduler.tick();
-		};
+		},
+	};
+}
 
-		await tickAt("2026-11-17T01:45");
-		assert.deepEqual(runs, []);
-		await tickAt("2026-11-17T02:00");
-		await tickAt("2026-11-17T02:15");
-		assert.deepEqual(runs, ["2026-11-17"]);
-		assert.match(t.notices[0]!.body, /記憶（shared）を整理しました。\n− 古い項目 \(2026-11-01\)/);
-
-		// Nothing written during the 17th: no second look on the 18th.
-		await tickAt("2026-11-18T02:00");
-		assert.deepEqual(runs, ["2026-11-17"]);
-		fingerprint = "b";
-		await tickAt("2026-11-19T02:00");
-		assert.deepEqual(runs, ["2026-11-17", "2026-11-19"]);
-	} finally {
-		t.cleanup();
-	}
+test("the memory tidy runs at its hour, once, and tells the room what it removed", async () => {
+	using t = tidySetup();
+	await t.tickAt("2026-11-17T01:45");
+	assert.deepEqual(t.runs, []);
+	await t.tickAt("2026-11-17T02:00");
+	await t.tickAt("2026-11-17T02:15");
+	assert.deepEqual(t.runs, ["2026-11-17"]);
+	assert.match(t.notices[0]!, /古い項目 \(2026-11-01\)/);
 });
 
-test("the forecast file is read into days, and a file of another shape yields none instead of failing", () => {
-	const json = [
-		{
-			publishingOffice: "気象庁",
-			reportDatetime: "2026-11-17T05:00:00+09:00",
-			timeSeries: [
-				{ timeDefines: ["2026-11-17T05:00:00+09:00", "2026-11-18T00:00:00+09:00"], areas: [{ area: { name: "東京地方" }, weathers: ["くもり　昼過ぎ　から　雨", "晴れ"] }] },
-				{ timeDefines: ["2026-11-17T06:00:00+09:00", "2026-11-17T12:00:00+09:00", "2026-11-18T00:00:00+09:00"], areas: [{ pops: ["30", "70", "10"] }] },
-				{ timeDefines: ["2026-11-17T09:00:00+09:00", "2026-11-17T00:00:00+09:00", "2026-11-18T00:00:00+09:00", "2026-11-18T09:00:00+09:00"], areas: [{ temps: ["15", "15", "9", "21"] }] },
-			],
-		},
-	];
-	const forecast = parseJmaForecast(json, tz);
-	assert.equal(forecast.area, "東京地方");
-	assert.deepEqual(forecast.days, [
-		{ date: "2026-11-17", weather: "くもり昼過ぎから雨", rain: ["06-12時 30%", "12-18時 70%"], maxTemp: "15" },
-		{ date: "2026-11-18", weather: "晴れ", rain: ["00-06時 10%"], minTemp: "9", maxTemp: "21" },
-	]);
-	assert.deepEqual(parseJmaForecast({ unexpected: true }, tz).days, []);
-	assert.deepEqual(parseJmaForecast([{ timeSeries: "nope" }], tz).days, []);
+test("the memory tidy is skipped when nothing was written since the last one", async () => {
+	using t = tidySetup();
+	await t.tickAt("2026-11-17T02:00");
+	await t.tickAt("2026-11-18T02:00");
+	assert.deepEqual(t.runs, ["2026-11-17"]);
+	t.write();
+	await t.tickAt("2026-11-19T02:00");
+	assert.deepEqual(t.runs, ["2026-11-17", "2026-11-19"]);
 });

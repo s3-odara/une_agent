@@ -16,6 +16,7 @@ pub const FRAME_SAMPLES: usize = (VAD_RATE / 1000 * FRAME_MS) as usize;
 
 /// How a stream is cut into utterances. The agent sends it with the join, from `config.json`.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(serde::Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct VadConfig {
     /// The VAD's score (0 to 1) from which a frame counts as speech.
@@ -30,12 +31,6 @@ pub struct VadConfig {
     pub max_ms: u32,
     /// Audio kept from before the start, so the first syllable is not lost.
     pub pre_roll_ms: u32,
-}
-
-impl Default for VadConfig {
-    fn default() -> Self {
-        Self { threshold: 0.5, start_ms: 208, end_silence_ms: 800, min_speech_ms: 300, max_ms: 30_000, pre_roll_ms: 300 }
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -144,6 +139,34 @@ impl Decimator {
             }
         }
         out
+    }
+}
+
+/// A participant's 48 kHz stream in, cuts out: decimated to 16 kHz, framed, each frame judged by `is_speech`, and the
+/// frames segmented. The call feeds it what LiveKit hands over, in pieces of any size.
+pub struct Cutter<D> {
+    decimator: Decimator,
+    /// 16 kHz samples not yet making a whole frame.
+    pending: Vec<i16>,
+    is_speech: D,
+    segmenter: Segmenter,
+}
+
+impl<D: FnMut(&[i16]) -> bool> Cutter<D> {
+    pub fn new(config: VadConfig, is_speech: D) -> Self {
+        Self { decimator: Decimator::new(), pending: Vec::with_capacity(FRAME_SAMPLES * 2), is_speech, segmenter: Segmenter::new(config) }
+    }
+
+    pub fn push(&mut self, samples: &[i16]) -> Vec<Cut> {
+        self.pending.extend(self.decimator.push(samples));
+        let mut cuts = Vec::new();
+        while self.pending.len() >= FRAME_SAMPLES {
+            let frame = &self.pending[..FRAME_SAMPLES];
+            let speech = (self.is_speech)(frame);
+            cuts.extend(self.segmenter.push(frame, speech));
+            self.pending.drain(..FRAME_SAMPLES);
+        }
+        cuts
     }
 }
 
@@ -270,38 +293,23 @@ mod tests {
         assert!(peak(&high) < 300, "12 kHz removed: {}", peak(&high));
     }
 
-    /// `CALL_TEST_AUDIO=a.wav,b.wav cargo test -- --ignored --nocapture`: how real recordings (any rate ffmpeg made
-    /// 48 kHz mono) are cut with the default settings.
     #[test]
-    #[ignore]
-    fn cuts_real_recordings() {
-        for path in std::env::var("CALL_TEST_AUDIO").expect("CALL_TEST_AUDIO").split(',') {
-            let (samples, rate) = read_wav(&std::fs::read(path).unwrap()).unwrap();
-            assert_eq!(rate, SAMPLE_RATE);
-            let mut decimator = Decimator::new();
-            let mut detector = earshot::Detector::default();
-            let config = VadConfig::default();
-            let mut segmenter = Segmenter::new(config);
-            let mut at = 0usize;
-            let mut cuts = Vec::new();
-            // Fed as LiveKit does, 10 ms at a time, then a second of silence.
-            let silence = vec![0i16; SAMPLE_RATE as usize];
-            let mut pending = Vec::new();
-            for chunk in samples.chunks(480).chain(silence.chunks(480)) {
-                pending.extend(decimator.push(chunk));
-                while pending.len() >= FRAME_SAMPLES {
-                    let frame: Vec<i16> = pending.drain(..FRAME_SAMPLES).collect();
-                    let speech = detector.predict_i16(&frame) >= config.threshold;
-                    at += FRAME_SAMPLES;
-                    match segmenter.push(&frame, speech) {
-                        Some(Cut::SpeechStarted) => cuts.push(format!("start@{}ms", at * 1000 / VAD_RATE as usize)),
-                        Some(Cut::Utterance(u)) => cuts.push(format!("utterance {}ms ending@{}ms", u.len() * 1000 / VAD_RATE as usize, at * 1000 / VAD_RATE as usize)),
-                        None => {}
-                    }
-                }
-            }
-            println!("{path} ({}ms): {cuts:?}", samples.len() * 1000 / SAMPLE_RATE as usize);
-        }
+    fn a_stream_in_pieces_of_any_size_is_cut_where_the_speech_is() {
+        // 48 kHz: 0.2 s of silence, 0.4 s of a 1 kHz tone, then 0.5 s of silence; the tone is what counts as speech.
+        let silence = |ms: usize| vec![0i16; ms * 48];
+        let tone = (0..400 * 48).map(|i| ((2.0 * std::f32::consts::PI * 1_000.0 * i as f32 / 48_000.0).sin() * 10_000.0) as i16);
+        let stream: Vec<i16> = silence(200).into_iter().chain(tone).chain(silence(500)).collect();
+        let mut cutter = Cutter::new(config(), |frame: &[i16]| frame.iter().any(|s| s.unsigned_abs() > 5_000));
+        // Uneven pieces, as a network delivers them.
+        let cuts: Vec<Cut> = stream.chunks(487).flat_map(|piece| cutter.push(piece)).collect();
+
+        assert_eq!(cuts.len(), 2);
+        assert_eq!(cuts[0], Cut::SpeechStarted);
+        let Cut::Utterance(utterance) = &cuts[1] else { panic!("not an utterance: {:?}", cuts[1]) };
+        // The tone, with up to the pre-roll before it and the ending silence after it, at 16 kHz.
+        let ms = utterance.len() * 1000 / VAD_RATE as usize;
+        assert!((400 + 160..=400 + 160 + 32 + 2 * FRAME_MS as usize).contains(&ms), "{ms} ms");
+        assert!(utterance.iter().any(|s| s.unsigned_abs() > 5_000), "the speech is in it");
     }
 
     #[test]

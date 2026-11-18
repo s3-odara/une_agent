@@ -1,45 +1,42 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { parseConfig } from "../src/config.ts";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import type { GatewayEvent } from "../src/gateway.ts";
-import { openAgentHarness } from "../src/harness.ts";
 import { HostDb } from "../src/hostdb.ts";
-import { Bridge, type VoiceOptions } from "../src/rooms.ts";
+import type { VoiceOptions } from "../src/rooms.ts";
 import type { Transcriber } from "../src/stt.ts";
-import { readWav, type Synthesizer, toSpeech, waveform } from "../src/tts.ts";
-import { FakeLink } from "./fakes.ts";
+import { readWav, type Synthesizer, sentences, toSpeech, waveform } from "../src/tts.ts";
+import { agentEnv, ME, tempDir } from "./env.ts";
+import { answer, lastInput, type Request } from "./fakes.ts";
 
-test("an answer is read aloud without Markdown, links, or table rules, and a long one stops at a sentence end", () => {
-	const markdown = [
-		"## 明日の予定",
-		"",
-		"- **10:00** 歯医者（[地図](https://maps.example.com/x)）",
-		"- 15:00 打ち合わせ",
-		"",
-		"| 時刻 | 天気 |",
-		"|---|---|",
-		"| 午前 | 晴れ |",
-		"",
-		"```",
-		"rm -rf /",
-		"```",
-		"詳しくは https://example.com を見てください。",
-	].join("\n");
-	assert.equal(
-		toSpeech(markdown, 400),
-		"明日の予定。10:00 歯医者（地図）。15:00 打ち合わせ。時刻、天気。午前、晴れ。（コードは文字で送りました）。詳しくは （リンク） を見てください。",
-	);
-	assert.equal(toSpeech("一つ目です。二つ目です。三つ目です。", 12), "一つ目です。二つ目です。続きは文字で送りました。");
+for (const [rule, markdown, speech] of [
+	["a heading is read as a sentence", "## 明日の予定", "明日の予定。"],
+	["a list item is read as a sentence, without its marks or emphasis", "- **10:00** 歯医者", "10:00 歯医者。"],
+	["a link is read as its text", "[地図](https://maps.example.com/x)を見て", "地図を見て。"],
+	["a bare URL is not spelled out", "詳しくは https://example.com を見てください。", "詳しくは （リンク） を見てください。"],
+	["a table is read row by row, without its rule", "| 時刻 | 天気 |\n|---|---|\n| 午前 | 晴れ |", "時刻、天気。午前、晴れ。"],
+	["code is not read out", "```\nrm -rf /\n```", "（コードは文字で送りました）。"],
+	["inline marks are dropped", "*強調*と`コード`", "強調とコード。"],
+] as const) {
+	test(`for speech, ${rule}`, () => {
+		assert.equal(toSpeech(markdown, 400), speech);
+	});
+}
+
+test("a long answer is read up to the end of the sentence that fits, and says the rest is in the text", () => {
+	const spoken = toSpeech("一つ目です。二つ目です。三つ目です。", 12);
+	assert.ok(spoken.startsWith("一つ目です。二つ目です。"), spoken);
+	assert.ok(!spoken.includes("三つ目"), spoken);
 });
 
+test("speech is cut into sentences at their ends, whatever the mark", () => {
+	assert.deepEqual(sentences("明日は晴れです。傘はいりません！本当？"), ["明日は晴れです。", "傘はいりません！", "本当？"]);
+});
+
+/** A mono 16-bit WAV file of `samples` (each between -1 and 1). */
 function wav(samples: number[], rate = 24000): Buffer {
 	const data = Buffer.alloc(samples.length * 2);
 	samples.forEach((sample, i) => data.writeInt16LE(Math.round(sample * 32767), i * 2));
@@ -59,49 +56,20 @@ function wav(samples: number[], rate = 24000): Buffer {
 	return Buffer.concat([header, data]);
 }
 
-test("the WAV VOICEVOX returns gives the duration and a waveform scaled to the loudest part", () => {
-	const pcm = readWav(wav([0, 0.25, -0.5, 0.1, 0, 0, 0, 0], 4));
+test("a WAV file is read as its rate and samples", () => {
+	const pcm = readWav(wav([0, 0.5, -0.5], 4));
 	assert.equal(pcm.sampleRate, 4);
-	assert.equal(pcm.samples.length, 8);
-	assert.deepEqual(waveform(pcm.samples, 2), [1, 0]);
-	assert.deepEqual(waveform(new Float32Array(0)), []);
-	assert.throws(() => readWav(Buffer.from("not a wav file at all, really")), /not a WAV/);
+	assert.deepEqual([...pcm.samples].map((sample) => Math.round(sample * 100) / 100), [0, 0.5, -0.5]);
 });
 
-function setup(options: { tts?: boolean } = {}) {
-	const dir = mkdtempSync(join(tmpdir(), "agent-voice-"));
-	writeFileSync(join(dir, "soul.md"), "SOUL");
-	const faux = fauxProvider();
-	const model = faux.getModel();
-	const config = parseConfig(
-		{
-			matrix: { homeserver: "https://example.org", userId: "@agent:example.org", allowedUsers: ["@me:example.org"] },
-			model: { provider: model.provider, modelId: model.id },
-			personas: { calm: { soul: "soul.md", voice: 8 }, plain: "soul.md" },
-			defaultPersona: "calm",
-			rooms: { "!plain:example.org": "plain" },
-			timezone: "Asia/Tokyo",
-			voice: { stt: {}, ...(options.tts === false ? {} : { tts: { speaker: 3 } }) },
-		},
-		dir,
-	);
-	const models = createModels();
-	models.setProvider(faux.provider);
-	const open = async () => ({
-		harness: await openAgentHarness(await openNodeSqliteStorage(join(dir, "session.sqlite")), models, context),
-		db: new HostDb(join(dir, "host.sqlite")),
-	});
-	const recording = (name: string) => {
-		const path = join(dir, `${name}.ogg`);
-		writeFileSync(path, "fake recording");
-		return path;
-	};
-	return { dir, faux, config, open, recording, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
-}
+test("a file that is not a WAV file is refused", () => {
+	assert.throws(() => readWav(Buffer.from("not a wav file at all, really")));
+});
 
-function voiceMessage(roomId: string, eventId: string, path: string): GatewayEvent {
-	return { type: "message", roomId, eventId, sender: "@me:example.org", body: "Voice message.ogg", ts: Date.UTC(2026, 10, 17, 0, 0), audio: { path, voice: true } };
-}
+test("the waveform is the peak of each slice, scaled so the loudest is 1", () => {
+	assert.deepEqual(waveform(Float32Array.from([0, 0.25, -0.5, 0.1, 0, 0.05, 0, 0]), 2), [1, 0.1]);
+	assert.deepEqual(waveform(new Float32Array(0)), []);
+});
 
 class FakeTranscriber implements Transcriber {
 	readonly heard: string[] = [];
@@ -128,170 +96,186 @@ class FakeSynthesizer implements Synthesizer {
 	}
 }
 
-test("a voice message is transcribed, marked as heard, and answered in text and then in the room persona's voice", async () => {
-	const { dir, faux, config, open, recording, cleanup } = setup();
-	const { harness, db } = await open();
-	try {
-		let seen = "";
-		faux.setResponses([
-			(request) => {
-				seen = JSON.stringify(request.messages);
-				return fauxAssistantMessage("**明日**は晴れです。");
-			},
-		]);
-		const link = new FakeLink();
-		const transcriber = new FakeTranscriber(() => " 明日の天気は？ ");
-		const synthesizer = new FakeSynthesizer();
-		const voice: VoiceOptions = { transcriber, synthesizer, outDir: join(dir, "out") };
-		const bridge = new Bridge({ harness, db, link, config, context, voice });
-		bridge.start();
+/**
+ * The agent with voice messages: room `!a` speaks as calm (speaker 8), `!plain` as a persona without a voice of its
+ * own (the default, 3). `tts: false` leaves speech synthesis out of the config; `voice: false` leaves voice out.
+ */
+async function setup(options: { tts?: boolean; voice?: boolean; transcript?: (path: string) => string } = {}) {
+	const env = await agentEnv({
+		config: {
+			personas: { calm: { soul: "soul.md", voice: 8 }, plain: "soul.md" },
+			defaultPersona: "calm",
+			rooms: { "!plain:example.org": "plain" },
+			voice: { stt: {}, ...(options.tts === false ? {} : { tts: { speaker: 3 } }) },
+		},
+	});
+	const transcriber = new FakeTranscriber(options.transcript ?? (() => " 明日の天気は？ "));
+	const synthesizer = new FakeSynthesizer();
+	const voice: VoiceOptions | undefined =
+		options.voice === false ? undefined : { transcriber, ...(options.tts === false ? {} : { synthesizer }), outDir: join(env.dir, "out") };
+	const bridge = env.bridge({ voice, sendRetryDelaysMs: [] });
+	let n = 0;
+	return {
+		env,
+		transcriber,
+		synthesizer,
+		/** A recording on disk, as the gateway leaves it. */
+		recording: (name: string) => {
+			const path = join(env.dir, `${name}.ogg`);
+			writeFileSync(path, "fake recording");
+			return path;
+		},
+		/** The user sends a recording; resolves once everything it set off is done. */
+		send: async (path: string, roomId = "!a:example.org", eventId = `$v${++n}`) => {
+			const event: GatewayEvent = { type: "message", roomId, eventId, sender: ME, body: "Voice message.ogg", ts: 0, audio: { path, voice: true } };
+			env.link.emit(event);
+			await bridge.idle();
+		},
+		[Symbol.asyncDispose]: () => env[Symbol.asyncDispose](),
+	};
+}
 
-		const path = recording("v1");
-		link.emit(voiceMessage("!a:example.org", "$v1", path));
-		await bridge.idle();
-
-		assert.match(seen, /\[2026-11-17\(火\) 09:00 音声\] 明日の天気は？/);
-		assert.deepEqual(
-			link.commands.filter((c) => c.type === "send" || c.type === "sendVoice").map((c) => c.type),
-			["send", "sendVoice"],
-		);
-		assert.equal(link.of("send")[0]?.body, "**明日**は晴れです。");
-		const sent = link.of("sendVoice")[0];
-		assert.equal(sent?.txnId, "voice:$v1");
-		assert.equal(sent?.durationMs, 1500);
-		// The persona of the room sets the voice; the text read is what a listener should hear.
-		assert.deepEqual(synthesizer.said, [{ text: "明日は晴れです。", speaker: 8 }]);
-		assert.equal(db.isDelivered("$v1"), true);
-		assert.equal(existsSync(path), false, "the recording is deleted once admitted");
-		assert.equal(existsSync(sent?.path ?? ""), false, "the spoken answer is deleted once sent");
-
-		// Resent after a lost ack: not transcribed or answered again.
-		const again = recording("v1-again");
-		link.emit(voiceMessage("!a:example.org", "$v1", again));
-		await bridge.idle();
-		assert.equal(transcriber.heard.length, 1);
-		assert.equal(link.of("send").length, 1);
-		assert.equal(existsSync(again), false);
-
-		// A room whose persona has no voice of its own speaks with the default speaker.
-		faux.setResponses([fauxAssistantMessage("はい。")]);
-		link.emit(voiceMessage("!plain:example.org", "$v2", recording("v2")));
-		await bridge.idle();
-		assert.equal(synthesizer.said[1]?.speaker, 3);
-	} finally {
-		await harness.close(context);
-		db.close();
-		cleanup();
-	}
+test("a voice message is put to the model as its transcript, marked as heard rather than typed", async () => {
+	await using t = await setup();
+	const requests: Request[] = [];
+	t.env.faux.setResponses([answer("晴れです。", requests)]);
+	await t.send(t.recording("v"));
+	assert.match(lastInput(requests[0]!), /音声\] 明日の天気は？$/);
 });
 
-test("a recording that cannot be understood is answered with a notice and acked, without asking the model", async () => {
-	const { dir, faux, config, open, recording, cleanup } = setup();
-	const { harness, db } = await open();
-	try {
-		const link = new FakeLink();
-		const transcriber = new FakeTranscriber((path) => {
-			if (path.endsWith("broken.ogg")) throw new Error("ffmpeg could not decode the audio");
-			return "";
-		});
-		const bridge = new Bridge({ harness, db, link, config, context, voice: { transcriber, outDir: join(dir, "out") }, log: () => {} });
-		bridge.start();
-
-		link.emit(voiceMessage("!a:example.org", "$broken", recording("broken")));
-		link.emit(voiceMessage("!a:example.org", "$silent", recording("silent")));
-		await bridge.idle();
-
-		assert.deepEqual(
-			link.of("send").map((send) => [send.txnId, send.notice, send.body]),
-			[
-				["stt:$broken", true, "音声を文字にできませんでした（ffmpeg could not decode the audio）。"],
-				["stt:$silent", true, "音声を聞き取れませんでした。"],
-			],
-		);
-		assert.deepEqual(
-			link.of("ack").map((ack) => ack.eventId),
-			["$broken", "$silent"],
-		);
-		assert.equal(faux.state.callCount, 0);
-	} finally {
-		await harness.close(context);
-		db.close();
-		cleanup();
-	}
+test("a voice message is answered in text first, then by voice", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([fauxAssistantMessage("晴れです。")]);
+	await t.send(t.recording("v"));
+	assert.deepEqual(
+		t.env.link.commands.flatMap((command) => (command.type === "send" ? [`text: ${command.body}`] : command.type === "sendVoice" ? ["voice"] : [])),
+		["text: 晴れです。", "voice"],
+	);
 });
 
-test("without voice settings a voice message gets a notice; without speech synthesis it gets a text answer only", async () => {
-	const { dir, faux, config, open, recording, cleanup } = setup({ tts: false });
-	const { harness, db } = await open();
-	try {
-		const link = new FakeLink();
-		const bridge = new Bridge({ harness, db, link, config, context });
-		bridge.start();
-		link.emit(voiceMessage("!a:example.org", "$a", recording("a")));
-		await bridge.idle();
-		assert.equal(link.of("send")[0]?.body, "音声メッセージには対応していません（設定に voice がありません）。");
-
-		faux.setResponses([fauxAssistantMessage("文字だけです。")]);
-		const voicedLink = new FakeLink();
-		const voiced = new Bridge({ harness, db, link: voicedLink, config, context, voice: { transcriber: new FakeTranscriber(() => "こんにちは"), outDir: join(dir, "out") } });
-		voiced.start();
-		voicedLink.emit(voiceMessage("!a:example.org", "$b", recording("b")));
-		await voiced.idle();
-		assert.equal(voicedLink.of("send")[0]?.body, "文字だけです。");
-		assert.equal(voicedLink.of("sendVoice").length, 0);
-		assert.equal(db.isDelivered("$b"), true);
-	} finally {
-		await harness.close(context);
-		db.close();
-		cleanup();
-	}
+test("the voice reads the answer as it should be heard, not its Markdown", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([fauxAssistantMessage("**明日**は[晴れ](https://example.com)です。")]);
+	await t.send(t.recording("v"));
+	assert.deepEqual(
+		t.synthesizer.said.map((said) => said.text),
+		[toSpeech("**明日**は[晴れ](https://example.com)です。", t.env.config.voice!.tts!.maxChars)],
+	);
 });
 
-test("when speech cannot be made, the text answer stands and the room is told why the voice is missing", async () => {
-	const { dir, faux, config, open, recording, cleanup } = setup();
-	const { harness, db } = await open();
-	try {
-		faux.setResponses([fauxAssistantMessage("答えです。")]);
-		const link = new FakeLink();
-		const synthesizer = new FakeSynthesizer();
-		synthesizer.fail = true;
-		const voice = { transcriber: new FakeTranscriber(() => "質問"), synthesizer, outDir: join(dir, "out") };
-		const bridge = new Bridge({ harness, db, link, config, context, voice, sendRetryDelaysMs: [1], log: () => {} });
-		bridge.start();
-		link.emit(voiceMessage("!a:example.org", "$q", recording("q")));
-		await bridge.idle();
-
-		assert.deepEqual(
-			link.of("send").map((send) => [send.txnId, send.body]),
-			[
-				["reply:$q", "答えです。"],
-				["voicefail:$q", "音声の返答を作れませんでした（engine down）。"],
-			],
-		);
-		assert.equal(db.isDelivered("$q"), true);
-	} finally {
-		await harness.close(context);
-		db.close();
-		cleanup();
-	}
+test("the voice is the room persona's, or the default speaker for a persona without one", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([fauxAssistantMessage("はい。"), fauxAssistantMessage("はい。")]);
+	await t.send(t.recording("a"), "!a:example.org");
+	await t.send(t.recording("b"), "!plain:example.org");
+	assert.deepEqual(
+		t.synthesizer.said.map((said) => said.speaker),
+		[8, 3],
+	);
 });
 
-test("a ledger made before voice messages gains the column and keeps its pending answers", () => {
-	const dir = mkdtempSync(join(tmpdir(), "agent-ledger-"));
-	try {
-		const path = join(dir, "host.sqlite");
-		const old = new DatabaseSync(path);
-		old.exec(`CREATE TABLE deliveries (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, submission_id INTEGER NOT NULL,
-			delivered INTEGER NOT NULL DEFAULT 0, reply_event_id TEXT);
-			INSERT INTO deliveries (event_id, room_id, submission_id) VALUES ('$old', '!r:example.org', 4);`);
-		old.close();
+test("the recording and the spoken answer are deleted once they are done with", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([fauxAssistantMessage("はい。")]);
+	const path = t.recording("v");
+	await t.send(path);
+	assert.equal(existsSync(path), false);
+	assert.equal(existsSync(t.env.link.of("sendVoice")[0]!.path), false);
+});
 
-		const db = new HostDb(path);
+test("a voice message offered again after a lost ack is not transcribed or answered again, and its new copy is deleted", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([fauxAssistantMessage("はい。")]);
+	await t.send(t.recording("v"), "!a:example.org", "$v");
+	const again = t.recording("v-again");
+	await t.send(again, "!a:example.org", "$v");
+
+	assert.equal(t.transcriber.heard.length, 1);
+	assert.equal(t.env.link.of("send").length, 1);
+	assert.equal(t.env.link.of("ack").length, 2);
+	assert.equal(existsSync(again), false);
+});
+
+test("a recording that cannot be transcribed is acked and answered with a notice saying why, without the model", async () => {
+	await using t = await setup({
+		transcript: () => {
+			throw new Error("ffmpeg could not decode the audio");
+		},
+	});
+	await t.send(t.recording("broken"), "!a:example.org", "$broken");
+
+	const [notice] = t.env.link.of("send");
+	assert.equal(notice?.notice, true);
+	assert.match(notice?.body ?? "", /ffmpeg could not decode the audio/);
+	assert.deepEqual(t.env.link.of("ack"), [{ type: "ack", eventId: "$broken" }]);
+	assert.equal(t.env.faux.state.callCount, 0);
+});
+
+test("a recording in which nothing could be heard is acked and answered with a notice, without the model", async () => {
+	await using t = await setup({ transcript: () => "  " });
+	await t.send(t.recording("silent"), "!a:example.org", "$silent");
+
+	assert.deepEqual(
+		t.env.link.of("send").map((send) => send.notice),
+		[true],
+	);
+	assert.deepEqual(t.env.link.of("ack"), [{ type: "ack", eventId: "$silent" }]);
+	assert.equal(t.env.faux.state.callCount, 0);
+});
+
+test("without voice set up, a voice message is answered with a notice, without the model", async () => {
+	await using t = await setup({ voice: false });
+	await t.send(t.recording("v"));
+	assert.deepEqual(
+		t.env.link.of("send").map((send) => send.notice),
+		[true],
+	);
+	assert.equal(t.env.faux.state.callCount, 0);
+});
+
+test("without speech synthesis, a voice message is answered in text only", async () => {
+	await using t = await setup({ tts: false });
+	t.env.faux.setResponses([fauxAssistantMessage("文字だけです。")]);
+	await t.send(t.recording("v"));
+	assert.deepEqual(
+		t.env.link.of("send").map((send) => send.body),
+		["文字だけです。"],
+	);
+	assert.equal(t.env.link.of("sendVoice").length, 0);
+});
+
+test("when speech cannot be made, the text answer stands, a notice says why, and nothing is sent again later", async () => {
+	await using t = await setup();
+	t.synthesizer.fail = true;
+	t.env.faux.setResponses([fauxAssistantMessage("答えです。")]);
+	await t.send(t.recording("q"));
+
+	const sent = t.env.link.of("send");
+	assert.deepEqual(
+		sent.map((send) => send.notice),
+		[false, true],
+	);
+	assert.equal(sent[0]?.body, "答えです。");
+	assert.match(sent[1]?.body ?? "", /engine down/);
+
+	await t.env.restart();
+	await t.env.bridge().idle();
+	assert.equal(t.env.link.of("send").length, 0);
+});
+
+test("a ledger made before voice messages keeps its pending answers, as text answers", () => {
+	using dir = tempDir();
+	const path = join(dir.path, "host.sqlite");
+	const old = new DatabaseSync(path);
+	old.exec(`CREATE TABLE deliveries (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, submission_id INTEGER NOT NULL,
+		delivered INTEGER NOT NULL DEFAULT 0, reply_event_id TEXT);
+		INSERT INTO deliveries (event_id, room_id, submission_id) VALUES ('$old', '!r:example.org', 4);`);
+	old.close();
+
+	const db = new HostDb(path);
+	try {
 		assert.deepEqual(db.pendingDeliveries(), [{ eventId: "$old", roomId: "!r:example.org", submissionId: 4, voice: false }]);
-		db.addDelivery({ eventId: "$new", roomId: "!r:example.org", submissionId: 5, voice: true });
-		assert.equal(db.pendingDeliveries()[1]?.voice, true);
-		db.close();
 	} finally {
-		rmSync(dir, { recursive: true, force: true });
+		db.close();
 	}
 });

@@ -2,18 +2,24 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import type { CalDavBackend, RawObject } from "../src/calendar.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.ts";
 
-/** A gateway stand-in that records commands and, unless told not to, confirms every send. */
+/** A gateway stand-in that records commands and answers every send, as sent unless told to fail them. */
 export class FakeLink implements GatewayLink {
 	readonly commands: GatewayCommand[] = [];
-	confirmSends = true;
+	/** Set to make the gateway refuse every send, as it does when the homeserver cannot be reached. */
+	failSends = false;
 	/** Answers a `callSpeak` as the gateway would once it has played (or cut off) the speech; unset, it never does. */
 	speak: ((command: Extract<GatewayCommand, { type: "callSpeak" }>) => GatewayEvent | undefined) | undefined;
 	readonly #listeners: ((event: GatewayEvent) => void)[] = [];
+	#waiters: ((command: GatewayCommand) => boolean)[] = [];
 
 	send(command: GatewayCommand): void {
 		this.commands.push(command);
-		if ((command.type === "send" || command.type === "sendVoice" || command.type === "react") && this.confirmSends) {
-			queueMicrotask(() => this.emit({ type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` }));
+		this.#waiters = this.#waiters.filter((waiter) => !waiter(command));
+		if (command.type === "send" || command.type === "sendVoice" || command.type === "react") {
+			const reply: GatewayEvent = this.failSends
+				? { type: "error", requestId: command.requestId, message: "the homeserver cannot be reached" }
+				: { type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` };
+			queueMicrotask(() => this.emit(reply));
 		}
 		if (command.type === "callSpeak" && this.speak !== undefined) {
 			const reply = this.speak(command);
@@ -28,6 +34,19 @@ export class FakeLink implements GatewayLink {
 	}
 	of<T extends GatewayCommand["type"]>(type: T): Extract<GatewayCommand, { type: T }>[] {
 		return this.commands.filter((command): command is Extract<GatewayCommand, { type: T }> => command.type === type);
+	}
+	/** Resolves with the first command of `type` that `matches`, whether it was sent already or is sent later. */
+	waitFor<T extends GatewayCommand["type"]>(type: T, matches: (command: Extract<GatewayCommand, { type: T }>) => boolean = () => true): Promise<Extract<GatewayCommand, { type: T }>> {
+		const fits = (command: GatewayCommand): command is Extract<GatewayCommand, { type: T }> => command.type === type && matches(command as Extract<GatewayCommand, { type: T }>);
+		const sent = this.commands.find(fits);
+		if (sent !== undefined) return Promise.resolve(sent);
+		return new Promise((resolve) => {
+			this.#waiters.push((command) => {
+				if (!fits(command)) return false;
+				resolve(command);
+				return true;
+			});
+		});
 	}
 	/** Everything sent to a room so far, joined. */
 	bodyIn(roomId: string): string {
@@ -117,15 +136,61 @@ export function ics(...lines: string[]): string {
 	return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//test//EN", ...lines, "END:VCALENDAR", ""].join("\r\n");
 }
 
-export type Request = { messages: { role: string; content: unknown }[] };
+/** What the model was given in one request. */
+export type Request = {
+	readonly systemPrompt?: string;
+	readonly messages: readonly {
+		readonly role: string;
+		readonly content: unknown;
+		/** On a system message: the parts of the instructions, by name. */
+		readonly sections?: Readonly<Record<string, string | null>>;
+		readonly isError?: boolean;
+	}[];
+};
 
-/** The text of the newest tool result the model was given. */
-export function lastToolResult(request: Request): string {
+function textOf(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.map((block: { text?: string }) => block.text ?? "").join("");
+}
+
+/** The instructions the model was given: the system prompt and any system messages. */
+export function instructionsOf(request: Request): string {
+	const system = request.messages.filter((item) => item.role === "system");
+	return [request.systemPrompt ?? "", ...system.flatMap((item) => [textOf(item.content), ...Object.values(item.sections ?? {}).map((section) => section ?? "")])].join("\n");
+}
+
+/** The newest input from the user's side, as the model got it. */
+export function lastInput(request: Request): string {
+	return textOf(request.messages.findLast((item) => item.role === "user")?.content);
+}
+
+/** Everything the model was given, as one text, to look for what must or must not be in it. */
+export function everything(request: Request): string {
+	return [instructionsOf(request), ...request.messages.filter((item) => item.role !== "system").map((item) => textOf(item.content))].join("\n");
+}
+
+/** The newest tool result the model was given. */
+export function lastToolResult(request: Request): { readonly text: string; readonly isError: boolean } {
 	const result = request.messages.findLast((item) => item.role === "toolResult");
-	return (result?.content as { text?: string }[] | undefined)?.map((block) => block.text ?? "").join("") ?? "";
+	return { text: textOf(result?.content), isError: result?.isError === true };
 }
 
 /** A model turn that calls one tool. */
 export const call = (name: string, args: Record<string, string | boolean>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
-/** A model turn that answers with what the last tool said, so a test can read it in the room. */
-export const report = (request: Request) => fauxAssistantMessage(lastToolResult(request));
+export type ToolResult = ReturnType<typeof lastToolResult>;
+/** A model turn that keeps the tool result it was given in `results`, and its request in `requests`, and says "ok". */
+export const noting =
+	(results: ToolResult[], requests: Request[] = []) =>
+	(request: Request) => {
+		requests.push(request);
+		results.push(lastToolResult(request));
+		return fauxAssistantMessage("ok");
+	};
+/** A model turn that answers `text`, keeping the request in `requests`. */
+export const answer =
+	(text: string, requests: Request[] = []) =>
+	(request: Request) => {
+		requests.push(request);
+		return fauxAssistantMessage(text);
+	};

@@ -4,11 +4,11 @@
 //
 // Without them only the tests that need no recording run.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { WhisperServer, type WhisperServerOptions } from "../src/stt.ts";
+import { tempDir } from "./env.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const built: Omit<WhisperServerOptions, "socketPath"> = {
@@ -24,59 +24,59 @@ const built: Omit<WhisperServerOptions, "socketPath"> = {
 const haveServer = [built.server, built.model, built.vadModel].every((path) => existsSync(path));
 const audio = process.env.STT_TEST_AUDIO?.split(":").filter((path) => path !== "") ?? [];
 const texts = process.env.STT_TEST_TEXT?.split(":").filter((path) => path !== "") ?? [];
+const needsRecordings = { skip: !haveServer || audio.length === 0 ? "the server is not built, or STT_TEST_AUDIO is not set" : false };
 
-function withDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
-	const dir = mkdtempSync(join(tmpdir(), "agent-stt-"));
-	return run(dir).finally(() => rmSync(dir, { recursive: true, force: true }));
+/** The share of the script's characters found in the transcript, ignoring spaces and punctuation. */
+function overlap(script: string, transcript: string): number {
+	const normalize = (text: string) => [...text.normalize("NFKC").replace(/[\s\p{P}\p{S}]/gu, "")];
+	const [expected, got] = [normalize(script), normalize(transcript)];
+	let same = 0;
+	for (const char of new Set(expected)) same += Math.min(expected.filter((c) => c === char).length, got.filter((c) => c === char).length);
+	return same / expected.length;
 }
 
-const normalize = (text: string) => text.normalize("NFKC").replace(/[\s\p{P}\p{S}]/gu, "");
-
-test("recordings are transcribed by one server, side by side, close to their scripts", { skip: !haveServer || audio.length === 0 }, () =>
-	withDir(async (dir) => {
-		const stt = new WhisperServer({ ...built, socketPath: join(dir, "stt.sock") });
-		try {
-			const results = await Promise.all(audio.map((path) => stt.transcribe(path)));
-			results.forEach((text, i) => {
-				const script = texts[i];
-				console.log(`${audio[i]}: ${text}`);
-				if (script === undefined) return;
-				const expected = normalize(readFileSync(script, "utf8"));
-				const got = normalize(text);
-				// Not exact: the measured error rate was about 2%, mostly spelling such as 言う for いう.
-				let same = 0;
-				for (const char of new Set(expected)) same += Math.min([...expected].filter((c) => c === char).length, [...got].filter((c) => c === char).length);
-				assert.ok(same / expected.length > 0.9, `${audio[i]}: ${text}`);
-			});
-		} finally {
-			stt.close();
+test("recordings sent side by side to one server are each transcribed close to their scripts", needsRecordings, async () => {
+	using dir = tempDir();
+	const stt = new WhisperServer({ ...built, socketPath: join(dir.path, "stt.sock") });
+	try {
+		const results = await Promise.all(audio.map((path) => stt.transcribe(path)));
+		for (const [i, text] of results.entries()) {
+			const script = texts[i];
+			// Not exact: the measured error rate was about 2%, mostly spelling such as 言う for いう.
+			if (script !== undefined) assert.ok(overlap(readFileSync(script, "utf8"), text) > 0.9, `${audio[i]}: ${text}`);
+			else assert.notEqual(text, "", audio[i] ?? "");
 		}
-	}),
-);
+	} finally {
+		stt.close();
+	}
+});
 
-test("a file that is not audio is an error, and the server keeps serving", { skip: !haveServer || audio.length === 0 }, () =>
-	withDir(async (dir) => {
-		const stt = new WhisperServer({ ...built, socketPath: join(dir, "stt.sock") });
-		try {
-			const junk = join(dir, "junk.ogg");
-			writeFileSync(junk, "not audio");
-			await assert.rejects(stt.transcribe(junk), /ffmpeg could not decode/);
-			assert.notEqual(await stt.transcribe(audio[0] as string), "");
-		} finally {
-			stt.close();
-		}
-	}),
-);
+test("a file that is not audio is an error, and the server keeps serving", needsRecordings, async () => {
+	using dir = tempDir();
+	const stt = new WhisperServer({ ...built, socketPath: join(dir.path, "stt.sock") });
+	try {
+		const junk = join(dir.path, "junk.ogg");
+		writeFileSync(junk, "not audio");
+		await assert.rejects(stt.transcribe(junk));
+		assert.notEqual(await stt.transcribe(audio[0]!), "");
+	} finally {
+		stt.close();
+	}
+});
 
-test("a server that cannot start is an error with its reason, not a hang", () =>
-	withDir(async (dir) => {
-		const wav = async () => Buffer.alloc(0);
-		const missing = new WhisperServer({ ...built, server: join(dir, "no-such-server"), socketPath: join(dir, "a.sock"), toWav: wav });
-		await assert.rejects(missing.transcribe("x"), /could not be started/);
+/** Skips the conversion: these tests are about the server process, not the audio. */
+const noAudio = async () => Buffer.alloc(0);
 
-		const script = join(dir, "dies.sh");
-		writeFileSync(script, "#!/bin/sh\necho 'failed to load model' >&2\nexit 3\n", { mode: 0o755 });
-		const dies = new WhisperServer({ ...built, server: script, socketPath: join(dir, "b.sock"), toWav: wav });
-		await assert.rejects(dies.transcribe("x"), /exited \(3\): failed to load model/);
-	}),
-);
+test("a server that cannot be started is an error naming it, not a hang", async () => {
+	using dir = tempDir();
+	const missing = new WhisperServer({ ...built, server: join(dir.path, "no-such-server"), socketPath: join(dir.path, "a.sock"), toWav: noAudio });
+	await assert.rejects(missing.transcribe("x"), /no-such-server/);
+});
+
+test("a server that dies at start is an error with its exit code and what it said, not a hang", async () => {
+	using dir = tempDir();
+	const script = join(dir.path, "dies.sh");
+	writeFileSync(script, "#!/bin/sh\necho 'failed to load model' >&2\nexit 3\n", { mode: 0o755 });
+	const dies = new WhisperServer({ ...built, server: script, socketPath: join(dir.path, "b.sock"), toWav: noAudio });
+	await assert.rejects(dies.transcribe("x"), (error: unknown) => error instanceof Error && /\b3\b/.test(error.message) && error.message.includes("failed to load model"));
+});

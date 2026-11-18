@@ -27,7 +27,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::audio::{Cut, Decimator, FRAME_SAMPLES, SAMPLE_RATE, Segmenter, VAD_RATE, VadConfig, read_wav, write_wav};
+use crate::audio::{Cut, Cutter, SAMPLE_RATE, VAD_RATE, VadConfig, read_wav, write_wav};
 use crate::ipc::{Event, Outbox};
 
 /// Element Call's membership state event before sticky events.
@@ -170,14 +170,11 @@ impl Calls {
             return;
         };
         info!("listening to {} in {room_id}", participant.user_id);
+        let mut detector = earshot::Detector::default();
         let mut segmenter = Utterances {
             room_id: room_id.to_owned(),
             user_id: participant.user_id.clone(),
-            detector: earshot::Detector::default(),
-            threshold: vad.threshold,
-            segmenter: Segmenter::new(vad),
-            decimator: Decimator::new(),
-            pending: Vec::with_capacity(FRAME_SAMPLES * 2),
+            cutter: Cutter::new(vad, Box::new(move |frame: &[i16]| detector.predict_i16(frame) >= vad.threshold)),
             player: player.clone(),
             out: self.out.clone(),
             dir: self.dir.clone(),
@@ -212,12 +209,7 @@ static UTTERANCES: AtomicU64 = AtomicU64::new(0);
 struct Utterances {
     room_id: String,
     user_id: String,
-    detector: earshot::Detector,
-    threshold: f32,
-    segmenter: Segmenter,
-    decimator: Decimator,
-    /// 16 kHz samples not yet making a whole frame.
-    pending: Vec<i16>,
+    cutter: Cutter<Box<dyn FnMut(&[i16]) -> bool + Send>>,
     player: Player,
     out: Outbox,
     dir: Arc<PathBuf>,
@@ -225,19 +217,14 @@ struct Utterances {
 
 impl Utterances {
     fn push(&mut self, samples: &[i16]) {
-        let samples = self.decimator.push(samples);
-        self.pending.extend_from_slice(&samples);
-        while self.pending.len() >= FRAME_SAMPLES {
-            let frame: Vec<i16> = self.pending.drain(..FRAME_SAMPLES).collect();
-            let speech = self.detector.predict_i16(&frame) >= self.threshold;
-            match self.segmenter.push(&frame, speech) {
-                None => {}
-                Some(Cut::SpeechStarted) => {
+        for cut in self.cutter.push(samples) {
+            match cut {
+                Cut::SpeechStarted => {
                     // Talking over the bot stops it.
                     self.player.hush();
                     let _ = self.out.send(Event::CallSpeech { room_id: self.room_id.clone(), user_id: self.user_id.clone() });
                 }
-                Some(Cut::Utterance(samples)) => self.pass_on(&samples),
+                Cut::Utterance(samples) => self.pass_on(&samples),
             }
         }
     }

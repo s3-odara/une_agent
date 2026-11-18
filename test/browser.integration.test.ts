@@ -1,22 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { MemoryStorage } from "@earendil-works/pi-durable";
-import { PlaywrightBrowsers } from "../src/browser.ts";
+import { type TestContext, test } from "node:test";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { type BrowserPage, PlaywrightBrowsers } from "../src/browser.ts";
 import { createBrowserExtension } from "../src/browser-tools.ts";
-import { parseConfig } from "../src/config.ts";
 import { Credentials } from "../src/credentials.ts";
-import { openAgentHarness } from "../src/harness.ts";
-import { HostDb } from "../src/hostdb.ts";
-import { Bridge } from "../src/rooms.ts";
-import { FakeLink, message } from "./fakes.ts";
+import { errorMessage } from "../src/errors.ts";
+import { agentEnv, tempDir } from "./env.ts";
+import { call, everything, lastToolResult, message, type Request } from "./fakes.ts";
 
 /**
  * Drives a real Chromium through `src/browser.ts` against a small site served from this process. Skipped where
@@ -67,141 +61,155 @@ const refOf = (tree: string, role: string, name: string): string => {
 	return ref;
 };
 
-test("a real browser can be driven by ref, logs in, and keeps its login in the profile", async (t) => {
-	const dir = mkdtempSync(join(tmpdir(), "agent-browser-it-"));
+/**
+ * The small site and a real browser with its profiles in a temporary directory, or `undefined` (the test skipped) where
+ * Chromium cannot be launched. `restart` closes the browser and starts a new one on the same profiles.
+ */
+async function realBrowser(t: TestContext) {
+	const dir = tempDir();
 	const server = await site();
 	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-	const options = { dir, headless: true, timezone: "Asia/Tokyo", idleMs: 600_000 };
+	const options = { dir: join(dir.path, "browser"), headless: true, timezone: "Asia/Tokyo", idleMs: 600_000 };
 	let browsers = new PlaywrightBrowsers(options);
-	try {
-		let tab;
-		try {
-			tab = await browsers.page("default", 1);
-			await tab.goto(`${base}/`);
-		} catch (error) {
-			t.skip(`Chromium cannot be launched here: ${String(error instanceof Error ? error.message : error).split("\n")[0]}`);
-			return;
-		}
-
-		// Read the page, follow a link by its ref.
-		let view = await tab.snapshot();
-		assert.equal(view.title, "テストサイト");
-		await tab.click(refOf(view.tree, "link", "記事へ"));
-		view = await tab.snapshot();
-		assert.equal(view.url, `${base}/article`);
-		assert.match(await tab.text(), /緑茶は発酵させない茶である。/);
-
-		// Back, type into a field, submit with Enter.
-		await tab.back();
-		view = await tab.snapshot();
-		const search = refOf(view.tree, "textbox", "検索");
-		assert.deepEqual(await tab.field(search), { kind: "text", origin: base });
-		await tab.fill(search, "緑茶");
-		await tab.press("Enter", search);
-		assert.match((await tab.snapshot()).url, /\/search\?q=/);
-		assert.match(await tab.text(), /「緑茶」の検索結果/);
-
-		// Log in. The password field is recognised as one, in the document of this origin.
-		await tab.goto(`${base}/login`);
-		view = await tab.snapshot();
-		const [user, pass] = [refOf(view.tree, "textbox", "ユーザー名"), refOf(view.tree, "textbox", "パスワード")];
-		assert.deepEqual(await tab.field(pass), { kind: "password", origin: base });
-		await tab.fill(user, "me");
-		await tab.fill(pass, "correct-horse");
-		// The tree shows what a text box holds, but never what a password field holds.
-		view = await tab.snapshot();
-		assert.match(view.tree, /textbox "ユーザー名"[^\n]*: me\n/);
-		assert.match(view.tree, /textbox "パスワード"[^\n]*: ［伏せ字］/);
-		assert.doesNotMatch(view.tree, /correct-horse/);
-		// Taking the snapshot gave the fields new refs; the old ones are still the same elements.
-		await tab.press("Enter", refOf(view.tree, "textbox", "パスワード"));
-		assert.equal((await tab.snapshot()).url, `${base}/account`);
-		assert.match(await tab.text(), /ようこそ、me さん/);
-
-		// Another conversation has its own tab and the same cookies; another profile has neither.
-		const other = await browsers.page("default", 2);
-		await other.goto(`${base}/account`);
-		assert.match(await other.text(), /ようこそ/);
-		assert.equal((await tab.snapshot()).url, `${base}/account`);
-		const stranger = await browsers.page("other", 1);
-		await stranger.goto(`${base}/account`);
-		assert.match(await stranger.text(), /ログインしていません/);
-
-		// The login is in the profile on disk: a new browser process still has it.
-		await browsers.close();
-		browsers = new PlaywrightBrowsers(options);
-		const again = await browsers.page("default", 1);
-		await again.goto(`${base}/account`);
-		assert.match(await again.text(), /ようこそ、me さん/);
-	} finally {
+	const dispose = async () => {
 		await browsers.close();
 		await new Promise((resolve) => server.close(resolve));
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("the tools log in on a real page with a stored password the model never sees", async (t) => {
-	const dir = mkdtempSync(join(tmpdir(), "agent-browser-it-"));
-	const server = await site();
-	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-	const browsers = new PlaywrightBrowsers({ dir: join(dir, "browser"), headless: true, timezone: "Asia/Tokyo", idleMs: 600_000 });
+		dir[Symbol.dispose]();
+	};
 	try {
 		await (await browsers.page("default", 0)).goto(`${base}/`);
 	} catch (error) {
-		await browsers.close();
-		await new Promise((resolve) => server.close(resolve));
-		rmSync(dir, { recursive: true, force: true });
-		t.skip(`Chromium cannot be launched here: ${String(error instanceof Error ? error.message : error).split("\n")[0]}`);
-		return;
+		await dispose();
+		t.skip(`Chromium cannot be launched here: ${errorMessage(error).split("\n")[0]}`);
+		return undefined;
 	}
-
-	writeFileSync(join(dir, "soul.md"), "SOUL");
-	writeFileSync(join(dir, "credentials.json"), JSON.stringify({ [base]: { username: "me", password: "correct-horse" } }));
-	const faux = fauxProvider();
-	const model = faux.getModel();
-	const config = parseConfig(
-		{
-			matrix: { homeserver: "https://example.org", userId: "@agent:example.org", allowedUsers: ["@me:example.org"] },
-			model: { provider: model.provider, modelId: model.id },
-			personas: { default: "soul.md" },
-			browser: {},
+	return {
+		dir: dir.path,
+		base,
+		get browsers() {
+			return browsers;
 		},
-		dir,
-	);
-	const models = createModels();
-	models.setProvider(faux.provider);
-	const db = new HostDb(join(dir, "host.sqlite"));
-	const extension = createBrowserExtension({ browsers, credentials: new Credentials(join(dir, "credentials.json")), db, profileOf: () => "default" });
-	const harness = await openAgentHarness(new MemoryStorage(), models, context, [extension]);
-	try {
-		type Request = { messages: { role: string; content: unknown }[] };
-		const lastResult = (request: Request) =>
-			((request.messages.findLast((item) => item.role === "toolResult")?.content as { text?: string }[] | undefined) ?? []).map((block) => block.text ?? "").join("");
-		const call = (name: string, args: Record<string, string | boolean>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
+		/** A page of `profile` for conversation `conversation`, at `path` of the site. */
+		open: async (path: string, profile = "default", conversation = 1) => {
+			const tab = await browsers.page(profile, conversation);
+			await tab.goto(`${base}${path}`);
+			return tab;
+		},
+		restart: async () => {
+			await browsers.close();
+			browsers = new PlaywrightBrowsers(options);
+		},
+		[Symbol.asyncDispose]: dispose,
+	};
+}
 
-		faux.setResponses([
-			call("browser_open", { url: `${base}/login` }),
-			// The model reads the refs off the snapshot it was just given, as it would.
-			(request: Request) =>
-				call("browser_fill_credential", { usernameRef: refOf(lastResult(request), "textbox", "ユーザー名"), passwordRef: refOf(lastResult(request), "textbox", "パスワード"), submit: true }),
-			call("browser_read", {}),
-			(request: Request) => fauxAssistantMessage(JSON.stringify(request.messages)),
-		]);
-		const link = new FakeLink();
-		const bridge = new Bridge({ harness, db, link, config, context });
-		bridge.start();
-		link.emit(message("!main:example.org", "$1", "ログインして"));
-		await bridge.idle();
+test("a link is followed by the ref the snapshot gave it", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/");
+	assert.equal((await tab.snapshot()).title, "テストサイト");
+	await tab.click(refOf((await tab.snapshot()).tree, "link", "記事へ"));
+	assert.equal((await tab.snapshot()).url, `${b.base}/article`);
+	assert.match(await tab.text(), /緑茶は発酵させない茶である。/);
+});
 
-		const transcript = link.bodyIn("!main:example.org");
-		assert.match(transcript, /の認証情報を入力しました。/);
-		assert.match(transcript, /ようこそ、me さん/);
-		assert.doesNotMatch(transcript, /correct-horse/);
-	} finally {
-		await harness.close(context);
-		db.close();
-		await browsers.close();
-		await new Promise((resolve) => server.close(resolve));
-		rmSync(dir, { recursive: true, force: true });
-	}
+test("going back returns to the page before", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/");
+	await tab.goto(`${b.base}/article`);
+	await tab.back();
+	assert.equal((await tab.snapshot()).url, `${b.base}/`);
+});
+
+test("a text box is typed into by its ref, and Enter submits its form", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/");
+	const search = refOf((await tab.snapshot()).tree, "textbox", "検索");
+	await tab.fill(search, "緑茶");
+	await tab.press("Enter", search);
+	assert.match((await tab.snapshot()).url, /\/search\?q=/);
+	assert.match(await tab.text(), /「緑茶」の検索結果/);
+});
+
+test("a field is told apart as a text box or a password field, with the origin of its document", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/login");
+	const tree = (await tab.snapshot()).tree;
+	assert.deepEqual(await tab.field(refOf(tree, "textbox", "ユーザー名")), { kind: "text", origin: b.base });
+	assert.deepEqual(await tab.field(refOf(tree, "textbox", "パスワード")), { kind: "password", origin: b.base });
+});
+
+test("the snapshot shows what a text box holds, but never what a password field holds", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/login");
+	const tree = (await tab.snapshot()).tree;
+	await tab.fill(refOf(tree, "textbox", "ユーザー名"), "me");
+	await tab.fill(refOf(tree, "textbox", "パスワード"), "correct-horse");
+	const after = (await tab.snapshot()).tree;
+	assert.match(after, /textbox "ユーザー名"[^\n]*: me\n/);
+	assert.doesNotMatch(after, /correct-horse/);
+});
+
+/** Logs in on the site's form in `tab`. */
+async function logIn(tab: BrowserPage) {
+	const tree = (await tab.snapshot()).tree;
+	await tab.fill(refOf(tree, "textbox", "ユーザー名"), "me");
+	await tab.fill(refOf(tree, "textbox", "パスワード"), "correct-horse");
+	await tab.press("Enter", refOf(tree, "textbox", "パスワード"));
+}
+
+test("conversations of one profile have tabs of their own and share its login; another profile does not", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/login", "default", 1);
+	await logIn(tab);
+	assert.match(await tab.text(), /ようこそ、me さん/);
+
+	const other = await b.open("/account", "default", 2);
+	assert.match(await other.text(), /ようこそ/);
+	assert.equal((await tab.snapshot()).url, `${b.base}/account`, "the first tab stays where it was");
+	assert.match(await (await b.open("/account", "stranger", 1)).text(), /ログインしていません/);
+});
+
+test("a login is kept in the profile on disk, for the next browser process", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	await logIn(await b.open("/login"));
+	await b.restart();
+	assert.match(await (await b.open("/account")).text(), /ようこそ、me さん/);
+});
+
+test("the tools log in on a real page with a stored password the model never sees", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const credentials = join(b.dir, "credentials.json");
+	writeFileSync(credentials, JSON.stringify({ [b.base]: { username: "me", password: "correct-horse" } }));
+	await using env = await agentEnv({
+		config: { browser: {} },
+		extensions: ({ db }) => [createBrowserExtension({ browsers: b.browsers, credentials: new Credentials(credentials), db, profileOf: () => "default" })],
+	});
+	const requests: Request[] = [];
+	env.faux.setResponses([
+		call("browser_open", { url: `${b.base}/login` }),
+		// The model reads the refs off the snapshot it was just given, as it would.
+		(request: Request) => {
+			const page = lastToolResult(request).text;
+			return call("browser_fill_credential", { usernameRef: refOf(page, "textbox", "ユーザー名"), passwordRef: refOf(page, "textbox", "パスワード"), submit: true });
+		},
+		call("browser_read", {}),
+		(request: Request) => {
+			requests.push(request);
+			return fauxAssistantMessage("ok");
+		},
+	]);
+	const bridge = env.bridge();
+	env.link.emit(message("!main:example.org", "$1", "ログインして"));
+	await bridge.idle();
+
+	assert.match(lastToolResult(requests[0]!).text, /ようこそ、me さん/);
+	assert.doesNotMatch(everything(requests[0]!), /correct-horse/);
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connectCalDav } from "../src/caldav.ts";
-import { Calendars, formatEvent, formatTodo } from "../src/calendar.ts";
+import { CalendarError, Calendars } from "../src/calendar.ts";
 import { localToEpoch } from "../src/time.ts";
 
 /**
@@ -32,49 +32,87 @@ async function makeCalendar(base: string, name: string, component: "VEVENT" | "V
 	assert.ok(response.status === 201, `MKCALENDAR ${name}: HTTP ${response.status}`);
 }
 
-test("events and tasks round-trip through a real CalDAV server", { skip: url === undefined ? "CALDAV_TEST_URL is not set" : false }, async () => {
-	const events = `It-Events-${Date.now()}`;
-	const todos = `It-Todos-${Date.now()}`;
+const needsServer = { skip: url === undefined ? "CALDAV_TEST_URL is not set" : false };
+const now = at("2026-11-17T09:00");
+const week = [at("2026-11-16T00:00"), at("2026-11-23T00:00")] as const;
+
+/** An events calendar and a tasks calendar of their own on the server, for one test. */
+async function fresh() {
+	const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	const [events, todos] = [`It-Events-${stamp}`, `It-Todos-${stamp}`];
 	await makeCalendar(url!, events, "VEVENT");
 	await makeCalendar(url!, todos, "VTODO");
-
 	const backend = connectCalDav({ url: url!, username, password, calendars: [events, todos] });
-	const calendars = new Calendars(backend, { [events]: { kind: "events", description: "" }, [todos]: { kind: "todos", description: "" } }, tz);
-	const now = at("2026-11-17T09:00");
-	const week = [at("2026-11-16T00:00"), at("2026-11-23T00:00")] as const;
-	const listed = async () => (await calendars.events(...week)).map((event) => formatEvent(event, tz));
+	return { events, todos, calendars: new Calendars(backend, { [events]: { kind: "events", description: "" }, [todos]: { kind: "todos", description: "" } }, tz) };
+}
 
-	// Create, twice under one UID as a rerun would: one object.
-	const id = await calendars.create(events, "it-event-1", { summary: "歯医者", start: "2026-11-18T15:30", location: "駅前" }, now);
-	await calendars.create(events, "it-event-1", { summary: "歯医者", start: "2026-11-18T15:30", location: "駅前" }, now);
-	await calendars.create(events, "it-event-2", { summary: "旅行", start: "2026-11-20", end: "2026-11-21" }, now);
-	await calendars.create(events, "it-event-3", { summary: "範囲の外", start: "2026-12-20T10:00" }, now);
-	assert.deepEqual(await listed(), ["11/18(水) 15:30–16:30 歯医者 @駅前", "11/20(金)〜11/21(土) 終日 旅行"]);
+test("creating twice under one UID, as a rerun does, stores one event", needsServer, async () => {
+	const { events, calendars } = await fresh();
+	await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30" }, now);
+	await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30" }, now);
+	assert.deepEqual(
+		(await calendars.events(...week)).map((event) => event.uid),
+		["e1"],
+	);
+});
 
-	const item = (await calendars.events(...week))[0]!;
-	assert.equal(item.id, id);
-	assert.equal(item.uid, "it-event-1");
-	assert.ok(item.etag !== undefined && item.etag !== "", "the listing carries an ETag");
-	assert.ok(item.modified !== undefined, "the listing carries a modification time");
-	// The ETag of a single GET and of the listing name the same revision: the change watcher depends on it.
-	assert.equal(await calendars.etag(id), item.etag?.replace(/^W\//, "").replace(/^"|"$/g, ""));
+test("only the events in the range are listed, with what was stored", needsServer, async () => {
+	const { events, calendars } = await fresh();
+	const id = await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30", location: "駅前" }, now);
+	await calendars.create(events, "e2", { summary: "旅行", start: "2026-11-20", end: "2026-11-21" }, now);
+	await calendars.create(events, "e3", { summary: "範囲の外", start: "2026-12-20T10:00" }, now);
+	const listed = await calendars.events(...week);
+	assert.deepEqual(
+		listed.map((event) => [event.summary, event.start, event.allDay]),
+		[
+			["歯医者", at("2026-11-18T15:30"), false],
+			["旅行", at("2026-11-20T00:00"), true],
+		],
+	);
+	assert.equal(listed[0]?.id, id);
+	assert.equal(listed[0]?.location, "駅前");
+});
 
+test("a listed event's ETag names the same revision as one read on its own, as the change watcher needs", needsServer, async () => {
+	const { events, calendars } = await fresh();
+	const id = await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30" }, now);
+	const [item] = await calendars.events(...week);
+	assert.ok(item?.modified !== undefined, "the listing carries a modification time");
+	assert.equal(await calendars.etag(id), item?.etag?.replace(/^W\//, "").replace(/^"|"$/g, ""));
+});
+
+test("a change is stored, as a new revision", needsServer, async () => {
+	const { events, calendars } = await fresh();
+	const id = await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30", location: "駅前" }, now);
+	const before = await calendars.etag(id);
 	await calendars.update(id, { start: "2026-11-18T16:00", location: "" }, now + 60_000);
-	assert.equal(await calendars.describe(id), "11/18(水) 16:00–17:00 歯医者");
-	assert.notEqual((await calendars.events(...week))[0]?.etag, item.etag);
+	const [item] = await calendars.events(...week);
+	assert.deepEqual([item?.start, item?.location], [at("2026-11-18T16:00"), undefined]);
+	assert.notEqual(await calendars.etag(id), before);
+});
 
-	const task = await calendars.create(todos, "it-todo-1", { summary: "レポート提出", due: "2026-11-20" }, now);
-	assert.deepEqual((await calendars.todos()).map((todo) => `${formatTodo(todo, tz)} ${todo.done}`), ["レポート提出 期日 11/20(金) false"]);
+test("a task is listed with its due date, and completed however often asked", needsServer, async () => {
+	const { todos, calendars } = await fresh();
+	const task = await calendars.create(todos, "t1", { summary: "レポート提出", due: "2026-11-20" }, now);
+	assert.deepEqual(
+		(await calendars.todos()).map((todo) => [todo.summary, todo.due?.date, todo.done]),
+		[["レポート提出", "2026-11-20", false]],
+	);
 	await calendars.complete(task, now);
 	await calendars.complete(task, now);
 	assert.equal((await calendars.todos())[0]?.done, true);
+});
 
+test("removing twice succeeds, and leaves the event gone", needsServer, async () => {
+	const { events, calendars } = await fresh();
+	const id = await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30" }, now);
 	await calendars.remove(id);
 	await calendars.remove(id);
-	assert.deepEqual(await listed(), ["11/20(金)〜11/21(土) 終日 旅行"]);
-	await assert.rejects(calendars.update(id, { summary: "x" }, now), /見つかりません/);
+	assert.deepEqual(await calendars.events(...week), []);
+	await assert.rejects(calendars.update(id, { summary: "x" }, now), CalendarError);
+});
 
-	// A calendar the account does not have is named in the error, with the ones it does have.
+test("a calendar the account does not have is named in the error", needsServer, async () => {
 	const missing = new Calendars(connectCalDav({ url: url!, username, password, calendars: ["No-Such-Calendar"] }), { "No-Such-Calendar": { kind: "events", description: "" } }, tz);
-	await assert.rejects(missing.events(...week), /"No-Such-Calendar" not found; the account has: /);
+	await assert.rejects(missing.events(...week), /No-Such-Calendar/);
 });

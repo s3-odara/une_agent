@@ -7,6 +7,7 @@ import {
 	CalendarError,
 	Calendars,
 	completeTodo,
+	type EventItem,
 	formatEvent,
 	formatTodo,
 	parseEvents,
@@ -20,168 +21,255 @@ const tz = "Asia/Tokyo";
 const at = (local: string) => localToEpoch(local, tz);
 const raw = (data: string, file = "x.ics"): RawObject => ({ url: `https://dav.example.org/cal/Home/${file}`, etag: '"1"', data });
 const week = { from: at("2026-11-16T00:00"), to: at("2026-11-23T00:00") };
-const lines = (items: { start: number; end: number; summary: string }[]) =>
-	items.map((item) => formatEvent({ kind: "event", id: "", calendar: "", uid: "", allDay: false, recurring: false, ...item }, tz));
+const NOW = at("2026-11-17T09:00");
 
-test("event times are read as instants whatever form they are written in", () => {
-	const event = (when: string[]) => parseEvents(raw(ics("BEGIN:VEVENT", "UID:1", "SUMMARY:歯医者", ...when, "END:VEVENT")), "Home", week, tz)[0];
+/** The one event in `lines`, read in the week of 11/16. */
+const eventOf = (...lines: string[]) => parseEvents(raw(ics("BEGIN:VEVENT", "UID:1", "SUMMARY:歯医者", ...lines, "END:VEVENT")), "Home", week, tz)[0];
+const taskOf = (...lines: string[]) => parseTodo(raw(ics("BEGIN:VTODO", "UID:t", "SUMMARY:レポート提出", ...lines, "END:VTODO")), "ToDo", tz);
 
-	const zoned = event(["DTSTART;TZID=Asia/Tokyo:20261117T153000", "DTEND;TZID=Asia/Tokyo:20261117T160000"]);
-	assert.equal(zoned?.start, at("2026-11-17T15:30"));
-	assert.equal(zoned?.end, at("2026-11-17T16:00"));
-	assert.equal(zoned?.id, "Home/x.ics");
+for (const [form, when] of [
+	["in UTC", "DTSTART:20261117T063000Z"],
+	["in a zone of its own", "DTSTART;TZID=America/New_York:20261117T013000"],
+	["with no zone (floating), in the user's zone", "DTSTART:20261117T153000"],
+	["with a zone name that is not one (as Outlook writes), in the user's zone", "DTSTART;TZID=Tokyo Standard Time:20261117T153000"],
+] as const) {
+	test(`a start time ${form} is read as the instant it means`, () => {
+		assert.equal(eventOf(when, "DURATION:PT30M")?.start, at("2026-11-17T15:30"));
+	});
+}
 
-	// 06:30 UTC is 15:30 in Tokyo; 10:00 in New York (EST, UTC-5) is midnight the next day in Tokyo.
-	assert.equal(event(["DTSTART:20261117T063000Z", "DTEND:20261117T070000Z"])?.start, at("2026-11-17T15:30"));
-	assert.equal(event(["DTSTART;TZID=America/New_York:20261117T100000", "DURATION:PT1H"])?.start, at("2026-11-18T00:00"));
-	// A floating time, and a TZID that is not a zone name, are read in the agent's zone.
-	assert.equal(event(["DTSTART:20261117T153000"])?.start, at("2026-11-17T15:30"));
-	assert.equal(event(["DTSTART;TZID=Tokyo Standard Time:20261117T153000"])?.start, at("2026-11-17T15:30"));
-
-	const allDay = event(["DTSTART;VALUE=DATE:20261117", "DTEND;VALUE=DATE:20261119"]);
+test("an all-day event spans whole days in the user's zone", () => {
+	const allDay = eventOf("DTSTART;VALUE=DATE:20261117", "DTEND;VALUE=DATE:20261119");
 	assert.equal(allDay?.allDay, true);
 	assert.equal(allDay?.start, at("2026-11-17T00:00"));
 	assert.equal(allDay?.end, at("2026-11-19T00:00"));
-	assert.equal(formatEvent(allDay!, tz), "11/17(火)〜11/18(水) 終日 歯医者");
 });
 
-test("only what overlaps the range is returned", () => {
-	const data = ics("BEGIN:VEVENT", "UID:1", "SUMMARY:x", "DTSTART:20261117T063000Z", "DTEND:20261117T070000Z", "END:VEVENT");
-	assert.equal(parseEvents(raw(data), "Home", { from: at("2026-11-17T16:00"), to: at("2026-11-18T00:00") }, tz).length, 0);
-	assert.equal(parseEvents(raw(data), "Home", { from: at("2026-11-17T15:59"), to: at("2026-11-18T00:00") }, tz).length, 1);
-	assert.equal(parseEvents(raw(data), "Home", { from: at("2026-11-17T00:00"), to: at("2026-11-17T15:30") }, tz).length, 0);
+test("an event's id is its calendar and file", () => {
+	assert.equal(eventOf("DTSTART:20261117T063000Z")?.id, "Home/x.ics");
+});
+
+for (const [what, range, count] of [
+	["a range that starts as the event ends leaves it out", { from: at("2026-11-17T16:00"), to: at("2026-11-18T00:00") }, 0],
+	["a range that starts a minute before the end has it", { from: at("2026-11-17T15:59"), to: at("2026-11-18T00:00") }, 1],
+	["a range that ends as the event starts leaves it out", { from: at("2026-11-17T00:00"), to: at("2026-11-17T15:30") }, 0],
+] as const) {
+	test(`only what overlaps the range is returned: ${what}`, () => {
+		const data = ics("BEGIN:VEVENT", "UID:1", "SUMMARY:x", "DTSTART:20261117T063000Z", "DTEND:20261117T070000Z", "END:VEVENT");
+		assert.equal(parseEvents(raw(data), "Home", range, tz).length, count);
+	});
+}
+
+test("a file that is not a calendar gives no events instead of failing", () => {
 	assert.deepEqual(parseEvents(raw("not a calendar"), "Home", week, tz), []);
 });
 
-test("a recurring event is expanded with its removed, moved and cancelled occurrences", () => {
+/**
+ * The occurrences, as title and start, from 11/16 to 11/20 of a daily event at 08:00 from 11/1, with `rule` added to
+ * it and `exception` (an occurrence changed on its own) after it.
+ */
+const daily = (rule: string[] = [], exception: string[] = []) => {
 	const data = ics(
 		"BEGIN:VEVENT",
 		"UID:r",
-		"SUMMARY:缶のゴミ捨て",
+		"SUMMARY:ゴミ捨て",
 		"DTSTART;TZID=Asia/Tokyo:20261101T080000",
 		"DTEND;TZID=Asia/Tokyo:20261101T081500",
 		"RRULE:FREQ=DAILY",
-		"EXDATE;TZID=Asia/Tokyo:20261117T080000",
+		...rule,
 		"END:VEVENT",
-		// The 18th is moved to the evening, the 19th is cancelled.
-		"BEGIN:VEVENT",
-		"UID:r",
-		"RECURRENCE-ID;TZID=Asia/Tokyo:20261118T080000",
-		"SUMMARY:缶のゴミ捨て（夜）",
-		"DTSTART;TZID=Asia/Tokyo:20261118T200000",
-		"DTEND;TZID=Asia/Tokyo:20261118T201500",
-		"END:VEVENT",
-		"BEGIN:VEVENT",
-		"UID:r",
-		"RECURRENCE-ID;TZID=Asia/Tokyo:20261119T080000",
-		"STATUS:CANCELLED",
-		"SUMMARY:缶のゴミ捨て",
-		"DTSTART;TZID=Asia/Tokyo:20261119T080000",
-		"DTEND;TZID=Asia/Tokyo:20261119T081500",
-		"END:VEVENT",
+		...exception,
 	);
-	const items = parseEvents(raw(data), "Home", { from: at("2026-11-16T00:00"), to: at("2026-11-21T00:00") }, tz);
-	assert.deepEqual(lines(items), [
-		"11/16(月) 08:00–08:15 缶のゴミ捨て（繰り返し）",
-		"11/18(水) 20:00–20:15 缶のゴミ捨て（夜）（繰り返し）",
-		"11/20(金) 08:00–08:15 缶のゴミ捨て（繰り返し）",
-	]);
+	return parseEvents(raw(data), "Home", { from: at("2026-11-16T00:00"), to: at("2026-11-21T00:00") }, tz).map((item) => [item.summary, item.start] as const);
+};
+
+test("a recurring event is expanded into its occurrences in the range", () => {
+	assert.deepEqual(
+		daily(),
+		["16", "17", "18", "19", "20"].map((day) => ["ゴミ捨て", at(`2026-11-${day}T08:00`)]),
+	);
 });
 
-test("a task is read with its due date and whether it is done", () => {
-	const todo = (...extra: string[]) => parseTodo(raw(ics("BEGIN:VTODO", "UID:t", "SUMMARY:レポート提出", ...extra, "END:VTODO")), "ToDo", tz);
+test("an occurrence removed from a recurring event is left out", () => {
+	assert.ok(!daily(["EXDATE;TZID=Asia/Tokyo:20261117T080000"]).some(([, start]) => start === at("2026-11-17T08:00")));
+});
 
-	const dated = todo("DUE;VALUE=DATE:20261120", "LAST-MODIFIED:20261117T010000Z");
-	assert.deepEqual(dated?.due, { date: "2026-11-20" });
-	assert.equal(dated?.done, false);
-	assert.equal(dated?.modified, Date.UTC(2026, 10, 17, 1));
-	assert.equal(formatTodo(dated!, tz), "レポート提出 期日 11/20(金)");
+test("an occurrence moved on its own is read where it was moved to, as it was changed", () => {
+	const occurrences = daily(
+		[],
+		["BEGIN:VEVENT", "UID:r", "RECURRENCE-ID;TZID=Asia/Tokyo:20261118T080000", "SUMMARY:ゴミ捨て（夜）", "DTSTART;TZID=Asia/Tokyo:20261118T200000", "DTEND;TZID=Asia/Tokyo:20261118T201500", "END:VEVENT"],
+	);
+	assert.ok(occurrences.some(([summary, start]) => summary === "ゴミ捨て（夜）" && start === at("2026-11-18T20:00")));
+	assert.ok(!occurrences.some(([, start]) => start === at("2026-11-18T08:00")));
+});
 
+test("an occurrence cancelled on its own is left out", () => {
+	const occurrences = daily(
+		[],
+		["BEGIN:VEVENT", "UID:r", "RECURRENCE-ID;TZID=Asia/Tokyo:20261119T080000", "STATUS:CANCELLED", "SUMMARY:ゴミ捨て", "DTSTART;TZID=Asia/Tokyo:20261119T080000", "DTEND;TZID=Asia/Tokyo:20261119T081500", "END:VEVENT"],
+	);
+	assert.ok(!occurrences.some(([, start]) => start === at("2026-11-19T08:00")));
+});
+
+test("a task's due date is read as a date", () => {
+	assert.deepEqual(taskOf("DUE;VALUE=DATE:20261120")?.due, { date: "2026-11-20" });
+	assert.equal(taskOf()?.due, undefined);
+});
+
+test("a task due at a time is due on the user's date of that time", () => {
 	// 15:00 UTC on the 19th is already the 20th in Tokyo.
-	const timed = todo("DUE:20261119T150000Z");
-	assert.deepEqual(timed?.due, { date: "2026-11-20", at: at("2026-11-20T00:00") });
-
-	assert.equal(todo()?.due, undefined);
-	assert.equal(todo("STATUS:COMPLETED")?.done, true);
-	assert.equal(todo("COMPLETED:20261117T010000Z")?.done, true);
+	assert.deepEqual(taskOf("DUE:20261119T150000Z")?.due, { date: "2026-11-20", at: at("2026-11-20T00:00") });
 });
 
-test("a built event or task reads back as what was asked for", () => {
-	const now = at("2026-11-17T09:00");
-	const timed = parseEvents(raw(buildEvent("u1", { summary: " 歯医者 ", start: "2026-11-17T15:30", location: "駅前" }, tz, now)), "Home", week, tz)[0];
-	assert.equal(formatEvent(timed!, tz), "11/17(火) 15:30–16:30 歯医者 @駅前");
-	assert.equal(timed?.uid, "u1");
+for (const [how, line] of [
+	["a COMPLETED status", "STATUS:COMPLETED"],
+	["a completion time", "COMPLETED:20261117T010000Z"],
+] as const) {
+	test(`a task with ${how} is done`, () => {
+		assert.equal(taskOf(line)?.done, true);
+	});
+}
 
-	const days = parseEvents(raw(buildEvent("u2", { summary: "旅行", start: "2026-11-20", end: "2026-11-22" }, tz, now)), "Home", week, tz)[0];
-	assert.equal(formatEvent(days!, tz), "11/20(金)〜11/22(日) 終日 旅行");
-
-	const todo = parseTodo(raw(buildTodo("u3", { summary: "レポート提出", due: "2026-11-20T17:00" }, tz, now)), "ToDo", tz);
-	assert.equal(formatTodo(todo!, tz), "レポート提出 期日 11/20(金) 17:00");
-
-	assert.throws(() => buildEvent("u4", { summary: "x", start: "2026-11-17T15:30", end: "2026-11-17T15:00" }, tz, now), CalendarError);
-	assert.throws(() => buildEvent("u5", { summary: "x", start: "tomorrow" }, tz, now), CalendarError);
-	assert.throws(() => buildEvent("u6", { summary: " ", start: "2026-11-17" }, tz, now), CalendarError);
+test("a task without either is open", () => {
+	assert.equal(taskOf("STATUS:NEEDS-ACTION")?.done, false);
 });
 
-test("a change keeps what it does not touch, and moving a start keeps the length", () => {
-	const data = ics(
-		"BEGIN:VEVENT",
-		"UID:1",
-		"SUMMARY:歯医者",
-		"LOCATION:駅前",
-		"DTSTART;TZID=Asia/Tokyo:20261117T153000",
-		"DTEND;TZID=Asia/Tokyo:20261117T161500",
-		"BEGIN:VALARM",
-		"ACTION:DISPLAY",
-		"TRIGGER:-PT30M",
-		"END:VALARM",
-		"END:VEVENT",
+test("when an item was last written is read from its stamps", () => {
+	assert.equal(taskOf("DTSTAMP:20261116T010000Z", "LAST-MODIFIED:20261117T010000Z")?.modified, Date.UTC(2026, 10, 17, 1));
+});
+
+test("an event is shown with its day, times, title and place", () => {
+	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "歯医者", location: "駅前", allDay: false, recurring: false, start: at("2026-11-17T15:30"), end: at("2026-11-17T16:30") };
+	assert.equal(formatEvent(item, tz), "11/17(火) 15:30–16:30 歯医者 @駅前");
+});
+
+test("an all-day event over several days is shown as the range of its days", () => {
+	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "旅行", allDay: true, recurring: false, start: at("2026-11-20T00:00"), end: at("2026-11-23T00:00") };
+	assert.equal(formatEvent(item, tz), "11/20(金)〜11/22(日) 終日 旅行");
+});
+
+test("a recurring event is shown as one", () => {
+	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "ゴミ捨て", allDay: false, recurring: true, start: at("2026-11-17T08:00"), end: at("2026-11-17T08:15") };
+	assert.match(formatEvent(item, tz), /繰り返し/);
+});
+
+test("a task is shown with its due date, and its time when it has one", () => {
+	assert.equal(formatTodo(taskOf("DUE;VALUE=DATE:20261120")!, tz), "レポート提出 期日 11/20(金)");
+	assert.equal(formatTodo(taskOf("DUE;TZID=Asia/Tokyo:20261120T170000")!, tz), "レポート提出 期日 11/20(金) 17:00");
+});
+
+test("a built event reads back as asked, an hour long when no end is given, without the spaces around its title", () => {
+	const event = parseEvents(raw(buildEvent("u1", { summary: " 歯医者 ", start: "2026-11-17T15:30", location: "駅前" }, tz, NOW)), "Home", week, tz)[0];
+	assert.deepEqual(
+		[event?.uid, event?.summary, event?.location, event?.start, event?.end],
+		["u1", "歯医者", "駅前", at("2026-11-17T15:30"), at("2026-11-17T16:30")],
 	);
-	const moved = applyChanges(data, { start: "2026-11-18T10:00" }, tz, at("2026-11-17T09:00"));
-	assert.equal(formatEvent(parseEvents(raw(moved), "Home", week, tz)[0]!, tz), "11/18(水) 10:00–10:45 歯医者 @駅前");
-	assert.match(moved, /BEGIN:VALARM/);
-	assert.match(moved, /SEQUENCE:1/);
-	// The old zone parameter does not fit the new UTC value.
-	assert.doesNotMatch(moved, /TZID/);
-
-	const cleared = applyChanges(data, { summary: "歯科検診", location: "" }, tz, at("2026-11-17T09:00"));
-	assert.equal(formatEvent(parseEvents(raw(cleared), "Home", week, tz)[0]!, tz), "11/17(火) 15:30–16:15 歯科検診");
-
-	assert.throws(() => applyChanges(data, { due: "2026-11-20" }, tz, 0), /予定に due はありません/);
 });
 
-test("completing a task is recorded once", () => {
-	const data = ics("BEGIN:VTODO", "UID:t", "SUMMARY:レポート提出", "STATUS:NEEDS-ACTION", "END:VTODO");
-	const done = completeTodo(data, at("2026-11-17T09:00"));
+test("a built all-day event covers its last day", () => {
+	const event = parseEvents(raw(buildEvent("u2", { summary: "旅行", start: "2026-11-20", end: "2026-11-22" }, tz, NOW)), "Home", week, tz)[0];
+	assert.deepEqual([event?.allDay, event?.start, event?.end], [true, at("2026-11-20T00:00"), at("2026-11-23T00:00")]);
+});
+
+test("a built task reads back with its due date and time", () => {
+	const todo = parseTodo(raw(buildTodo("u3", { summary: "レポート提出", due: "2026-11-20T17:00" }, tz, NOW)), "ToDo", tz);
+	assert.deepEqual(todo?.due, { date: "2026-11-20", at: at("2026-11-20T17:00") });
+});
+
+for (const [what, fields] of [
+	["an end before the start", { summary: "x", start: "2026-11-17T15:30", end: "2026-11-17T15:00" }],
+	["a start that is not a date", { summary: "x", start: "tomorrow" }],
+	["an empty title", { summary: " ", start: "2026-11-17" }],
+] as const) {
+	test(`an event with ${what} is refused`, () => {
+		assert.throws(() => buildEvent("u", fields, tz, NOW), CalendarError);
+	});
+}
+
+/** The dentist from 15:30 to 16:15 at the station, with an alarm. */
+const DENTIST = ics(
+	"BEGIN:VEVENT",
+	"UID:1",
+	"SUMMARY:歯医者",
+	"LOCATION:駅前",
+	"DTSTART;TZID=Asia/Tokyo:20261117T153000",
+	"DTEND;TZID=Asia/Tokyo:20261117T161500",
+	"BEGIN:VALARM",
+	"ACTION:DISPLAY",
+	"TRIGGER:-PT30M",
+	"END:VALARM",
+	"END:VEVENT",
+);
+const readBack = (data: string) => parseEvents(raw(data), "Home", week, tz)[0]!;
+
+test("moving an event's start keeps its length", () => {
+	const moved = readBack(applyChanges(DENTIST, { start: "2026-11-18T10:00" }, tz, NOW));
+	assert.deepEqual([moved.start, moved.end], [at("2026-11-18T10:00"), at("2026-11-18T10:45")]);
+});
+
+test("a change keeps what it does not touch, the alarm too", () => {
+	const changed = applyChanges(DENTIST, { summary: "歯科検診" }, tz, NOW);
+	assert.deepEqual([readBack(changed).summary, readBack(changed).location, readBack(changed).start], ["歯科検診", "駅前", at("2026-11-17T15:30")]);
+	assert.match(changed, /BEGIN:VALARM/);
+});
+
+test("a change is marked as a new version, so other clients take it", () => {
+	assert.match(applyChanges(DENTIST, { summary: "歯科検診" }, tz, NOW), /^SEQUENCE:1\r?$/m);
+});
+
+test("a field changed to nothing is removed", () => {
+	assert.equal(readBack(applyChanges(DENTIST, { location: "" }, tz, NOW)).location, undefined);
+});
+
+test("a due date for an event is refused", () => {
+	assert.throws(() => applyChanges(DENTIST, { due: "2026-11-20" }, tz, NOW), CalendarError);
+});
+
+test("completing a task marks it done, and completing it again changes nothing", () => {
+	const done = completeTodo(ics("BEGIN:VTODO", "UID:t", "SUMMARY:レポート提出", "STATUS:NEEDS-ACTION", "END:VTODO"), NOW);
 	assert.equal(parseTodo(raw(done!), "ToDo", tz)?.done, true);
 	assert.equal(completeTodo(done!, at("2026-11-17T10:00")), undefined);
 });
 
-test("writes through the store are safe to repeat", async () => {
+/** The calendars on a CalDAV server in memory: `Home` for events, `ToDo` for tasks. */
+function store() {
 	const backend = new MemoryCalDav();
-	const calendars = new Calendars(backend, { Home: { kind: "events", description: "" }, ToDo: { kind: "todos", description: "" } }, tz);
-	const now = at("2026-11-17T09:00");
+	return { backend, calendars: new Calendars(backend, { Home: { kind: "events", description: "" }, ToDo: { kind: "todos", description: "" } }, tz) };
+}
 
-	const id = await calendars.create("Home", "u1", { summary: "歯医者", start: "2026-11-17T15:30" }, now);
-	assert.equal(id, "Home/u1.ics");
-	// The same UID again, as a rerun after a crash sends it: still one object.
-	await calendars.create("Home", "u1", { summary: "歯医者", start: "2026-11-17T15:30" }, now);
-	assert.deepEqual(backend.files("Home"), ["u1.ics"]);
+test("creating again under the same UID, as a rerun after a crash does, stores nothing new", async () => {
+	const { backend, calendars } = store();
+	await calendars.create("Home", "u1", { summary: "歯医者", start: "2026-11-17T15:30" }, NOW);
+	await calendars.create("Home", "u1", { summary: "歯医者", start: "2026-11-17T15:30" }, NOW);
+	assert.equal(backend.files("Home").length, 1);
+});
 
-	await calendars.update(id, { start: "2026-11-17T16:00" }, now);
-	await calendars.update(id, { start: "2026-11-17T16:00" }, now);
-	assert.deepEqual(lines(await calendars.events(week.from, week.to)), ["11/17(火) 16:00–17:00 歯医者"]);
-	assert.equal(await calendars.describe(id), "11/17(火) 16:00–17:00 歯医者");
+test("the same change applied twice ends as it did once", async () => {
+	const { calendars } = store();
+	const id = await calendars.create("Home", "u1", { summary: "歯医者", start: "2026-11-17T15:30" }, NOW);
+	await calendars.update(id, { start: "2026-11-17T16:00" }, NOW);
+	await calendars.update(id, { start: "2026-11-17T16:00" }, NOW);
+	assert.deepEqual(
+		(await calendars.events(week.from, week.to)).map((event) => [event.start, event.end]),
+		[[at("2026-11-17T16:00"), at("2026-11-17T17:00")]],
+	);
+});
 
-	const task = await calendars.create("ToDo", "u2", { summary: "レポート提出", due: "2026-11-20" }, now);
-	await calendars.complete(task, now);
-	await calendars.complete(task, now);
+test("completing and removing succeed when they were done already", async () => {
+	const { backend, calendars } = store();
+	const task = await calendars.create("ToDo", "u2", { summary: "レポート提出", due: "2026-11-20" }, NOW);
+	await calendars.complete(task, NOW);
+	await calendars.complete(task, NOW);
 	assert.equal((await calendars.todos())[0]?.done, true);
 
+	const id = await calendars.create("Home", "u1", { summary: "歯医者", start: "2026-11-17T15:30" }, NOW);
 	await calendars.remove(id);
 	await calendars.remove(id);
 	assert.deepEqual(backend.files("Home"), []);
+});
 
-	await assert.rejects(calendars.update("Home/nope.ics", { summary: "x" }, now), /見つかりません/);
-	await assert.rejects(calendars.create("Work", "u3", { summary: "x", start: "2026-11-17" }, now), /カレンダー「Work」はありません/);
+test("an item that does not exist, or a calendar that is not configured, is refused", async () => {
+	const { calendars } = store();
+	await assert.rejects(calendars.update("Home/nope.ics", { summary: "x" }, NOW), CalendarError);
+	await assert.rejects(calendars.create("Work", "u3", { summary: "x", start: "2026-11-17" }, NOW), CalendarError);
 });
