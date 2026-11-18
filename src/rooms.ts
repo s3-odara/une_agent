@@ -128,15 +128,12 @@ export class Bridge {
 		const time = message.ts > 0 ? formatStamp(message.ts, config.timezone) : undefined;
 		// A message already in the conversation is one resent after a crash: no handler took it the first time.
 		if (!db.hasDelivery(message.eventId)) {
-			const handlers = this.#options.handlers ?? [];
 			if (message.audio !== undefined) {
-				for (const handler of handlers) handler.interrupt?.(message.roomId);
+				for (const handler of this.#options.handlers ?? []) handler.interrupt?.(message.roomId);
 			} else {
-				const text = { roomId: message.roomId, body: message.body, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) };
-				for (const handler of handlers) {
-					const result = handler.onMessage(text);
-					if (!result.handled) continue;
-					if (result.reply !== undefined) await this.#send(message.roomId, `cmd:${message.eventId}`, result.reply, true);
+				const command = await this.#command({ roomId: message.roomId, body: message.body, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) });
+				if (command !== undefined) {
+					if (command.reply !== undefined) await this.#send(message.roomId, `cmd:${message.eventId}`, command.reply, true);
 					link.send({ type: "ack", eventId: message.eventId });
 					return;
 				}
@@ -231,14 +228,37 @@ export class Bridge {
 		await this.#send(roomId, `notice:${key}`, body, true);
 	}
 
+	async #command(message: { readonly roomId: string; readonly body: string; readonly replyTo?: string }): Promise<Extract<Handled, { handled: true }> | undefined> {
+		for (const handler of this.#options.handlers ?? []) {
+			const result = handler.onMessage(message);
+			if (result.handled) return result;
+		}
+		// Not a handler but after them: they take it as any other message, so a pending approval or code request is given up.
+		if (message.body.trim() !== "!new") return undefined;
+		await this.#startOver(message.roomId);
+		return { handled: true, reply: "新しい会話を始めました。これまでの会話は引き継ぎません（記憶はそのままです）。" };
+	}
+
+	/** A reset rather than a new conversation: the ledger and the browser tab still refer to it. */
+	async #startOver(roomId: string): Promise<void> {
+		const conversation = await this.#existingConversation(roomId);
+		// Without the abort, the reset waits for the answer being written, and that answer is still sent.
+		await conversation?.abort(this.#options.context);
+		await conversation?.reset(undefined, this.#options.context);
+	}
+
+	async #existingConversation(roomId: string): Promise<Conversation | undefined> {
+		const known = this.#options.db.conversationOf(roomId);
+		return known === undefined ? undefined : this.#options.harness.conversation(idFromNumber<ConversationId>(known), this.#options.context);
+	}
+
 	async #conversationFor(roomId: string): Promise<Conversation> {
-		const { harness, db, config, context } = this.#options;
+		const { harness, config, context, db } = this.#options;
 		const name = personaFor(config, roomId);
 		const model = persona(config, name).model ?? config.model;
 		const instructions = readSoul(config, name);
 
-		const known = db.conversationOf(roomId);
-		const existing = known === undefined ? undefined : await harness.conversation(idFromNumber<ConversationId>(known), context);
+		const existing = await this.#existingConversation(roomId);
 		if (existing !== undefined) {
 			// The persona file and the model may have changed since the conversation last ran.
 			const agent = await existing.agent(context);
@@ -331,7 +351,9 @@ export class Bridge {
 
 		const answer = await answerOf(harness, await submission.wait(context), context);
 		if (answer.ok) return { body: answer.text, notice: false };
-		return { body: answer.reason === "empty answer" ? "（空の応答でした）" : `応答できませんでした（${answer.reason}）`, notice: true };
+		if (answer.reason === "empty answer") return { body: "（空の応答でした）", notice: true };
+		if (answer.stopped) return { body: "（中断しました）", notice: true };
+		return { body: `応答できませんでした（${answer.reason}）`, notice: true };
 	}
 
 	#send(roomId: string, txnId: string, body: string, notice: boolean): Promise<string> {

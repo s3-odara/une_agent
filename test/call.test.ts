@@ -7,7 +7,7 @@ import { Calls, OVERTAKEN } from "../src/call.ts";
 import type { GatewayEvent } from "../src/gateway.ts";
 import { type Synthesizer, sentences, toSpeech } from "../src/tts.ts";
 import { agentEnv, ME } from "./env.ts";
-import { answer, lastInput, type Request } from "./fakes.ts";
+import { answer, lastInput, message, type Request } from "./fakes.ts";
 
 const ROOM = "!call:example.org";
 
@@ -188,6 +188,29 @@ test("when speech cannot be made, the room gets the answer in text, with why", a
 	assert.equal(notice?.notice, true);
 	assert.match(notice?.body ?? "", /engine down/);
 	assert.match(notice?.body ?? "", /答えです。/);
+});
+
+test("an answer stopped by !new is not told to the room as a failure; only !new is answered", async () => {
+	await using t = await setup();
+	const { promise: writing, resolve: started } = Promise.withResolvers<void>();
+	t.env.faux.setResponses([
+		(_context, options) =>
+			new Promise((_resolve, reject) => {
+				started();
+				options?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+			}),
+	]);
+	t.inCall();
+	t.link.emit(t.utterance("長い質問"));
+	await writing;
+	t.link.emit(message(ROOM, "$1", "!new"));
+	await t.settle();
+
+	assert.deepEqual(
+		t.link.of("send").map((send) => send.txnId),
+		["cmd:$1"],
+	);
+	assert.deepEqual(t.link.of("callSpeak"), []);
 });
 
 test("being put out of a call is told to the room, with why", async () => {

@@ -127,6 +127,7 @@ export class Calls {
 		// The file name is unique per utterance; the same key again would get the same answer back.
 		const answer = await this.#options.ask(utterance.roomId, `call:${basename(utterance.path)}`, content);
 		if (!answer.ok) {
+			if (answer.stopped) return;
 			await this.#options.notice(utterance.roomId, `callfail:${basename(utterance.path)}`, `通話の発言に答えられませんでした（${answer.reason}）。`);
 			return;
 		}

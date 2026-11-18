@@ -123,3 +123,60 @@ test("a run that fails is told to the room as a notice", async () => {
 		[[ROOM, true]],
 	);
 });
+
+test("after !new the model no longer sees what was said before, and !new itself does not reach it", async () => {
+	await using env = await agentEnv();
+	const requests: Request[] = [];
+	env.faux.setResponses([answer("ok", requests), answer("ok", requests)]);
+	const bridge = env.bridge();
+
+	env.link.emit(message(ROOM, "$1", "before-reset"));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$2", "!new"));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$3", "after-reset"));
+	await bridge.idle();
+
+	assert.equal(requests.length, 2);
+	assert.doesNotMatch(everything(requests[1]!), /before-reset|!new/);
+	assert.match(lastInput(requests[1]!), /after-reset/);
+	assert.ok(env.link.of("send").some((send) => send.notice && send.txnId === "cmd:$2"));
+	assert.deepEqual(env.link.of("ack").map((ack) => ack.eventId), ["$1", "$2", "$3"]);
+});
+
+test("!new in a room that has not talked yet starts it fresh all the same", async () => {
+	await using env = await agentEnv();
+	const bridge = env.bridge();
+
+	env.link.emit(message(ROOM, "$1", "!new"));
+	await bridge.idle();
+
+	assert.equal(env.faux.state.callCount, 0);
+	assert.equal(env.link.of("send").filter((send) => send.notice).length, 1);
+});
+
+test("!new while an answer is being written stops it: the message gets a notice instead of an answer", async () => {
+	await using env = await agentEnv();
+	const { promise: writing, resolve: started } = Promise.withResolvers<void>();
+	env.faux.setResponses([
+		(_context, options) =>
+			new Promise((_resolve, reject) => {
+				started();
+				options?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+			}),
+	]);
+	const bridge = env.bridge();
+
+	env.link.emit(message(ROOM, "$1", "a long question"));
+	await writing;
+	env.link.emit(message(ROOM, "$2", "!new"));
+	await bridge.idle();
+
+	assert.deepEqual(
+		env.link.of("send").map((send) => [send.txnId, send.notice]),
+		[
+			["reply:$1", true],
+			["cmd:$2", true],
+		],
+	);
+});
