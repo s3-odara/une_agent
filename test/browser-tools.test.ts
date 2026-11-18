@@ -10,7 +10,7 @@ import { persona, personaFor } from "../src/config.ts";
 import type { Bridge } from "../src/rooms.ts";
 import { CredentialError, Credentials } from "../src/credentials.ts";
 import { agentEnv, tempDir } from "./env.ts";
-import { call, everything, instructionsOf, lastInput, message, noting, type Request, type ToolResult } from "./fakes.ts";
+import { call, everything, lastInput, message, noting, type Request, type ToolResult } from "./fakes.ts";
 
 /** The header of a PNG image of 640 x 480: all a reader of its size looks at. */
 const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 2, 128, 0, 0, 1, 224])]);
@@ -67,15 +67,17 @@ async function setup() {
 	let bridge: Bridge | undefined;
 	const viaBridge = () => bridge as Bridge;
 	const codes = new CodeRequests({ notice: (roomId, txnId, body) => viaBridge().post(roomId, txnId, body), timeoutMs: 60_000 });
+	let credentials!: Credentials;
 	const env = await agentEnv({
 		config: { personas: { default: "soul.md", work: { soul: "soul.md", browserProfile: "work" } }, rooms: { "!work:example.org": "work" }, browser: {} },
 		extensions: ({ config, db }) => {
 			const path = join(config.dataDir, "credentials.json");
 			writeFileSync(path, JSON.stringify({ "https://shop.example.com/login": { username: "me@example.org", password: SECRET } }));
+			credentials = new Credentials(path);
 			return [
 				createBrowserExtension({
 					browsers,
-					credentials: new Credentials(path),
+					credentials,
 					db,
 					profileOf: (conversationId) => {
 						const roomId = db.roomOf(conversationId);
@@ -96,6 +98,7 @@ async function setup() {
 		env,
 		bridge: bridge as Bridge,
 		browsers,
+		credentials,
 		requests,
 		results,
 		noting: noting(results, requests),
@@ -199,13 +202,6 @@ test("a stored password never reaches the model, even where the page shows it", 
 	assert.ok(!everything(t.requests[0]!).includes(SECRET));
 });
 
-test("the model is told on which sites it can log in, but not with what", async () => {
-	await using t = await setup();
-	await logIn(t);
-	assert.match(instructionsOf(t.requests[0]!), /https:\/\/shop\.example\.com/);
-	assert.ok(!instructionsOf(t.requests[0]!).includes("me@example.org"));
-});
-
 for (const [where, url, frame] of [
 	["another site, however much it looks like the shop", "https://shop.example.com.evil.test/login", undefined],
 	["the shop over plain http", "http://shop.example.com/login", undefined],
@@ -227,6 +223,17 @@ test("a password is filled only into a password field, not a text box that would
 	await t.say("ここに入れて");
 	assert.equal(t.results[0]?.isError, true);
 	assert.equal(t.browsers.values.size, 0);
+});
+
+test("a page of a site with a password stored says so but not with what, also when the password was added after the conversation began", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([call("browser_open", { url: "https://accounts.example.org/login" }), t.noting, call("browser_open", { url: "https://accounts.example.org/login" }), t.noting]);
+	await t.say("ログイン画面を開いて");
+	t.credentials.set("https://accounts.example.org", { username: "someone@example.org", password: "pw-2" });
+	await t.say("もう一度開いて");
+	assert.ok(!(t.results[0]?.text ?? "").includes("browser_fill_credential"));
+	assert.match(t.results[1]?.text ?? "", /https:\/\/accounts\.example\.org.*browser_fill_credential/);
+	assert.ok(!(t.results[1]?.text ?? "").includes("someone@example.org"));
 });
 
 test("filling a login that names no field is refused", async () => {
