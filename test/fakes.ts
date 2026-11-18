@@ -11,7 +11,7 @@ export class FakeLink implements GatewayLink {
 
 	send(command: GatewayCommand): void {
 		this.commands.push(command);
-		if ((command.type === "send" || command.type === "sendVoice") && this.confirmSends) {
+		if ((command.type === "send" || command.type === "sendVoice" || command.type === "react") && this.confirmSends) {
 			queueMicrotask(() => this.emit({ type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` }));
 		}
 		if (command.type === "callSpeak" && this.speak !== undefined) {

@@ -18,6 +18,15 @@ export type GatewayEvent =
 	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string; readonly sender: string }
 	| { readonly type: "sent"; readonly requestId: string; readonly eventId: string }
 	| { readonly type: "error"; readonly requestId?: string; readonly message: string }
+	/** An allowed user reacted to `relatesTo`. Not stored by the gateway: one missed while it was down is not offered again. */
+	| {
+			readonly type: "reaction";
+			readonly roomId: string;
+			readonly eventId: string;
+			readonly relatesTo: string;
+			readonly key: string;
+			readonly sender: string;
+	  }
 	/** The allowed users (not the bot) now in the room's call; empty once they have all left. */
 	| { readonly type: "callMembers"; readonly roomId: string; readonly userIds: readonly string[] }
 	| { readonly type: "callJoined"; readonly roomId: string }
@@ -76,6 +85,8 @@ export type GatewayCommand =
 			readonly waveform?: readonly number[];
 	  }
 	| { readonly type: "typing"; readonly roomId: string; readonly on: boolean }
+	/** Reacts to an event; answered with `sent` or `error` under `requestId`. */
+	| { readonly type: "react"; readonly requestId: string; readonly roomId: string; readonly txnId: string; readonly eventId: string; readonly key: string }
 	| { readonly type: "joinCall"; readonly roomId: string; readonly vad: CallVad }
 	| { readonly type: "leaveCall"; readonly roomId: string }
 	/** Plays a 48 kHz mono 16-bit WAV file in the call after what is queued; the gateway reads it at once. */

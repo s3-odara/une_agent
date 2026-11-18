@@ -12,15 +12,24 @@ export type Delivery = {
 /** Event IDs of deliveries the scheduler asked for start with this; Matrix event IDs start with `$`. */
 export const SCHEDULED_PREFIX = "sched:";
 
-/** A change to the calendar that waits for the user's yes. */
-export type PendingChange = {
-	readonly token: string;
-	readonly conversationId: number;
-	/** The change itself, as JSON. */
-	readonly action: string;
-	/** The newest submission when the change was proposed: only a user message after it can be the yes. */
-	readonly baseline: number;
+/** How the user answered an approval request. */
+export type Decision = "approve" | "approve_session" | "approve_always" | "reject";
+
+/** A tool call waiting for, or given, the user's decision. */
+export type ApprovalRow = {
+	readonly id: string;
+	readonly roomId: string;
+	/** The run the call belongs to: `approve_session` covers the same tool in the rest of it. */
+	readonly runKey: string;
+	readonly tool: string;
+	/** What the user is asked about, as shown to them. */
+	readonly summary: string;
 	readonly createdAt: number;
+	/** The request message, once sent. */
+	readonly promptEventId?: string;
+	readonly decision?: Decision;
+	/** Why it was rejected without a reject: `message` (the user wrote something else instead) or `timeout`. */
+	readonly reason?: string;
 };
 
 /**
@@ -55,13 +64,21 @@ export class HostDb {
 				id TEXT PRIMARY KEY,
 				etag TEXT NOT NULL
 			);
-			CREATE TABLE IF NOT EXISTS pending_changes (
-				token TEXT PRIMARY KEY,
-				conversation_id INTEGER NOT NULL,
-				action TEXT NOT NULL,
-				baseline INTEGER NOT NULL,
+			DROP TABLE IF EXISTS pending_changes;
+			CREATE TABLE IF NOT EXISTS approvals (
+				id TEXT PRIMARY KEY,
+				room_id TEXT NOT NULL,
+				run_key TEXT NOT NULL,
+				tool TEXT NOT NULL,
+				summary TEXT NOT NULL,
 				created_at INTEGER NOT NULL,
-				done INTEGER NOT NULL DEFAULT 0
+				prompt_event_id TEXT,
+				decision TEXT,
+				reason TEXT
+			);
+			CREATE TABLE IF NOT EXISTS approval_rules (
+				tool TEXT PRIMARY KEY,
+				created_at INTEGER NOT NULL
 			);
 			CREATE TABLE IF NOT EXISTS kv (
 				key TEXT PRIMARY KEY,
@@ -120,12 +137,6 @@ export class HostDb {
 		}));
 	}
 
-	/** The newest submission the ledger knows, user message or scheduled; 0 when there is none. */
-	latestSubmission(): number {
-		const row = this.#db.prepare("SELECT MAX(submission_id) AS latest FROM deliveries").get();
-		return Number(row?.latest ?? 0);
-	}
-
 	/** Whether a submission is a message a person sent, as opposed to one the scheduler made. */
 	isUserSubmission(submissionId: number): boolean {
 		const row = this.#db.prepare("SELECT event_id FROM deliveries WHERE submission_id = ?").get(submissionId);
@@ -167,29 +178,51 @@ export class HostDb {
 		else this.#db.prepare("INSERT INTO calendar_seen (id, etag) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET etag = excluded.etag").run(id, etag);
 	}
 
-	putPendingChange(change: PendingChange): void {
+	/** Records an approval request; a repeat with the same ID changes nothing. Decided requests older than a week go. */
+	addApproval(row: Omit<ApprovalRow, "promptEventId" | "decision" | "reason">): void {
 		this.#db
-			.prepare("INSERT OR IGNORE INTO pending_changes (token, conversation_id, action, baseline, created_at) VALUES (?, ?, ?, ?, ?)")
-			.run(change.token, change.conversationId, change.action, change.baseline, change.createdAt);
-		// Proposals nobody answered are of no use after a week.
-		this.#db.prepare("DELETE FROM pending_changes WHERE created_at < ?").run(change.createdAt - 7 * 86_400_000);
+			.prepare("INSERT OR IGNORE INTO approvals (id, room_id, run_key, tool, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+			.run(row.id, row.roomId, row.runKey, row.tool, row.summary, row.createdAt);
+		this.#db.prepare("DELETE FROM approvals WHERE decision IS NOT NULL AND created_at < ?").run(row.createdAt - 7 * 86_400_000);
 	}
 
-	pendingChange(token: string): (PendingChange & { done: boolean }) | undefined {
-		const row = this.#db.prepare("SELECT token, conversation_id, action, baseline, created_at, done FROM pending_changes WHERE token = ?").get(token);
-		if (row === undefined) return undefined;
-		return {
-			token: String(row.token),
-			conversationId: Number(row.conversation_id),
-			action: String(row.action),
-			baseline: Number(row.baseline),
-			createdAt: Number(row.created_at),
-			done: Number(row.done) === 1,
-		};
+	approval(id: string): ApprovalRow | undefined {
+		const row = this.#db.prepare("SELECT * FROM approvals WHERE id = ?").get(id);
+		return row === undefined ? undefined : approvalRow(row);
 	}
 
-	finishPendingChange(token: string): void {
-		this.#db.prepare("UPDATE pending_changes SET done = 1 WHERE token = ?").run(token);
+	approvalByPrompt(roomId: string, promptEventId: string): ApprovalRow | undefined {
+		const row = this.#db.prepare("SELECT * FROM approvals WHERE room_id = ? AND prompt_event_id = ?").get(roomId, promptEventId);
+		return row === undefined ? undefined : approvalRow(row);
+	}
+
+	/** Undecided requests of a room, oldest first. */
+	undecidedApprovals(roomId: string): ApprovalRow[] {
+		return this.#db.prepare("SELECT * FROM approvals WHERE room_id = ? AND decision IS NULL ORDER BY created_at, rowid").all(roomId).map(approvalRow);
+	}
+
+	setApprovalPrompt(id: string, promptEventId: string): void {
+		this.#db.prepare("UPDATE approvals SET prompt_event_id = ? WHERE id = ?").run(promptEventId, id);
+	}
+
+	/** Decides a request unless it already is; returns whether this call decided it. */
+	decideApproval(id: string, decision: Decision, reason?: string): boolean {
+		return this.#db.prepare("UPDATE approvals SET decision = ?, reason = ? WHERE id = ? AND decision IS NULL").run(decision, reason ?? null, id).changes > 0;
+	}
+
+	/** Whether the user allowed `tool` for the rest of the run. */
+	approvedForRun(runKey: string, tool: string): boolean {
+		return this.#db.prepare("SELECT 1 FROM approvals WHERE run_key = ? AND tool = ? AND decision = 'approve_session'").get(runKey, tool) !== undefined;
+	}
+
+	/** Tools the user allowed for good. */
+	alwaysApproved(): string[] {
+		return this.#db.prepare("SELECT tool FROM approval_rules ORDER BY tool").all().map((row) => String(row.tool));
+	}
+
+	setAlwaysApproved(tool: string, on: boolean, at: number): boolean {
+		if (on) return this.#db.prepare("INSERT OR IGNORE INTO approval_rules (tool, created_at) VALUES (?, ?)").run(tool, at).changes > 0;
+		return this.#db.prepare("DELETE FROM approval_rules WHERE tool = ?").run(tool).changes > 0;
 	}
 
 	value(key: string): string | undefined {
@@ -204,4 +237,18 @@ export class HostDb {
 	close(): void {
 		this.#db.close();
 	}
+}
+
+function approvalRow(row: Record<string, unknown>): ApprovalRow {
+	return {
+		id: String(row.id),
+		roomId: String(row.room_id),
+		runKey: String(row.run_key),
+		tool: String(row.tool),
+		summary: String(row.summary),
+		createdAt: Number(row.created_at),
+		...(row.prompt_event_id === null ? {} : { promptEventId: String(row.prompt_event_id) }),
+		...(row.decision === null ? {} : { decision: String(row.decision) as Decision }),
+		...(row.reason === null ? {} : { reason: String(row.reason) }),
+	};
 }

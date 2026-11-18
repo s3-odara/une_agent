@@ -8,6 +8,7 @@ import { connectCalDav } from "./caldav.ts";
 import { Calendars } from "./calendar.ts";
 import { createCalendarExtension } from "./calendar-tools.ts";
 import { Calls } from "./call.ts";
+import { Approvals } from "./approval.ts";
 import { loadConfig, persona, personaFor } from "./config.ts";
 import { Credentials } from "./credentials.ts";
 import { spawnGateway } from "./gateway.ts";
@@ -20,6 +21,7 @@ import { WhisperServer } from "./stt.ts";
 import { memoryFingerprint, tidyMemory } from "./tidy.ts";
 import { Voicevox } from "./tts.ts";
 import { jmaForecast } from "./weather.ts";
+import { createWeatherExtension } from "./weather-tools.ts";
 
 const context = BACKGROUND_CONTEXT;
 const configPath = process.argv[2] ?? "config.json";
@@ -58,9 +60,18 @@ const browsers =
 				timezone: config.timezone,
 				idleMs: config.browser.idleMinutes * 60_000,
 			});
+// The bridge is made after the harness, which needs the tools; approvals reach it once it exists.
+let bridge: Bridge | undefined;
+const viaBridge = () => bridge ?? fail("the bridge is not running yet");
+const approvals = new Approvals({
+	db,
+	notice: (roomId, txnId, body) => viaBridge().post(roomId, txnId, body),
+	react: (roomId, txnId, eventId, key) => viaBridge().react(roomId, txnId, eventId, key),
+});
 const extensions = [
 	memory,
-	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, weather })]),
+	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
+	...(weather === undefined ? [] : [createWeatherExtension(weather)]),
 	...(browsers === undefined
 		? []
 		: [
@@ -91,7 +102,7 @@ const voice =
 		: { transcriber, ...(synthesizer === undefined ? {} : { synthesizer }), outDir: join(config.dataDir, "voice", "out") };
 
 const gateway = spawnGateway(config.gatewayBin, ["run", "--config", configPath]);
-const bridge = new Bridge({ harness, db, link: gateway, config, context, voice });
+bridge = new Bridge({ harness, db, link: gateway, config, context, voice, approvals });
 bridge.start();
 if (config.voice?.call !== undefined && transcriber !== undefined && synthesizer !== undefined) {
 	new Calls({
@@ -148,3 +159,7 @@ gateway.exited.then(
 		void shutdown(1);
 	},
 );
+
+function fail(message: string): never {
+	throw new Error(message);
+}

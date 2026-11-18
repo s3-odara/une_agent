@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
 import { type Answer, answerOf } from "./answer.ts";
+import type { Approvals } from "./approval.ts";
 import { type Config, persona, personaFor, readSoul } from "./config.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
 import { type Delivery, type HostDb, SCHEDULED_PREFIX } from "./hostdb.ts";
@@ -32,6 +33,8 @@ export type BridgeOptions = {
 	readonly log?: (message: string) => void;
 	/** Without it, voice messages are answered with a notice that they are not supported. */
 	readonly voice?: VoiceOptions;
+	/** Gets reactions and the user's messages first: they may answer an approval request. */
+	readonly approvals?: Approvals;
 };
 
 export type VoiceOptions = {
@@ -115,6 +118,9 @@ export class Bridge {
 			case "ready":
 				this.#log(`gateway ready as ${event.userId} (device ${event.deviceId})`);
 				return;
+			case "reaction":
+				this.#options.approvals?.onReaction(event.roomId, event.relatesTo, event.key);
+				return;
 		}
 	}
 
@@ -123,6 +129,19 @@ export class Bridge {
 		// The time it was sent, so "tomorrow" means something. A system prompt that changed every minute would
 		// defeat the provider's prompt cache; a stamp on the message does not.
 		const time = message.ts > 0 ? formatStamp(message.ts, config.timezone) : undefined;
+		const approvals = this.#options.approvals;
+		if (approvals !== undefined && !db.hasDelivery(message.eventId)) {
+			if (message.audio !== undefined) approvals.interrupt(message.roomId);
+			else {
+				const command = approvals.onMessage(message.roomId, message.body);
+				if (command.handled) {
+					// An answer to an approval request, or about approvals: not for the model.
+					await this.#send(message.roomId, `cmd:${message.eventId}`, command.reply, true);
+					link.send({ type: "ack", eventId: message.eventId });
+					return;
+				}
+			}
+		}
 		if (message.audio === undefined) {
 			if (!db.isDelivered(message.eventId)) await this.#submit(message.roomId, message.eventId, `${time === undefined ? "" : `[${time}] `}${message.body}`);
 		} else if (!db.hasDelivery(message.eventId)) {
@@ -201,6 +220,16 @@ export class Bridge {
 		this.#admissions.set(roomId, settled);
 		this.#track(settled);
 		return answerOf(harness, await (await submitted).wait(context), context);
+	}
+
+	/** Sends a notice under a transaction ID and resolves with its event ID. The same ID again sends nothing new. */
+	post(roomId: string, txnId: string, body: string): Promise<string> {
+		return this.#send(roomId, txnId, body, true);
+	}
+
+	/** Reacts to an event under a transaction ID. */
+	async react(roomId: string, txnId: string, eventId: string, key: string): Promise<void> {
+		await this.#request(txnId, { type: "react", requestId: txnId, roomId, txnId, eventId, key });
 	}
 
 	/** Sends a notice to a room as it is, without the model. The same key again sends nothing new. */

@@ -7,6 +7,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
+import { Approvals } from "../src/approval.ts";
 import { buildEvent, buildTodo, Calendars } from "../src/calendar.ts";
 import { createCalendarExtension } from "../src/calendar-tools.ts";
 import { parseConfig } from "../src/config.ts";
@@ -14,6 +15,7 @@ import { openAgentHarness } from "../src/harness.ts";
 import { HostDb } from "../src/hostdb.ts";
 import { Bridge } from "../src/rooms.ts";
 import { localToEpoch } from "../src/time.ts";
+import { createWeatherExtension } from "../src/weather-tools.ts";
 import { FakeLink, MemoryCalDav, message } from "./fakes.ts";
 
 const tz = "Asia/Tokyo";
@@ -32,10 +34,7 @@ function lastToolResult(request: Request): string {
 const call = (name: string, args: Record<string, string>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
 /** A model turn that answers with what the last tool said, so a test can read it in the room. */
 const report = (request: Request) => fauxAssistantMessage(lastToolResult(request));
-/** The confirmation code from the transcript, as a model would copy it. */
-const code = (request: Request) => /confirm: \\?"([0-9a-f]{8})\\?"/.exec(JSON.stringify(request.messages))?.[1] ?? "missing";
-
-async function setup() {
+async function setup(options: { approvalTimeoutMs?: number } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "agent-caltools-test-"));
 	writeFileSync(join(dir, "soul.md"), "SOUL");
 	const faux = fauxProvider();
@@ -56,25 +55,56 @@ async function setup() {
 	const backend = new MemoryCalDav();
 	const calendars = new Calendars(backend, config.caldav!.calendars, tz);
 	const weather = async () => ({ area: "東京地方", reportedAt: "2026-11-17T05:00:00+09:00", days: [{ date: "2026-11-17", weather: "晴れ", rain: [] }] });
-	const harness = await openAgentHarness(new MemoryStorage(), models, context, [createCalendarExtension({ calendars, db, weather })], () => at("2026-11-17T09:00"));
 	const link = new FakeLink();
-	const bridge = new Bridge({ harness, db, link, config, context });
+	let bridge: Bridge | undefined;
+	const approvals = new Approvals({
+		db,
+		notice: (roomId, txnId, body) => bridge!.post(roomId, txnId, body),
+		react: (roomId, txnId, eventId, key) => bridge!.react(roomId, txnId, eventId, key),
+		timeoutMs: options.approvalTimeoutMs,
+		log: () => {},
+	});
+	const extensions = [createCalendarExtension({ calendars, db, approvals }), createWeatherExtension(weather)];
+	const harness = await openAgentHarness(new MemoryStorage(), models, context, extensions, () => at("2026-11-17T09:00"));
+	bridge = new Bridge({ harness, db, link, config, context, approvals });
 	bridge.start();
 	let sent = 0;
+	const sends = () => link.of("send");
+	/** Sends a user message; resolves with what the bot answered once everything has settled. */
+	const start = (body: string) => {
+		const before = sends().length;
+		link.emit(message(room, `$${++sent}`, body, at("2026-11-17T09:00")));
+		return bridge!.idle().then(() =>
+			sends()
+				.slice(before)
+				.filter((command) => !command.txnId.startsWith("approval:"))
+				.map((command) => command.body)
+				.join("\n"),
+		);
+	};
+	/** Waits until the bot has posted `count` approval requests, and returns the last. */
+	const prompt = async (count = 1) => {
+		for (let i = 0; i < 400; i++) {
+			const prompts = sends().filter((command) => command.txnId.startsWith("approval:"));
+			const latest = prompts[count - 1];
+			if (latest !== undefined) return { body: latest.body, eventId: `$sent-${latest.txnId}` };
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		throw new Error("no approval request was posted");
+	};
+	const react = (eventId: string, key: string) =>
+		link.emit({ type: "reaction", roomId: room, eventId: `$r${++sent}`, relatesTo: eventId, key, sender: "@me:example.org" });
 	return {
 		faux,
 		db,
 		backend,
 		calendars,
-		bridge,
 		link,
+		start,
+		prompt,
+		react,
 		/** Sends a user message and returns what the bot answered. */
-		say: async (body: string) => {
-			const before = link.of("send").length;
-			link.emit(message(room, `$${++sent}`, body, at("2026-11-17T09:00")));
-			await bridge.idle();
-			return link.of("send").slice(before).map((command) => command.body).join("\n");
-		},
+		say: start,
 		cleanup: async () => {
 			await harness.close(context);
 			db.close();
@@ -129,57 +159,121 @@ test("creating runs at once, and the watcher is told so it does not report the a
 	}
 });
 
-test("a change waits for the user's yes: not the model's own, and not a scheduler message", async () => {
+test("a change waits for the user's decision, given as a reaction to the request", async () => {
 	const t = await setup();
 	try {
 		t.backend.put("Home", "dentist.ics", buildEvent("dentist", { summary: "歯医者", start: "2026-11-18T15:30" }, tz, 0));
 		const id = "Home/dentist.ics";
-		const confirm = (request: Request) => call("calendar_update", { id, confirm: code(request) });
-
-		// The model proposes, then tries to confirm in the same run, before the user has seen anything.
-		t.faux.setResponses([call("calendar_update", { id, start: "2026-11-18T16:00" }), confirm, report]);
-		assert.match(await t.say("歯医者を16時に"), /ユーザーの返事をまだ受け取っていません/);
+		t.faux.setResponses([call("calendar_update", { id, start: "2026-11-18T16:00" }), report]);
+		const answer = t.start("歯医者を16時に");
+		const request = await t.prompt();
+		assert.match(request.body, /^承認が必要です: 予定・タスクを変更: 11\/18\(水\) 15:30–16:30 歯医者（開始 → 2026-11-18T16:00）\n✅ 今回だけ許可 \/ 🔁/);
+		// The bot puts the four choices under the request, to be pressed.
+		assert.deepEqual(
+			t.link.of("react").map((command) => [command.eventId, command.key]),
+			["✅", "🔁", "♾️", "❌"].map((key) => [request.eventId, key]),
+		);
+		// Nothing has changed while the decision is open.
 		assert.equal(await t.calendars.describe(id), "11/18(水) 15:30–16:30 歯医者");
 
-		// A run the scheduler started is not the user's answer either.
-		t.faux.setResponses([confirm, report]);
-		await t.bridge.submitScheduled(room, "check:1", "[定時チェック] ...");
-		await t.bridge.idle();
-		assert.match(t.link.of("send").at(-1)?.body ?? "", /ユーザーの返事をまだ受け取っていません/);
-		assert.equal(await t.calendars.describe(id), "11/18(水) 15:30–16:30 歯医者");
-
-		// The user answers: now the same code runs the change that was proposed.
-		t.faux.setResponses([confirm, report, confirm, report]);
-		assert.equal(await t.say("はい"), "変更しました: 11/18(水) 16:00–17:00 歯医者");
+		t.react("$unrelated", "✅");
+		t.react(request.eventId, "✅");
+		assert.equal(await answer, "変更しました: 11/18(水) 16:00–17:00 歯医者");
 		assert.equal(await t.calendars.describe(id), "11/18(水) 16:00–17:00 歯医者");
-		assert.equal(await t.say("もう一度"), "実行済みです。");
-
-		t.faux.setResponses([call("calendar_update", { id, confirm: "deadbeef" }), report]);
-		assert.match(await t.say("でたらめなコード"), /確認コードが違います/);
 	} finally {
 		await t.cleanup();
 	}
 });
 
-test("a first call shows what would change and leaves the calendar alone; deleting works the same way", async () => {
+test("a reject leaves the item alone, and a command answers like a reaction", async () => {
 	const t = await setup();
 	try {
 		t.backend.put("Home", "dentist.ics", buildEvent("dentist", { summary: "歯医者", start: "2026-11-18T15:30" }, tz, 0));
 		const id = "Home/dentist.ics";
-
 		t.faux.setResponses([call("calendar_delete", { id }), report]);
-		const proposal = await t.say("歯医者を消して");
-		assert.match(proposal, /^まだ実行していません。ユーザーの確認が必要です。\n対象: 11\/18\(水\) 15:30–16:30 歯医者\n操作: 削除\n/);
-		assert.match(proposal, /id と confirm: "[0-9a-f]{8}" だけを付けて calendar_delete をもう一度/);
+		const rejected = t.start("歯医者を消して");
+		t.react((await t.prompt()).eventId, "❌");
+		assert.equal(await rejected, "ユーザーが拒否しました。実行していません。");
 		assert.deepEqual(t.backend.files("Home"), ["dentist.ics"]);
 
-		t.faux.setResponses([(request: Request) => call("calendar_delete", { id, confirm: code(request) }), report]);
-		assert.equal(await t.say("はい、消して"), "削除しました。");
+		t.faux.setResponses([call("calendar_delete", { id }), report]);
+		const approved = t.start("やっぱり消して");
+		await t.prompt(2);
+		// The command is answered by the bot, not passed to the model.
+		const commandReply = t.start("!approve");
+		assert.equal(await approved, "今回だけ許可: 予定・タスクを削除: 11/18(水) 15:30–16:30 歯医者\n削除しました: 11/18(水) 15:30–16:30 歯医者");
+		await commandReply;
 		assert.deepEqual(t.backend.files("Home"), []);
+		assert.equal(await t.say("!reject"), "承認待ちはありません。");
 
 		t.faux.setResponses([call("calendar_update", { id: "Home/nope.ics", summary: "x" }), report, call("calendar_update", { id: "bad-id", summary: "x" }), report]);
 		assert.match(await t.say("無いもの"), /見つかりません/);
 		assert.match(await t.say("変な id"), /id「bad-id」の形が違います/);
+	} finally {
+		await t.cleanup();
+	}
+});
+
+test("writing something else instead of answering is a no, and what was written goes to the model", async () => {
+	const t = await setup();
+	try {
+		t.backend.put("Home", "dentist.ics", buildEvent("dentist", { summary: "歯医者", start: "2026-11-18T15:30" }, tz, 0));
+		let next = "";
+		t.faux.setResponses([
+			call("calendar_update", { id: "Home/dentist.ics", start: "2026-11-18T16:00" }),
+			report,
+			(request: Request) => {
+				next = JSON.stringify(request.messages);
+				return fauxAssistantMessage("17時にしますね。");
+			},
+		]);
+		const first = t.start("歯医者を16時に");
+		await t.prompt();
+		const second = t.start("いや、17時にして");
+		const both = await first;
+		await second;
+		assert.match(both, /^ユーザーは承認せず、別の発言を送りました。実行していません。/);
+		assert.match(both, /17時にしますね。$/);
+		assert.match(next, /いや、17時にして/);
+		assert.equal(await t.calendars.describe("Home/dentist.ics"), "11/18(水) 15:30–16:30 歯医者");
+	} finally {
+		await t.cleanup();
+	}
+});
+
+test("approve_session covers the same tool for the rest of the run; approve_always for good, until revoked", async () => {
+	const t = await setup();
+	try {
+		for (const name of ["a", "b", "c", "d"]) t.backend.put("Home", `${name}.ics`, buildEvent(name, { summary: name, start: "2026-11-18T15:30" }, tz, 0));
+		t.faux.setResponses([call("calendar_delete", { id: "Home/a.ics" }), call("calendar_delete", { id: "Home/b.ics" }), report]);
+		const both = t.start("a と b を消して");
+		t.react((await t.prompt()).eventId, "🔁");
+		assert.equal(await both, "削除しました: 11/18(水) 15:30–16:30 b");
+		assert.deepEqual(t.backend.files("Home"), ["c.ics", "d.ics"]);
+		// The next run asks again.
+		t.faux.setResponses([call("calendar_delete", { id: "Home/c.ics" }), report]);
+		const again = t.start("c も");
+		t.react((await t.prompt(2)).eventId, "♾️");
+		assert.match(await again, /^削除しました/);
+
+		t.faux.setResponses([call("calendar_delete", { id: "Home/d.ics" }), report]);
+		assert.match(await t.say("d も"), /^削除しました/);
+		assert.equal(t.link.of("send").filter((command) => command.txnId.startsWith("approval:")).length, 2, "no request for d");
+		assert.match(await t.say("!approvals"), /確認しないツール: calendar_delete/);
+		assert.equal(await t.say("!revoke calendar_delete"), "calendar_delete は今後また確認します。");
+		assert.deepEqual(t.db.alwaysApproved(), []);
+	} finally {
+		await t.cleanup();
+	}
+});
+
+test("a request nobody answers runs out", async () => {
+	const t = await setup({ approvalTimeoutMs: 30 });
+	try {
+		t.backend.put("Home", "dentist.ics", buildEvent("dentist", { summary: "歯医者", start: "2026-11-18T15:30" }, tz, 0));
+		t.faux.setResponses([call("calendar_delete", { id: "Home/dentist.ics" }), report]);
+		assert.equal(await t.say("歯医者を消して"), "承認の返事が無いまま期限が過ぎました。実行していません。");
+		assert.deepEqual(t.backend.files("Home"), ["dentist.ics"]);
 	} finally {
 		await t.cleanup();
 	}

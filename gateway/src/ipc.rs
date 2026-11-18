@@ -19,6 +19,8 @@ pub enum Event {
         request_id: Option<String>,
         message: String,
     },
+    /// An allowed user reacted to an event. Not stored: one missed while the gateway was down is not offered again.
+    Reaction { room_id: String, event_id: String, relates_to: String, key: String, sender: String },
     /// The allowed users (not the bot) now in the room's call; empty once they have all left.
     CallMembers { room_id: String, user_ids: Vec<String> },
     CallJoined { room_id: String },
@@ -89,6 +91,14 @@ pub enum Command {
     Typing {
         room_id: String,
         on: bool,
+    },
+    /// Reacts to an event with `key`; answered with `sent` (the reaction's event ID) or `error`.
+    React {
+        request_id: String,
+        room_id: String,
+        txn_id: String,
+        event_id: String,
+        key: String,
     },
     JoinCall {
         room_id: String,
@@ -215,6 +225,25 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Command>(r#"{"type":"callSpeak","roomId":"!r:example.org","id":"s1","path":"/d/s1.wav"}"#).unwrap(),
             Command::CallSpeak { room_id: "!r:example.org".into(), id: "s1".into(), path: "/d/s1.wav".into() }
+        );
+    }
+
+    #[test]
+    fn reactions_use_the_field_names_the_agent_reads() {
+        let reaction = Event::Reaction {
+            room_id: "!r:example.org".into(),
+            event_id: "$x".into(),
+            relates_to: "$p".into(),
+            key: "✅".into(),
+            sender: "@me:example.org".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&reaction).unwrap(),
+            r#"{"type":"reaction","roomId":"!r:example.org","eventId":"$x","relatesTo":"$p","key":"✅","sender":"@me:example.org"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Command>(r#"{"type":"react","requestId":"q","roomId":"!r:example.org","txnId":"t","eventId":"$p","key":"❌"}"#).unwrap(),
+            Command::React { request_id: "q".into(), room_id: "!r:example.org".into(), txn_id: "t".into(), event_id: "$p".into(), key: "❌".into() }
         );
     }
 

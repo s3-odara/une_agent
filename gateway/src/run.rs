@@ -9,11 +9,13 @@ use matrix_sdk::config::SyncSettings;
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
+use matrix_sdk::ruma::events::reaction::{OriginalSyncReactionEvent, ReactionEventContent};
+use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
 use matrix_sdk::ruma::events::room::message::{
     AudioMessageEventContent, MessageType, OriginalSyncRoomMessageEvent, Relation, RoomMessageEventContent,
 };
-use matrix_sdk::ruma::{OwnedTransactionId, OwnedUserId, RoomId, UInt};
+use matrix_sdk::ruma::{EventId, OwnedTransactionId, OwnedUserId, RoomId, UInt};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomState};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::task::JoinHandle;
@@ -80,6 +82,7 @@ pub async fn run(config: &Config) -> Result<()> {
     client.add_event_handler(on_message);
     client.add_event_handler(on_undecryptable);
     client.add_event_handler(on_invite);
+    client.add_event_handler(on_reaction);
     watch_memberships(&client, shared.out.clone(), shared.allowed.clone());
 
     let commands = tokio::spawn(read_commands(client.clone(), shared.clone()));
@@ -197,6 +200,24 @@ async fn on_undecryptable(event: OriginalSyncRoomEncryptedEvent, room: Room, cli
     shared.emit(Event::Undecryptable { room_id, event_id: event.event_id.to_string(), sender: event.sender.to_string() });
 }
 
+/// Reactions of allowed users, passed on as they come (the agent answers approval requests with them).
+async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
+    if room.state() != RoomState::Joined || Some(&*event.sender) == client.user_id() || !shared.is_allowed(&event.sender) {
+        return;
+    }
+    let room_id = room.room_id().to_string();
+    if shared.state.lock().unwrap().predates_join(&room_id, event.origin_server_ts.0.into()) {
+        return;
+    }
+    shared.emit(Event::Reaction {
+        room_id,
+        event_id: event.event_id.to_string(),
+        relates_to: event.content.relates_to.event_id.to_string(),
+        key: event.content.relates_to.key,
+        sender: event.sender.to_string(),
+    });
+}
+
 /// Accepts invites from allowed users and ignores all others.
 async fn on_invite(event: StrippedRoomMemberEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
     if Some(&*event.state_key) != client.user_id() || room.state() != RoomState::Invited {
@@ -266,6 +287,16 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 });
             }
             Command::Typing { room_id, on } => set_typing(&client, &shared, room_id, on),
+            Command::React { request_id, room_id, txn_id, event_id, key } => {
+                let (client, shared) = (client.clone(), shared.clone());
+                tokio::spawn(async move {
+                    let event = match react(&client, &room_id, txn_id, &event_id, key).await {
+                        Ok(event_id) => Event::Sent { request_id, event_id },
+                        Err(error) => Event::Error { request_id: Some(request_id), message: format!("{error:#}") },
+                    };
+                    shared.emit(event);
+                });
+            }
             Command::JoinCall { room_id, vad } => match joined_room(&client, &room_id) {
                 Ok(room) => shared.calls.join(room, vad),
                 Err(error) => shared.emit(Event::CallLeft { room_id, reason: format!("{error:#}") }),
@@ -298,6 +329,14 @@ fn joined_room(client: &Client, room_id: &str) -> Result<Room> {
 async fn send(client: &Client, room_id: &str, txn_id: String, body: String, notice: bool) -> Result<String> {
     let room = joined_room(client, room_id)?;
     let content = if notice { RoomMessageEventContent::notice_markdown(body) } else { RoomMessageEventContent::text_markdown(body) };
+    let result = room.send(content).with_transaction_id(OwnedTransactionId::from(txn_id)).await?;
+    Ok(result.response.event_id.to_string())
+}
+
+async fn react(client: &Client, room_id: &str, txn_id: String, event_id: &str, key: String) -> Result<String> {
+    let room = joined_room(client, room_id)?;
+    let event_id = <&EventId>::try_from(event_id).with_context(|| format!("{event_id} is not an event ID"))?.to_owned();
+    let content = ReactionEventContent::new(Annotation::new(event_id, key));
     let result = room.send(content).with_transaction_id(OwnedTransactionId::from(txn_id)).await?;
     Ok(result.response.event_id.to_string())
 }
