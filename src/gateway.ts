@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
-/** Lines the gateway writes. Keep in step with `gateway/src/ipc.rs`. */
+/** Keep in step with `gateway/src/ipc.rs`. */
 export type GatewayEvent =
 	| { readonly type: "ready"; readonly userId: string; readonly deviceId: string }
 	| {
@@ -9,18 +9,17 @@ export type GatewayEvent =
 			readonly roomId: string;
 			readonly eventId: string;
 			readonly sender: string;
-			/** The text; for audio, the file name or description the sender's client gave it. */
+			/** For audio, the file name or description the sender's client gave it. */
 			readonly body: string;
 			readonly ts: number;
-			/** Present for an audio message: the recording, downloaded and decrypted. Delete it once done. */
+			/** Downloaded and decrypted. Delete it once done. */
 			readonly audio?: { readonly path: string; readonly mimetype?: string; readonly voice: boolean };
-			/** The event this message replies to, if it is a reply. */
 			readonly replyTo?: string;
 	  }
 	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string; readonly sender: string }
 	| { readonly type: "sent"; readonly requestId: string; readonly eventId: string }
 	| { readonly type: "error"; readonly requestId?: string; readonly message: string }
-	/** An allowed user reacted to `relatesTo`. Not stored by the gateway: one missed while it was down is not offered again. */
+	/** Not stored by the gateway: one missed while it was down is not offered again. */
 	| {
 			readonly type: "reaction";
 			readonly roomId: string;
@@ -45,25 +44,22 @@ export type GatewayEvent =
 			readonly startedAt: number;
 			readonly durationMs: number;
 	  }
-	/** A `callSpeak` finished, or was cut off after `playedMs`. */
 	| { readonly type: "callSpoken"; readonly roomId: string; readonly id: string; readonly playedMs: number; readonly interrupted: boolean };
 
-/** How the gateway cuts a participant's audio into utterances. Keep in step with `VadConfig` in `gateway/src/audio.rs`. */
+/** Keep in step with `VadConfig` in `gateway/src/audio.rs`. */
 export type CallVad = {
 	/** The VAD's score (0 to 1) from which a 16 ms frame counts as speech. */
 	readonly threshold: number;
 	/** Speech must last this long to start an utterance, and to stop the bot talking. */
 	readonly startMs: number;
-	/** This much silence ends an utterance. */
 	readonly endSilenceMs: number;
-	/** Utterances with less speech are dropped. */
 	readonly minSpeechMs: number;
 	/** Longer utterances are passed on in parts. */
 	readonly maxMs: number;
 	readonly preRollMs: number;
 };
 
-/** Lines the gateway reads. */
+/** Keep in step with `gateway/src/ipc.rs`. */
 export type GatewayCommand =
 	| { readonly type: "ack"; readonly eventId: string }
 	| {
@@ -77,7 +73,7 @@ export type GatewayCommand =
 			readonly notice?: boolean;
 	  }
 	| {
-			/** Sends an Ogg Opus file as a voice message. */
+			/** `path` must be an Ogg Opus file. */
 			readonly type: "sendVoice";
 			readonly requestId: string;
 			readonly roomId: string;
@@ -87,19 +83,18 @@ export type GatewayCommand =
 			readonly waveform?: readonly number[];
 	  }
 	| {
-			/** Sends a PNG file as an image. */
+			/** `path` must be a PNG file. */
 			readonly type: "sendImage";
 			readonly requestId: string;
 			readonly roomId: string;
 			readonly txnId: string;
 			readonly path: string;
-			/** The file name the client shows. */
 			readonly name: string;
 			readonly width: number;
 			readonly height: number;
 	  }
 	| { readonly type: "typing"; readonly roomId: string; readonly on: boolean }
-	/** Reacts to an event; answered with `sent` or `error` under `requestId`. */
+	/** Answered with `sent` or `error` under `requestId`. */
 	| { readonly type: "react"; readonly requestId: string; readonly roomId: string; readonly txnId: string; readonly eventId: string; readonly key: string }
 	| { readonly type: "joinCall"; readonly roomId: string; readonly vad: CallVad }
 	| { readonly type: "leaveCall"; readonly roomId: string }
@@ -112,12 +107,12 @@ export interface GatewayLink {
 }
 
 export type GatewayProcess = GatewayLink & {
-	/** Settles when the gateway process has exited, with its exit code (`null` when a signal ended it). */
+	/** `null` when a signal ended it. */
 	readonly exited: Promise<number | null>;
 	stop(): void;
 };
 
-/** Runs the gateway as a child process and speaks JSON Lines over its stdin and stdout. Its stderr is its log. */
+/** The gateway's stderr is its log. */
 export function spawnGateway(bin: string, args: readonly string[]): GatewayProcess {
 	const child = spawn(bin, args, { stdio: ["pipe", "pipe", "inherit"] });
 	const listeners: ((event: GatewayEvent) => void)[] = [];

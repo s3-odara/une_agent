@@ -11,15 +11,11 @@ const ROOM = "!main:example.org";
 
 type Call = { readonly name: string; readonly args: unknown; readonly headers: IncomingMessage["headers"] };
 
-/**
- * An MCP server over Streamable HTTP with the two tools Keenable has. `search_web_pages` answers with the query it got;
- * its answers come as an event stream when `stream` is set, and as a tool error when the query is "失敗".
- */
+/** An MCP server over Streamable HTTP with the two tools Keenable has. */
 class FakeMcpServer {
 	readonly calls: Call[] = [];
 	readonly sessions = new Set<string>();
 	stream = false;
-	/** While set, every request fails with 503, as a server that is down. */
 	down = false;
 	#server: Server;
 	#n = 0;

@@ -1,54 +1,43 @@
-//! Audio of calls: cutting a participant's stream into utterances, and WAV files in and out.
-
 use std::collections::VecDeque;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// Call audio is 48 kHz mono 16-bit, as LiveKit hands it over and takes it.
+/// As LiveKit hands it over and takes it.
 pub const SAMPLE_RATE: u32 = 48_000;
-/// What the VAD (and the speech recognizer) work at: a third of the call's rate.
+/// What the VAD (and the speech recognizer) work at.
 pub const VAD_RATE: u32 = 16_000;
-/// The VAD judges 16 ms at a time.
 pub const FRAME_MS: u32 = 16;
 pub const FRAME_SAMPLES: usize = (VAD_RATE / 1000 * FRAME_MS) as usize;
 
-/// How a stream is cut into utterances. The agent sends it with the join, from `config.json`.
+/// The agent sends it with the join, from `config.json`.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 #[cfg_attr(test, derive(serde::Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct VadConfig {
-    /// The VAD's score (0 to 1) from which a frame counts as speech.
     pub threshold: f32,
-    /// Speech must go on this long before it counts: a cough or a click does not start an utterance, or stop the bot.
+    /// So a cough or a click does not start an utterance, or stop the bot.
     pub start_ms: u32,
-    /// This much silence ends an utterance.
     pub end_silence_ms: u32,
-    /// Utterances with less speech than this are dropped.
     pub min_speech_ms: u32,
     /// A longer utterance is cut and passed on in parts, so a monologue is not held back.
     pub max_ms: u32,
-    /// Audio kept from before the start, so the first syllable is not lost.
+    /// So the first syllable is not lost.
     pub pre_roll_ms: u32,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Cut {
-    /// Somebody started speaking (after `start_ms` of speech).
     SpeechStarted,
-    /// One utterance, pre-roll included.
     Utterance(Vec<i16>),
 }
 
-/// Turns 16 ms frames, each judged speech or not, into utterances. Pure, so it is tested without a VAD.
+/// Pure, so it is tested without a VAD.
 pub struct Segmenter {
     config: VadConfig,
-    /// Recent frames while nobody speaks: the pre-roll, plus the speech that has not yet lasted `start_ms`.
     recent: VecDeque<Vec<i16>>,
-    /// Consecutive speech frames while idle.
     voiced_run: u32,
-    /// Some while an utterance is open.
     open: Option<Open>,
 }
 
@@ -93,14 +82,13 @@ impl Segmenter {
         }
         let open = self.open.take().expect("an open utterance");
         if too_long && open.silence_run_ms < config.end_silence_ms {
-            // Still speaking: the rest goes on as a new utterance at once.
             self.open = Some(Open { samples: Vec::new(), speech_ms: 0, silence_run_ms: 0 });
         }
         (open.speech_ms >= config.min_speech_ms).then_some(Cut::Utterance(open.samples))
     }
 }
 
-/// 48 kHz to 16 kHz: a low-pass filter below the new Nyquist frequency, then every third sample. Keeps its history
+/// Low-pass below the new Nyquist frequency before taking every third sample, against aliasing. Keeps its history
 /// across calls, so a stream can be fed in pieces of any size.
 pub struct Decimator {
     taps: Vec<f32>,
@@ -110,7 +98,6 @@ pub struct Decimator {
 
 impl Decimator {
     pub fn new() -> Self {
-        // Windowed sinc, cut off at 7.2 kHz, Hamming window.
         const LEN: usize = 63;
         let cutoff = 7_200.0 / SAMPLE_RATE as f32;
         let middle = (LEN - 1) as f32 / 2.0;
@@ -142,11 +129,8 @@ impl Decimator {
     }
 }
 
-/// A participant's 48 kHz stream in, cuts out: decimated to 16 kHz, framed, each frame judged by `is_speech`, and the
-/// frames segmented. The call feeds it what LiveKit hands over, in pieces of any size.
 pub struct Cutter<D> {
     decimator: Decimator,
-    /// 16 kHz samples not yet making a whole frame.
     pending: Vec<i16>,
     is_speech: D,
     segmenter: Segmenter,
@@ -170,7 +154,6 @@ impl<D: FnMut(&[i16]) -> bool> Cutter<D> {
     }
 }
 
-/// Writes mono 16-bit PCM as a WAV file.
 pub fn write_wav(path: &Path, samples: &[i16], sample_rate: u32) -> Result<()> {
     let data_len = (samples.len() * 2) as u32;
     let mut out = Vec::with_capacity(44 + samples.len() * 2);
@@ -178,8 +161,8 @@ pub fn write_wav(path: &Path, samples: &[i16], sample_rate: u32) -> Result<()> {
     out.extend_from_slice(&(36 + data_len).to_le_bytes());
     out.extend_from_slice(b"WAVEfmt ");
     out.extend_from_slice(&16u32.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&sample_rate.to_le_bytes());
     out.extend_from_slice(&(sample_rate * 2).to_le_bytes());
     out.extend_from_slice(&2u16.to_le_bytes());
@@ -192,7 +175,6 @@ pub fn write_wav(path: &Path, samples: &[i16], sample_rate: u32) -> Result<()> {
     std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Reads a 16-bit PCM WAV file: the first channel and its sample rate.
 pub fn read_wav(bytes: &[u8]) -> Result<(Vec<i16>, u32)> {
     anyhow::ensure!(bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE", "not a WAV file");
     let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
@@ -228,7 +210,7 @@ mod tests {
     }
 
     fn feed(segmenter: &mut Segmenter, pattern: &str) -> Vec<Cut> {
-        // Each character is one frame: `s` speech, `.` silence. The frame's samples carry its index, to check the cut.
+        // The frame's samples carry its index, to check the cut.
         let mut cuts = Vec::new();
         for (i, c) in pattern.chars().enumerate() {
             let frame = vec![i as i16; FRAME_SAMPLES];
@@ -295,7 +277,6 @@ mod tests {
 
     #[test]
     fn a_stream_in_pieces_of_any_size_is_cut_where_the_speech_is() {
-        // 48 kHz: 0.2 s of silence, 0.4 s of a 1 kHz tone, then 0.5 s of silence; the tone is what counts as speech.
         let silence = |ms: usize| vec![0i16; ms * 48];
         let tone = (0..400 * 48).map(|i| ((2.0 * std::f32::consts::PI * 1_000.0 * i as f32 / 48_000.0).sin() * 10_000.0) as i16);
         let stream: Vec<i16> = silence(200).into_iter().chain(tone).chain(silence(500)).collect();

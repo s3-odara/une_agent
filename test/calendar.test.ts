@@ -23,7 +23,6 @@ const raw = (data: string, file = "x.ics"): RawObject => ({ url: `https://dav.ex
 const week = { from: at("2026-11-16T00:00"), to: at("2026-11-23T00:00") };
 const NOW = at("2026-11-17T09:00");
 
-/** The one event in `lines`, read in the week of 11/16. */
 const eventOf = (...lines: string[]) => parseEvents(raw(ics("BEGIN:VEVENT", "UID:1", "SUMMARY:歯医者", ...lines, "END:VEVENT")), "Home", week, tz)[0];
 const taskOf = (...lines: string[]) => parseTodo(raw(ics("BEGIN:VTODO", "UID:t", "SUMMARY:レポート提出", ...lines, "END:VTODO")), "ToDo", tz);
 
@@ -64,10 +63,7 @@ test("a file that is not a calendar gives no events instead of failing", () => {
 	assert.deepEqual(parseEvents(raw("not a calendar"), "Home", week, tz), []);
 });
 
-/**
- * The occurrences, as title and start, from 11/16 to 11/20 of a daily event at 08:00 from 11/1, with `rule` added to
- * it and `exception` (an occurrence changed on its own) after it.
- */
+/** `exception` is an occurrence changed on its own. */
 const daily = (rule: string[] = [], exception: string[] = []) => {
 	const data = ics(
 		"BEGIN:VEVENT",
@@ -186,7 +182,6 @@ for (const [what, fields] of [
 	});
 }
 
-/** The dentist from 15:30 to 16:15 at the station, with an alarm. */
 const DENTIST = ics(
 	"BEGIN:VEVENT",
 	"UID:1",
@@ -231,7 +226,6 @@ test("completing a task marks it done, and completing it again changes nothing",
 	assert.equal(completeTodo(done!, at("2026-11-17T10:00")), undefined);
 });
 
-/** The calendars on a CalDAV server in memory: `Home` for events, `ToDo` for tasks. */
 function store() {
 	const backend = new MemoryCalDav();
 	return { backend, calendars: new Calendars(backend, { Home: { kind: "events", description: "" }, ToDo: { kind: "todos", description: "" } }, tz) };

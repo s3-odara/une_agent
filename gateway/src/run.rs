@@ -27,15 +27,12 @@ use crate::ipc::{Audio, Command, Event, Message, Outbox, spawn_writer};
 use crate::session;
 use crate::state::State;
 
-/// What the event handlers and the command loop share.
 #[derive(Clone)]
 struct Shared {
     out: Outbox,
     state: Arc<Mutex<State>>,
     allowed: Arc<Vec<OwnedUserId>>,
-    /// Where received recordings are written for the agent.
     voice_dir: Arc<PathBuf>,
-    /// Per room, the task that keeps its typing notice alive.
     typing: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     calls: Calls,
 }
@@ -50,8 +47,6 @@ impl Shared {
         self.allowed.contains(user)
     }
 
-    /// Whether an event is for the agent: from an allowed user other than the bot, in a joined room, and not history
-    /// from before the bot joined.
     fn accepts(&self, room: &Room, client: &Client, sender: &OwnedUserId, ts: u64) -> bool {
         room.state() == RoomState::Joined
             && Some(&**sender) != client.user_id()
@@ -82,7 +77,6 @@ pub async fn run(config: &Config) -> Result<()> {
     let device_id = client.device_id().context("the session has no device")?.to_string();
     shared.emit(Event::Ready { user_id, device_id });
 
-    // Messages the agent had not acked when the last process ended.
     for message in shared.state.lock().unwrap().unacked() {
         shared.emit(Event::Message(message));
     }
@@ -135,8 +129,7 @@ fn without_reply_fallback(body: &str) -> &str {
 /// Larger recordings are refused rather than downloaded: several minutes of speech is far below this.
 const MAX_AUDIO_BYTES: u64 = 20 * 1024 * 1024;
 
-/// A text or audio message from an allowed user is stored in the inbox, then passed to the agent. An audio message is
-/// downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
+/// An audio message is downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
 async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
     let ts: u64 = event.origin_server_ts.0.into();
     // An edit is not a new request.
@@ -176,7 +169,6 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
     }
 }
 
-/// Writes the recording of an audio message to `<dir>/<event>.<ext>` and returns where.
 async fn download_audio(client: &Client, dir: &Path, event_id: &str, content: &AudioMessageEventContent) -> Result<Audio> {
     let info = content.info.as_deref();
     if let Some(size) = info.and_then(|info| info.size) {
@@ -191,7 +183,6 @@ async fn download_audio(client: &Client, dir: &Path, event_id: &str, content: &A
     Ok(Audio { path: path.to_string_lossy().into_owned(), mimetype, voice: content.voice.is_some() })
 }
 
-/// An event ID as a file name: anything but letters, digits, `-` and `_` becomes `_`.
 fn file_stem(event_id: &str) -> String {
     event_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
@@ -218,7 +209,7 @@ async fn on_undecryptable(event: OriginalSyncRoomEncryptedEvent, room: Room, cli
     shared.emit(Event::Undecryptable { room_id, event_id: event.event_id.to_string(), sender: event.sender.to_string() });
 }
 
-/// Reactions of allowed users, passed on as they come (the agent answers approval requests with them).
+/// The agent answers approval requests with them.
 async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
     if !shared.accepts(&room, &client, &event.sender, event.origin_server_ts.0.into()) {
         return;
@@ -233,7 +224,6 @@ async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Clien
     });
 }
 
-/// Accepts invites from allowed users and ignores all others.
 async fn on_invite(event: StrippedRoomMemberEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
     if Some(&*event.state_key) != client.user_id() || room.state() != RoomState::Invited {
         return;
@@ -260,7 +250,6 @@ async fn on_invite(event: StrippedRoomMemberEvent, room: Room, client: Client, C
     });
 }
 
-/// Runs the agent's commands until its end of input.
 async fn read_commands(client: Client, shared: Shared) -> Result<()> {
     let mut lines = BufReader::new(stdin()).lines();
     while let Some(line) = lines.next_line().await? {
@@ -316,8 +305,7 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
     Ok(())
 }
 
-/// Runs a request beside the others (a slow send must not hold back acks or other rooms) and answers it with `sent` or
-/// `error` under its request ID.
+/// Spawned, so a slow send does not hold back acks or other rooms.
 fn respond(shared: &Shared, request_id: String, request: impl Future<Output = Result<String>> + Send + 'static) {
     let shared = shared.clone();
     tokio::spawn(async move {
@@ -351,8 +339,6 @@ async fn react(client: &Client, room_id: &str, txn_id: String, event_id: &str, k
     Ok(result.response.event_id.to_string())
 }
 
-/// Uploads the file (encrypted in an encrypted room) and sends it as a voice message. A retry under the same transaction
-/// ID uploads again but still becomes one event.
 async fn send_voice(client: &Client, room_id: &str, txn_id: String, path: &str, duration_ms: u64, waveform: Vec<f32>) -> Result<String> {
     let mime: mime::Mime = "audio/ogg".parse().expect("a valid MIME type");
     send_file(client, room_id, txn_id, path, "voice-message.ogg", &mime, |size| {
@@ -382,7 +368,6 @@ async fn send_file(
     Ok(response.event_id.to_string())
 }
 
-/// Uploads a PNG file (encrypted in an encrypted room) and sends it as an image.
 async fn send_image(client: &Client, room_id: &str, txn_id: String, path: &str, name: &str, width: u32, height: u32) -> Result<String> {
     send_file(client, room_id, txn_id, path, name, &mime::IMAGE_PNG, |size| {
         AttachmentInfo::Image(BaseImageInfo { width: Some(UInt::from(width)), height: Some(UInt::from(height)), size, blurhash: None, is_animated: Some(false) })

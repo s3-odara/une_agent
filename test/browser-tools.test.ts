@@ -18,15 +18,12 @@ const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"
 const ROOM = "!main:example.org";
 const SECRET = "correct-horse-battery";
 
-/**
- * A browser that only records. Its one page shows whatever was typed into it, as a real page may, and names three
- * elements: `user` and `pass` of the login form, and `search`, a plain text box.
- */
+/** Its one page shows whatever was typed into it, as a real page may. */
 class FakeBrowsers implements Browsers {
 	readonly log: string[] = [];
 	readonly values = new Map<string, string>();
 	url = "about:blank";
-	/** Origin of the document the login form is in; differs from the page's when the form is in a frame. */
+	/** Differs from the page's origin when the login form is in a frame. */
 	formOrigin: string | undefined;
 	tree: string | undefined;
 
@@ -64,10 +61,6 @@ class FakeBrowsers implements Browsers {
 	async close(): Promise<void> {}
 }
 
-/**
- * The agent with the browser tools on the recording browser, with a password stored for https://shop.example.com.
- * Room `!work` speaks as a persona with a browser profile of its own.
- */
 async function setup() {
 	const browsers = new FakeBrowsers();
 	// The bridge posts the code requests; it is made once the agent is.
@@ -96,7 +89,6 @@ async function setup() {
 		},
 	});
 	bridge = env.bridge({ handlers: [codes] });
-	/** Every request the model got, and the tool results in them. */
 	const requests: Request[] = [];
 	const results: ToolResult[] = [];
 	let n = 0;
@@ -106,13 +98,11 @@ async function setup() {
 		browsers,
 		requests,
 		results,
-		/** A model turn that takes note of the tool result it was given. */
 		noting: noting(results, requests),
 		say: async (body: string, roomId = ROOM) => {
 			env.link.emit(message(roomId, `$${++n}`, body));
 			await viaBridge().idle();
 		},
-		/** Says `body` and, once the bot asks for a code, sends `answer`: a reply to the request, or a message of its own. */
 		sayThenAnswer: async (body: string, answer: string, asReply: boolean) => {
 			env.link.emit(message(ROOM, `$${++n}`, body));
 			const request = await env.link.waitFor("send", (command) => command.txnId.startsWith("code:"));
@@ -183,7 +173,6 @@ test("a long page is cut to what one tool result may carry, saying how much was 
 	assert.match(tree, /600/);
 });
 
-/** Opens the shop's account page, fills the stored login into it, and reads the page, which now shows what was typed. */
 async function logIn(t: Awaited<ReturnType<typeof setup>>) {
 	t.env.faux.setResponses([
 		call("browser_open", { url: "https://shop.example.com/account" }),
@@ -256,7 +245,6 @@ test("a run the scheduler started cannot use the browser", async () => {
 	assert.deepEqual(t.browsers.log, []);
 });
 
-/** A credentials file in a directory of its own, written by the test. */
 function credentialsFile() {
 	const dir = tempDir();
 	const path = join(dir.path, "credentials.json");

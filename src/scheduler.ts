@@ -7,14 +7,10 @@ import { formatTidy, type TidyChange } from "./tidy.ts";
 import { addDays, dateOf, daysBetween, formatDay, formatStamp, minutesOfDay, startOfDay } from "./time.ts";
 import { formatForecast, type WeatherSource } from "./weather.ts";
 
-/** One thing worth telling the user, with the ledger key that keeps it from being told twice. */
-/** Something to tell the user: a reminder, or news of an item someone else added or changed. */
 type Trigger = { readonly kind: "reminder" | "change"; readonly key: string; readonly line: string };
 
-/** How far ahead events are read: what "added or changed" covers. */
 const LOOKAHEAD_DAYS = 60;
 
-/** Timed events that start within the lead time. One reminder per occurrence. */
 function eventReminders(events: readonly EventItem[], now: number, leadMinutes: number, tz: string): Trigger[] {
 	return events
 		.filter((event) => !event.allDay && event.start > now && event.start - now <= leadMinutes * 60_000)
@@ -25,7 +21,6 @@ function eventReminders(events: readonly EventItem[], now: number, leadMinutes: 
 		}));
 }
 
-/** Open tasks whose due date is exactly one of the lead days away. One reminder per task, due date and lead. */
 function dueReminders(todos: readonly TodoItem[], today: string, leadDays: readonly number[], tz: string): Trigger[] {
 	return todos.flatMap((todo) => {
 		if (todo.done || todo.due === undefined) return [];
@@ -37,8 +32,6 @@ function dueReminders(todos: readonly TodoItem[], today: string, leadDays: reado
 }
 
 /**
- * Upcoming events and open tasks that were added or changed since the last check, by someone other than the agent.
- *
  * An item counts when its ETag differs from the one last seen and the item itself says it was written since the last
  * check. The second condition matters: an event made long ago enters the lookahead window as time passes and is new
  * to the snapshot without being news. An item that does not say when it was written is never reported.
@@ -64,21 +57,17 @@ export type SchedulerOptions = {
 	readonly db: HostDb;
 	readonly calendars?: Calendars;
 	readonly weather?: WeatherSource;
-	/** Asks the room's persona to write something; resolves once the request is stored (`Bridge.submitScheduled`). */
+	/** Resolves once the request is stored, which the ledger relies on. */
 	readonly submit: (roomId: string, key: string, content: string) => Promise<void>;
-	/** Sends a plain notice (`Bridge.notice`). */
 	readonly notice: (roomId: string, key: string, body: string) => Promise<void>;
-	/** The memory tidy, when it is on. */
 	readonly tidy?: { fingerprint(): string; run(date: string): Promise<TidyChange[]> };
 	readonly now?: () => number;
-	/** How long after `start()` the first check runs: the gateway needs a moment before it can send. */
+	/** The gateway needs a moment before it can send. */
 	readonly startDelayMs?: number;
 	readonly log?: (message: string) => void;
 };
 
 /**
- * What the agent does without being asked: the morning brief, reminders, news of calendar changes, and the memory tidy.
- *
  * Whether anything is due is decided here in code, on every tick, without the model. The model is only woken to word a
  * message that is certain to be sent. What has been sent is recorded in the ledger (`HostDb.markNotified`) after the
  * request is stored; a crash between the two repeats the request under the same key, which changes nothing.
@@ -96,7 +85,6 @@ export class Scheduler {
 		this.#log = options.log ?? ((message) => console.error(message));
 	}
 
-	/** Checks shortly after the start, then every `tickMinutes`. */
 	start(): void {
 		const minutes = this.#options.config.proactive?.tickMinutes ?? 15;
 		this.#timers = [setTimeout(() => void this.tick(), this.#options.startDelayMs ?? 20_000), setInterval(() => void this.tick(), minutes * 60_000)];
@@ -107,7 +95,6 @@ export class Scheduler {
 		this.#timers = [];
 	}
 
-	/** One check. A tick that arrives while another is still running is dropped. */
 	async tick(): Promise<void> {
 		if (this.#running) return;
 		this.#running = true;

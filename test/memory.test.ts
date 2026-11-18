@@ -12,7 +12,6 @@ const calm: MemoryPersona = { name: "calm", privateMemory: true };
 const blunt: MemoryPersona = { name: "blunt", privateMemory: true };
 const plain: MemoryPersona = { name: "plain", privateMemory: false };
 
-/** A memory store in a directory of its own, with room for 2000 characters shared and 1000 private. */
 function storeSetup(limits = { shared: 2000, private: 1000 }) {
 	const dir = tempDir();
 	return { dir: dir.path, store: new MemoryStore(dir.path, limits), [Symbol.dispose]: () => dir[Symbol.dispose]() };
@@ -94,7 +93,6 @@ test("a persona without a private memo cannot write one", () => {
 	assert.throws(() => t.store.add("private", plain, "x", "2026-11-17"), MemoryError);
 });
 
-/** The agent with the memory tool, in a room per persona: calm (with a private memo) and blunt (without one). */
 async function toolSetup(options: { timezone?: string; now?: () => number } = {}) {
 	const env = await agentEnv({
 		souls: { "calm.md": "SOUL-CALM", "blunt.md": "SOUL-BLUNT" },
@@ -123,7 +121,6 @@ async function toolSetup(options: { timezone?: string; now?: () => number } = {}
 	return {
 		env,
 		store: () => new MemoryStore(join(env.config.dataDir, "memory"), { shared: env.config.memory.sharedLimit, private: env.config.memory.privateLimit }),
-		/** Says something in a room and waits for everything it set off. */
 		say: async (roomId: string, body: string) => {
 			env.link.emit(message(roomId, `$${++n}`, body));
 			await bridge.idle();

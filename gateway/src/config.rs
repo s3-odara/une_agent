@@ -4,14 +4,12 @@ use anyhow::{Context, Result};
 use matrix_sdk::ruma::OwnedUserId;
 use serde::Deserialize;
 
-/// The part of `config.json` the gateway reads. The agent reads the rest; see `src/config.ts`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     pub matrix: MatrixConfig,
     #[serde(default = "default_data_dir")]
     data_dir: String,
-    /// Directory of the config file; relative paths resolve against it.
     #[serde(skip)]
     base_dir: PathBuf,
 }

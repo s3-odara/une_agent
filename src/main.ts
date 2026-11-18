@@ -39,7 +39,7 @@ mkdirSync(config.dataDir, { recursive: true });
 const db = new HostDb(join(config.dataDir, "host.sqlite"));
 const personas = Object.entries(config.personas).map(([name, item]) => ({ name, privateMemory: item.privateMemory }));
 const store = new MemoryStore(join(config.dataDir, "memory"), { shared: config.memory.sharedLimit, private: config.memory.privateLimit });
-/** A conversation speaks as the persona of its room, looked up at each use so a config change applies at once. */
+/** Looked up at each use so a config change applies at once. */
 function personaOfConversation(conversationId: number) {
 	const roomId = db.roomOf(conversationId);
 	if (roomId === undefined) return undefined;
@@ -183,7 +183,7 @@ gateway.exited.then(
 	},
 );
 
-/** `web_extract`, reading pages in a browser of its own whose connections reach only public addresses. */
+/** Pages are read in a browser of its own whose connections reach only public addresses. */
 async function startWeb(maxChars: number) {
 	const egress = await EgressProxy.start();
 	const reader = new PlaywrightReader({ egress, timezone: config.timezone, executablePath: config.browser?.executablePath, idleMs: (config.browser?.idleMinutes ?? 10) * 60_000 });

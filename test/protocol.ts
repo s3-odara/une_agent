@@ -47,7 +47,6 @@ export const commands: Examples<GatewayCommand> = {
 	callSpeak: [{ type: "callSpeak", roomId: room, id: "s1", path: "/d/s1.wav" }],
 };
 
-/** The lines as `protocol.json` holds them. */
 export function protocolJson(): { events: GatewayEvent[]; commands: GatewayCommand[] } {
 	return { events: Object.values(events).flat(), commands: Object.values(commands).flat() };
 }

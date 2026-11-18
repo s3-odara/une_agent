@@ -36,7 +36,6 @@ test("speech is cut into sentences at their ends, whatever the mark", () => {
 	assert.deepEqual(sentences("明日は晴れです。傘はいりません！本当？"), ["明日は晴れです。", "傘はいりません！", "本当？"]);
 });
 
-/** A mono 16-bit WAV file of `samples` (each between -1 and 1). */
 function wav(samples: number[], rate = 24000): Buffer {
 	const data = Buffer.alloc(samples.length * 2);
 	samples.forEach((sample, i) => data.writeInt16LE(Math.round(sample * 32767), i * 2));
@@ -96,10 +95,6 @@ class FakeSynthesizer implements Synthesizer {
 	}
 }
 
-/**
- * The agent with voice messages: room `!a` speaks as calm (speaker 8), `!plain` as a persona without a voice of its
- * own (the default, 3). `tts: false` leaves speech synthesis out of the config; `voice: false` leaves voice out.
- */
 async function setup(options: { tts?: boolean; voice?: boolean; transcript?: (path: string) => string } = {}) {
 	const env = await agentEnv({
 		config: {
@@ -119,13 +114,11 @@ async function setup(options: { tts?: boolean; voice?: boolean; transcript?: (pa
 		env,
 		transcriber,
 		synthesizer,
-		/** A recording on disk, as the gateway leaves it. */
 		recording: (name: string) => {
 			const path = join(env.dir, `${name}.ogg`);
 			writeFileSync(path, "fake recording");
 			return path;
 		},
-		/** The user sends a recording; resolves once everything it set off is done. */
 		send: async (path: string, roomId = "!a:example.org", eventId = `$v${++n}`) => {
 			const event: GatewayEvent = { type: "message", roomId, eventId, sender: ME, body: "Voice message.ogg", ts: 0, audio: { path, voice: true } };
 			env.link.emit(event);

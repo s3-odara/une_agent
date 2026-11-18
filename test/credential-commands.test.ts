@@ -9,7 +9,6 @@ import { answer, everything, message, type Request } from "./fakes.ts";
 
 const ROOM = "!main:example.org";
 
-/** The agent with `!cred` taken before the model, on a credentials file in its data directory. */
 async function setup() {
 	const env = await agentEnv();
 	const path = join(env.config.dataDir, "credentials.json");
@@ -22,13 +21,11 @@ async function setup() {
 		path,
 		credentials,
 		requests,
-		/** Says `body`; the model, if asked, answers "ok" and keeps its request. */
 		say: async (body: string) => {
 			env.faux.setResponses([answer("ok", requests)]);
 			env.link.emit(message(ROOM, `$${++n}`, body));
 			await bridge.idle();
 		},
-		/** The notices the bot replied with. */
 		replies: () => env.link.of("send").map((command) => command.body),
 		[Symbol.asyncDispose]: () => env[Symbol.asyncDispose](),
 	};

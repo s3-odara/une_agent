@@ -1,7 +1,4 @@
-# systemd user units for a machine that is not NixOS: `just install` copies them to ~/.config/systemd/user.
-#
-# The agent reads ~/.config/agent/config.json (paths in it are relative to that directory) and the secrets in
-# ~/.config/agent/env (ANTHROPIC_API_KEY=..., CALDAV_PASSWORD=...). Its data goes where the config's `dataDir` says.
+# systemd user units rather than a NixOS module, for a machine that is not NixOS.
 {
   lib,
   writeTextDir,

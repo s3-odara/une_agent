@@ -32,7 +32,6 @@ for (const address of [
 	test(`${address} is not public`, () => assert.equal(isPublicAddress(address), false));
 }
 
-/** A server on this host that counts the requests it gets. */
 async function local(): Promise<{ server: Server; port: number; hits: string[] }> {
 	const hits: string[] = [];
 	const server = createServer((req, res) => {
@@ -43,7 +42,7 @@ async function local(): Promise<{ server: Server; port: number; hits: string[] }
 	return { server, port: (server.address() as AddressInfo).port, hits };
 }
 
-/** A plain http request through the proxy, as a browser makes it: the whole URL on the request line. */
+/** As a browser makes it through a proxy: the whole URL on the request line. */
 function viaProxy(proxy: EgressProxy, url: string): Promise<{ status: number; body: string }> {
 	const { port } = new URL(proxy.url);
 	return new Promise((resolve, reject) => {
@@ -57,7 +56,6 @@ function viaProxy(proxy: EgressProxy, url: string): Promise<{ status: number; bo
 	});
 }
 
-/** The proxy's answer to `CONNECT target`. */
 function tunnel(proxy: EgressProxy, target: string): Promise<string> {
 	const { port } = new URL(proxy.url);
 	return new Promise((resolve, reject) => {

@@ -36,7 +36,6 @@ const needsServer = { skip: url === undefined ? "CALDAV_TEST_URL is not set" : f
 const now = at("2026-11-17T09:00");
 const week = [at("2026-11-16T00:00"), at("2026-11-23T00:00")] as const;
 
-/** An events calendar and a tasks calendar of their own on the server, for one test. */
 async function fresh() {
 	const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 	const [events, todos] = [`It-Events-${stamp}`, `It-Todos-${stamp}`];

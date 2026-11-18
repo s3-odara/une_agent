@@ -1,31 +1,24 @@
 import { ffmpeg } from "./ffmpeg.ts";
 
-/** A recording ready to send as a voice message. */
 export type Speech = {
-	/** Ogg Opus. */
 	readonly ogg: Buffer;
 	readonly durationMs: number;
-	/** Loudness over time, each between 0 and 1. */
 	readonly waveform: readonly number[];
 };
 
 export interface Synthesizer {
-	/** `speaker` is a VOICEVOX style ID. */
 	synthesize(text: string, speaker: number): Promise<Speech>;
-	/** Mono 16-bit WAV at `sampleRate`, for playing into a call. */
 	wav(text: string, speaker: number, sampleRate: number): Promise<Buffer>;
 }
 
 export type VoicevoxOptions = {
-	/** The engine's base URL, e.g. `http://127.0.0.1:50021`. */
 	readonly url: string;
 	readonly timeoutMs?: number;
 	readonly fetch?: typeof fetch;
-	/** Turns WAV into Ogg Opus; tests replace it. */
 	readonly encode?: (wav: Buffer) => Promise<Buffer>;
 };
 
-/** VOICEVOX Engine over its HTTP API: `audio_query` makes the reading and accents, `synthesis` makes the WAV. */
+/** `audio_query` makes the reading and accents, `synthesis` makes the WAV. */
 export class Voicevox implements Synthesizer {
 	readonly #url: string;
 	readonly #timeoutMs: number;
@@ -70,7 +63,6 @@ export class Voicevox implements Synthesizer {
 	}
 }
 
-/** 16-bit PCM WAV, mono or the first channel, as samples between -1 and 1. */
 export function readWav(wav: Buffer): { samples: Float32Array; sampleRate: number } {
 	if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") throw new Error("not a WAV file");
 	let channels = 1;
@@ -97,7 +89,7 @@ export function readWav(wav: Buffer): { samples: Float32Array; sampleRate: numbe
 	throw new Error("the WAV file has no data");
 }
 
-/** The peak of each of `buckets` equal slices, scaled so the loudest is 1, as clients draw a voice message. */
+/** Scaled so the loudest is 1, as clients draw a voice message. */
 export function waveform(samples: Float32Array, buckets = 64): number[] {
 	if (samples.length === 0) return [];
 	const peaks: number[] = [];
@@ -112,20 +104,20 @@ export function waveform(samples: Float32Array, buckets = 64): number[] {
 	return loudest === 0 ? peaks : peaks.map((peak) => Math.round((peak / loudest) * 1000) / 1000);
 }
 
-/** Matrix clients play voice messages as Ogg Opus. Needs the `ffmpeg` command. */
+/** Matrix clients play voice messages as Ogg Opus. */
 function wavToOggOpus(wav: Buffer): Promise<Buffer> {
 	return ffmpeg(["-f", "wav", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", "-f", "ogg", "pipe:1"], wav);
 }
 
 /**
- * The answer as it should be read aloud. The model writes Markdown for the screen; read as is, a voice would say the
- * asterisks, the URLs and every cell of a table. The text reply still carries all of that.
+ * The model writes Markdown for the screen; read as is, a voice would say the asterisks, the URLs and every cell of a
+ * table. The text reply still carries all of that.
  */
 export function toSpeech(markdown: string, maxChars: number): string {
 	return limitSpeech(speakable(markdown), maxChars);
 }
 
-/** Speech split where a sentence ends, so the first can play while the rest is still being made. */
+/** So the first sentence can play while the rest is still being made. */
 export function sentences(speech: string): string[] {
 	return speech.split(/(?<=[。！？!?])/).map((sentence) => sentence.trim()).filter((sentence) => sentence !== "");
 }
@@ -146,7 +138,6 @@ function speakable(markdown: string): string {
 	text = text
 		.split("\n")
 		.map((line) => line.trim())
-		// A table row: its cells, one after another.
 		.map((line) => (line.includes("|") ? line.replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()).filter((cell) => cell !== "").join("、") : line))
 		.filter((line) => line !== "")
 		.map((line) => (/[。！？!?、,.:：]$/.test(line) ? line : `${line}。`))

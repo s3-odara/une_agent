@@ -7,7 +7,6 @@ import { toWav16k } from "../src/stt.ts";
 import { readWav } from "../src/tts.ts";
 import { tempDir } from "./env.ts";
 
-/** A mono 16-bit WAV file of a second of a 440 Hz tone at `rate`. */
 function tone(rate: number): Buffer {
 	const data = Buffer.alloc(rate * 2);
 	for (let i = 0; i < rate; i++) data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 8000), i * 2);

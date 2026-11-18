@@ -15,8 +15,7 @@ fn session_path(data_dir: &Path) -> PathBuf {
     data_dir.join("matrix-session.json")
 }
 
-/// A client over the SQLite store in the data directory. The store holds the E2EE keys, so the bot stays the same
-/// device across restarts.
+/// The store holds the E2EE keys, so the bot stays the same device across restarts.
 async fn build_client(config: &Config) -> Result<Client> {
     let data_dir = config.data_dir();
     std::fs::create_dir_all(&data_dir).with_context(|| format!("creating {}", data_dir.display()))?;
@@ -34,7 +33,6 @@ async fn build_client(config: &Config) -> Result<Client> {
     Ok(client)
 }
 
-/// The client of the session `login` stored.
 pub async fn restore(config: &Config) -> Result<Client> {
     let path = session_path(&config.data_dir());
     let bytes = match std::fs::read(&path) {
@@ -50,7 +48,6 @@ pub async fn restore(config: &Config) -> Result<Client> {
     Ok(client)
 }
 
-/// Logs in with the account's password, stores the session, and makes the new device a verified one.
 pub async fn login(config: &Config, password: &str, recovery_key: Option<&str>) -> Result<()> {
     let path = session_path(&config.data_dir());
     if path.exists() {
@@ -85,7 +82,6 @@ pub async fn login(config: &Config, password: &str, recovery_key: Option<&str>) 
     verify(&client, recovery_key).await
 }
 
-/// Verifies the device of a stored session with the account's recovery key.
 pub async fn recover(config: &Config, recovery_key: &str) -> Result<()> {
     let client = restore(config).await?;
     client.encryption().wait_for_e2ee_initialization_tasks().await;

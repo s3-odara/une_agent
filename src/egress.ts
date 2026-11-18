@@ -3,7 +3,6 @@ import { createServer, type IncomingMessage, request as httpRequest, type Server
 import { BlockList, connect, isIP, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 
-/** IPv4 ranges that are not the public internet: this host, private networks, shared, link-local, reserved, multicast. */
 const NOT_PUBLIC_V4: readonly [string, number][] = [
 	["0.0.0.0", 8],
 	["10.0.0.0", 8],
@@ -40,8 +39,8 @@ const globalUnicast = new BlockList();
 globalUnicast.addSubnet("2000::", 3, "ipv6");
 
 /**
- * Whether an address is a host on the public internet. IPv6 counts only inside global unicast, which also rules out
- * IPv4-mapped and NAT64 addresses: an IPv4 address written as IPv6 is never treated as public.
+ * IPv6 counts only inside global unicast, which also rules out IPv4-mapped and NAT64 addresses: an IPv4 address
+ * written as IPv6 is never treated as public.
  */
 export function isPublicAddress(address: string): boolean {
 	switch (isIP(address)) {
@@ -56,19 +55,16 @@ export function isPublicAddress(address: string): boolean {
 
 const LOOKUP_TIMEOUT_MS = 10_000;
 
-/** A connection the proxy refused; its message is written for the model. */
+/** Its message is written for the model. */
 export class EgressError extends Error {}
 
 export type EgressOptions = {
-	/**
-	 * Whether a connection to `address:port` is allowed. Default: public addresses only. Tests widen it to a server of
-	 * their own on this host.
-	 */
+	/** Tests widen it to a server of their own on this host. */
 	readonly allow?: (address: string, port: number) => boolean;
 };
 
 /**
- * An HTTP proxy on this host that connects only to public addresses, for a browser that opens pages nobody vetted.
+ * For a browser that opens pages nobody vetted.
  *
  * The browser sends every connection through it, also those that redirects and a page's scripts start. The proxy looks
  * up each name itself, refuses it if any of its addresses is not allowed, and connects to the address it checked, so a
@@ -87,7 +83,6 @@ export class EgressProxy {
 		this.#server.on("connection", (socket) => this.#keep(socket));
 	}
 
-	/** A proxy listening on a free port of 127.0.0.1. */
 	static async start(options: EgressOptions = {}): Promise<EgressProxy> {
 		const proxy = new EgressProxy(options);
 		await new Promise<void>((resolve, reject) => {
@@ -97,17 +92,13 @@ export class EgressProxy {
 		return proxy;
 	}
 
-	/** The proxy's address, for the browser's `proxy.server`. */
 	get url(): string {
 		const address = this.#server.address();
 		if (address === null || typeof address === "string") throw new Error("the egress proxy is not listening");
 		return `http://127.0.0.1:${address.port}`;
 	}
 
-	/**
-	 * The address a connection to `host:port` would go to, or an `EgressError` saying why there is none. The browser
-	 * tools ask this before opening a page, so that a refused page gets a reason instead of a browser error.
-	 */
+	/** The browser tools ask this before opening a page, so that a refused page gets a reason instead of a browser error. */
 	async resolve(host: string, port: number): Promise<string> {
 		const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
 		let addresses: string[];
@@ -135,7 +126,6 @@ export class EgressProxy {
 		return addresses[0] as string;
 	}
 
-	/** `CONNECT host:port`: https, and WebSockets over it. */
 	async #tunnel(request: IncomingMessage, client: Duplex, head: Buffer): Promise<void> {
 		this.#keep(client);
 		client.on("error", () => client.destroy());
@@ -163,7 +153,7 @@ export class EgressProxy {
 		upstream.on("close", () => client.destroy());
 	}
 
-	/** A plain `http://` request, which a proxy gets with the whole URL. */
+	/** A proxy gets a plain `http://` request with the whole URL. */
 	async #forward(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		let url: URL;
 		try {
@@ -205,7 +195,6 @@ export class EgressProxy {
 	}
 }
 
-/** `host:port` of a CONNECT request, with an IPv6 host in brackets. */
 function authority(value: string): { host: string; port: number } | undefined {
 	const match = /^(\[[0-9A-Fa-f:.]+\]|[^\s:/[\]]+):(\d{1,5})$/.exec(value);
 	if (match === null) return undefined;

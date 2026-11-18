@@ -6,7 +6,6 @@ import type { Handled, MessageHandler } from "./rooms.ts";
 import { runInputs } from "./run.ts";
 import { errorMessage } from "./errors.ts";
 
-/** The answers, as a reaction to the request and as a command. */
 const CHOICES: readonly { readonly decision: Decision; readonly emoji: string; readonly command: string; readonly label: string }[] = [
 	{ decision: "approve", emoji: "✅", command: "!approve", label: "今回だけ許可" },
 	{ decision: "approve_session", emoji: "🔁", command: "!approve_session", label: "この依頼の間は許可" },
@@ -14,7 +13,6 @@ const CHOICES: readonly { readonly decision: Decision; readonly emoji: string; r
 	{ decision: "reject", emoji: "❌", command: "!reject", label: "拒否" },
 ];
 
-/** What came of asking. `approved` is false for a reject, a message instead of an answer, and no answer in time. */
 export type Outcome =
 	| { readonly approved: true; readonly by: Decision | "rule" | "run" }
 	| { readonly approved: false; readonly reason: "rejected" | "message" | "timeout" };
@@ -26,25 +24,21 @@ export type ApprovalRequest = {
 	/** The run the call is in; `approve_session` covers the same tool for the rest of it. */
 	readonly runKey: string;
 	readonly tool: string;
-	/** What the user is asked to allow, in their words. */
 	readonly summary: string;
 };
 
 export type ApprovalsOptions = {
 	readonly db: HostDb;
-	/** Sends a notice under a transaction ID (the same ID sends nothing new) and resolves with its event ID. */
+	/** The same transaction ID sends nothing new. */
 	readonly notice: (roomId: string, txnId: string, body: string) => Promise<string>;
 	readonly react: (roomId: string, txnId: string, eventId: string, key: string) => Promise<void>;
 	readonly now?: () => number;
-	/** An unanswered request is rejected after this long. */
 	readonly timeoutMs?: number;
 	readonly log?: (message: string) => void;
 };
 
 /**
- * Tool calls that need the user's yes. The call posts a request to the room and waits for a decision: a reaction to the
- * request, a `!approve`-style command, or, as a no, any other message from the user, which then goes to the model as
- * usual. The decision is the user's, read by code; the model is only told what came of it.
+ * The decision is the user's, read by code; the model is only told what came of it.
  *
  * Requests and decisions are in the host database, so a call rerun after a crash finds its decision, or waits again for
  * the same request.
@@ -91,10 +85,6 @@ export class Approvals implements MessageHandler {
 		return outcome(db.approval(request.id));
 	}
 
-	/**
-	 * Asks from inside a tool call, in the room of the call's conversation. Resolves with what to tell the model when
-	 * the answer is not a yes, and with `undefined` on a yes.
-	 */
 	async forCall(tool: string, summary: string, api: Pick<ToolExecutionApi, "conversationId" | "snapshot" | "memo">, context: Context): Promise<string | undefined> {
 		const conversationId = Number(api.conversationId);
 		const roomId = this.#options.db.roomOf(conversationId);
@@ -106,7 +96,7 @@ export class Approvals implements MessageHandler {
 		return outcome.approved ? undefined : refusal(outcome);
 	}
 
-	/** Resolves once the request is decided; registered before anything can decide it. */
+	/** Registered before anything can decide it. */
 	#decided(id: string): { promise: Promise<void>; cancel: () => void } {
 		let wake: () => void = () => {};
 		const promise = new Promise<void>((resolve) => {
@@ -126,7 +116,7 @@ export class Approvals implements MessageHandler {
 		};
 	}
 
-	/** Posts the request and the four reactions to press. Repeats send nothing new (transaction IDs). */
+	/** Repeats send nothing new (transaction IDs). */
 	async #post(request: ApprovalRequest): Promise<void> {
 		const { db, notice, react } = this.#options;
 		const body = [
@@ -152,17 +142,13 @@ export class Approvals implements MessageHandler {
 		return true;
 	}
 
-	/** A reaction from an allowed user. Only one to a request, with one of its four emoji, counts. */
+	/** A reaction from an allowed user. */
 	onReaction(roomId: string, relatesTo: string, key: string): void {
 		const row = this.#options.db.approvalByPrompt(roomId, relatesTo);
 		const choice = CHOICES.find((choice) => normalizeEmoji(choice.emoji) === normalizeEmoji(key));
 		if (row !== undefined && choice !== undefined) this.#decide(row.id, choice.decision);
 	}
 
-	/**
-	 * A text message from the user, before it goes to the model. A command is answered here and not passed on (the
-	 * returned text is the reply); any other message rejects what is waiting in the room and is passed on.
-	 */
 	onMessage({ roomId, body }: { readonly roomId: string; readonly body: string }): Handled {
 		const { db } = this.#options;
 		const text = body.trim();
@@ -196,7 +182,6 @@ export class Approvals implements MessageHandler {
 		return { handled: false };
 	}
 
-	/** The user said something else instead of answering: what waits in the room is a no. */
 	interrupt(roomId: string): void {
 		for (const row of this.#options.db.undecidedApprovals(roomId)) this.#decide(row.id, "reject", "message");
 	}
@@ -215,7 +200,6 @@ function outcome(row: ReturnType<HostDb["approval"]>): Outcome {
 	return { approved: true, by: decision };
 }
 
-/** What the model is told when a call was not allowed. */
 export function refusal(outcome: Extract<Outcome, { approved: false }>): string {
 	switch (outcome.reason) {
 		case "rejected":

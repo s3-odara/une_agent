@@ -17,11 +17,8 @@ export type CallsOptions = {
 	readonly config: Config;
 	readonly transcriber: Transcriber;
 	readonly synthesizer: Synthesizer;
-	/** Puts what was said to the room's conversation and resolves with the answer (`Bridge.ask`). */
 	readonly ask: (roomId: string, key: string, content: string) => Promise<Answer>;
-	/** Tells the room something in text (`Bridge.notice`). */
 	readonly notice: (roomId: string, key: string, body: string) => Promise<void>;
-	/** Where speech is written until the gateway has read it. */
 	readonly outDir: string;
 	readonly log?: (message: string) => void;
 };
@@ -30,22 +27,14 @@ type RoomCall = {
 	joined: boolean;
 	/** Goes up whenever the user starts speaking: an answer to an older turn is not spoken any more. */
 	turn: number;
-	/** Utterances are handled one at a time, in order. */
 	tail: Promise<void>;
-	/** What the persona should know about how its last answer came across, told with the next utterance. */
 	note: string | undefined;
-	/** Clips sent to be played, by ID, until the gateway says how far they got. */
 	readonly spoken: Map<string, (spoken: Spoken) => void>;
 };
 
 type Spoken = { readonly playedMs: number; readonly interrupted: boolean };
 
-/**
- * The bot's side of calls. It joins a room's call once an allowed user is in it and leaves when they all have. What
- * they say becomes input to the room's conversation, marked as said in a call; the answer is spoken sentence by
- * sentence, the next one made while the last plays. Talking over the bot stops it (the gateway does that at once), and
- * the persona is told with the next input how far it got.
- */
+/** Talking over the bot stops it: the gateway does that at once, not this code. */
 export class Calls {
 	readonly #options: CallsOptions;
 	readonly #log: (message: string) => void;
@@ -61,7 +50,6 @@ export class Calls {
 		this.#options.link.onEvent((event) => this.#onEvent(event));
 	}
 
-	/** Resolves once every utterance taken so far has been handled. */
 	async idle(): Promise<void> {
 		while (this.#work.size > 0) await Promise.allSettled([...this.#work]);
 	}
@@ -149,7 +137,6 @@ export class Calls {
 		await this.#speak(utterance.roomId, room, turn, answer.text);
 	}
 
-	/** Speaks an answer one sentence at a time until it is done, or the user talks over it or starts a new turn. */
 	async #speak(roomId: string, room: RoomCall, turn: number, answer: string): Promise<void> {
 		const { config, synthesizer, link, outDir } = this.#options;
 		const call = config.voice?.call ?? fail();
@@ -201,10 +188,8 @@ export class Calls {
 	}
 }
 
-/** Told with the next utterance when the answer was not spoken because the user had started speaking again. */
 export const OVERTAKEN = "直前の返答は、読み上げる前にユーザーが話し始めたので伝わっていません";
 
-/** Told with the next utterance when the user talked over the answer after `heard` of it. */
 function interrupted(heard: string): string {
 	return heard === "" ? "直前の返答は、話し始める前に遮られました" : `直前の返答は「${heard}」まで話したところで遮られました`;
 }

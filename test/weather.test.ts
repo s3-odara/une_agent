@@ -7,7 +7,7 @@ import { call, message, noting, type ToolResult } from "./fakes.ts";
 
 const tz = "Asia/Tokyo";
 
-/** A forecast file of the shape the JMA serves: the area's weather, rain chances and temperatures, by time. */
+/** A forecast file of the shape the JMA serves. */
 const jmaFile = [
 	{
 		publishingOffice: "気象庁",

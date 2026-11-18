@@ -1,12 +1,8 @@
-# Tasks for the agent. `just` lists them.
-#
-# The development recipes run in the dev shell (`nix develop`, or direnv with .envrc), which has Node, Rust, ffmpeg,
-# Radicale and the rest. The deployment recipes need only nix and systemd: the agent runs as systemd user services,
-# reading ~/.config/agent/config.json and the secrets in ~/.config/agent/env.
+# The development recipes need the dev shell (`nix develop`, or direnv with .envrc) for Node, Rust, ffmpeg, Radicale
+# and the rest. The deployment recipes need only nix and systemd.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# The config of a source checkout; the deployed agent's is in ~/.config/agent.
 config := "config.json"
 deployed := env("HOME") / ".config/agent"
 state := env("XDG_STATE_HOME", env("HOME") / ".local/state") / "agent"
@@ -15,8 +11,6 @@ units := env("HOME") / ".config/systemd/user"
 [private]
 default:
     @just --list --unsorted
-
-# --- development -----------------------------------------------------------------------------------------------------
 
 # Type-check, and run the tests of the agent and the gateway.
 check: typecheck test test-gateway
@@ -73,8 +67,6 @@ browser-login url profile="default":
 # Show the GPUs the speech recognizer can use, through the same Vulkan driver it uses.
 vulkan:
     nix run .#vulkan-check
-
-# --- deployment ------------------------------------------------------------------------------------------------------
 
 # Once per machine: keep the services running without a login, and make ~/.config/agent from the examples.
 setup:

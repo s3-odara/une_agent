@@ -24,10 +24,6 @@ class FakeSynthesizer implements Synthesizer {
 	}
 }
 
-/**
- * The agent with calls, whose persona speaks with speaker 8. The fake gateway plays every clip through to its end unless
- * the test sets `link.speak` otherwise.
- */
 async function setup() {
 	const env = await agentEnv({
 		config: { personas: { calm: { soul: "soul.md", voice: 8 } }, defaultPersona: "calm", voice: { stt: {}, tts: { speaker: 3 }, call: { vad: { endSilenceMs: 700 } } } },
@@ -48,7 +44,6 @@ async function setup() {
 	calls.start();
 	env.link.speak = (command) => ({ type: "callSpoken", roomId: command.roomId, id: command.id, playedMs: 900, interrupted: false });
 	let n = 0;
-	/** An utterance as the gateway passes it on, which the recognizer hears as `text`. */
 	const utterance = (text: string): Extract<GatewayEvent, { type: "callUtterance" }> => {
 		const path = join(env.dir, `call-${++n}.wav`);
 		writeFileSync(path, "RIFF");
@@ -65,12 +60,10 @@ async function setup() {
 		synthesizer,
 		utterance,
 		settle,
-		/** The user is in the room's call, and the bot has joined it. */
 		inCall: () => {
 			env.link.emit({ type: "callMembers", roomId: ROOM, userIds: [ME] });
 			env.link.emit({ type: "callJoined", roomId: ROOM });
 		},
-		/** Says something in the call and waits for everything it set off. */
 		say: async (text: string) => {
 			env.link.emit(utterance(text));
 			await settle();
@@ -128,7 +121,6 @@ test("the utterance and the speech files are deleted once done with", async () =
 	assert.ok(t.link.of("callSpeak").every((command) => !existsSync(command.path)));
 });
 
-/** The bot's three-sentence answer is cut off during its second sentence. */
 async function talkedOver(t: Awaited<ReturnType<typeof setup>>, requests: Request[]) {
 	t.env.faux.setResponses([fauxAssistantMessage("一つ目です。二つ目です。三つ目です。"), answer("はい。", requests)]);
 	let played = 0;

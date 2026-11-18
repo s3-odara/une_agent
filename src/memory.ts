@@ -7,15 +7,14 @@ import { writeFileAtomic } from "./files.ts";
 
 export type MemoryScope = "shared" | "private";
 
-/** Who a conversation speaks as, as far as memory is concerned. */
 export type MemoryPersona = { readonly name: string; readonly privateMemory: boolean };
 
 export type MemoryLimits = { readonly shared: number; readonly private: number };
 
-/** A refused change. Its message is written for the model, which is expected to act on it. */
+/** Its message is written for the model, which is expected to act on it. */
 export class MemoryError extends Error {}
 
-/** `(2026-11-17)` at the end of an entry: when it was written, so a reader can tell how stale it may be. */
+/** When an entry was written, so a reader can tell how stale it may be. */
 const TAG = / \(\d{4}-\d{2}-\d{2}\)$/;
 
 export function withoutTag(entry: string): string {
@@ -35,8 +34,7 @@ function size(entries: readonly string[]): number {
 }
 
 /**
- * Long-term memory as plain Markdown lists a person can read and edit: `shared.md`, which every persona reads, and
- * `persona/<name>.md` for the personas that keep a memo of their own.
+ * Plain Markdown lists, so a person can read and edit them.
  *
  * Every change is safe to repeat (adding what is there, replacing what is already replaced, and removing what is gone
  * all succeed without changing anything), so the tools over it may rerun after a crash. File access is synchronous:
@@ -87,7 +85,6 @@ export class MemoryStore {
 		writeFileAtomic(path, entries.length === 0 ? "" : `${render(entries)}\n`);
 	}
 
-	/** The one entry containing `match`. */
 	#find(entries: readonly string[], match: string): number | "none" {
 		const needle = oneLine(match);
 		if (needle === "") throw new MemoryError("match が空です。");
@@ -131,10 +128,6 @@ export class MemoryStore {
 		return "削除しました。";
 	}
 
-	/**
-	 * Replaces a whole list, as the tidy does, after copying the file it replaces to `history/<label>.md`. Entries that
-	 * carry no date get `date`.
-	 */
 	rewrite(scope: MemoryScope, persona: MemoryPersona, entries: readonly string[], date: string, label: string): void {
 		const path = this.#path(scope, persona);
 		if (existsSync(path)) {
@@ -149,7 +142,7 @@ export class MemoryStore {
 		);
 	}
 
-	/** What a persona sees of memory, with how to use it. Changes only when memory changes, which keeps prompt caches warm. */
+	/** Changes only when memory changes, which keeps prompt caches warm. */
 	prompt(persona: MemoryPersona): string {
 		const block = (scope: MemoryScope, title: string) => {
 			const entries = this.entries(scope, persona);
@@ -177,15 +170,13 @@ export class MemoryStore {
 
 export type MemoryExtensionOptions = {
 	readonly store: MemoryStore;
-	/** The persona a conversation speaks as; `undefined` for a conversation without one, which then has no memory. */
 	readonly personaOf: (conversationId: number) => MemoryPersona | undefined;
-	/** The user's time zone: entries are dated by the user's calendar, not the server's. */
+	/** Entries are dated by the user's calendar, not the server's. */
 	readonly tz: string;
 };
 
 const scope = oneOf(["shared", "private"], { description: "shared: 全人格が読む。private: この人格だけが読む（持たない人格もある）。" });
 
-/** Memory as a prompt section plus the three tools that change it. All three are safe to rerun after a crash. */
 export function createMemoryExtension(options: MemoryExtensionOptions) {
 	const { store, personaOf, tz } = options;
 	const persona = (conversationId: unknown): MemoryPersona => {

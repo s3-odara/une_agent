@@ -7,18 +7,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::ipc::Message;
 
-/// What the gateway itself has to remember across restarts, in one small JSON file.
-///
 /// matrix-sdk stores its sync position as soon as it has processed a sync, so a message the agent had not stored yet
 /// when the process died would never be offered again. The inbox closes that gap: a message is written here before it
 /// is passed on, stays until the agent acks it, and is offered again at every start.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Stored {
-    /// Messages passed to the agent and not acked yet, by event ID.
     #[serde(default)]
     inbox: BTreeMap<String, Message>,
-    /// When the bot accepted each room's invite, milliseconds. Messages older than that are history, not requests.
+    /// Messages older than the join are history, not requests.
     #[serde(default)]
     joined_at: BTreeMap<String, u64>,
 }
@@ -49,7 +46,6 @@ impl State {
         Ok(())
     }
 
-    /// Stores a message before it is passed on. `false` when it is already there.
     pub fn add(&mut self, message: &Message) -> Result<bool> {
         if self.stored.inbox.contains_key(&message.event_id) {
             return Ok(false);
@@ -70,7 +66,6 @@ impl State {
         Ok(())
     }
 
-    /// The messages still owed to the agent, oldest first.
     pub fn unacked(&self) -> Vec<Message> {
         let mut messages: Vec<Message> = self.stored.inbox.values().cloned().collect();
         messages.sort_by_key(|message| message.ts);
@@ -82,7 +77,6 @@ impl State {
         self.save()
     }
 
-    /// Whether a message of that time was sent before the bot accepted the room's invite.
     pub fn predates_join(&self, room_id: &str, ts: u64) -> bool {
         self.stored.joined_at.get(room_id).is_some_and(|joined| ts < *joined)
     }

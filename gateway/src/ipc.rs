@@ -1,4 +1,4 @@
-//! The JSON Lines the gateway exchanges with the agent over stdout and stdin. Keep in step with `src/gateway.ts`.
+//! Keep in step with `src/gateway.ts`.
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, stdout};
@@ -6,7 +6,6 @@ use tokio::sync::mpsc;
 
 use crate::audio::VadConfig;
 
-/// A line the gateway writes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Event {
@@ -19,36 +18,28 @@ pub enum Event {
         request_id: Option<String>,
         message: String,
     },
-    /// An allowed user reacted to an event. Not stored: one missed while the gateway was down is not offered again.
+    /// Not stored: one missed while the gateway was down is not offered again.
     Reaction { room_id: String, event_id: String, relates_to: String, key: String, sender: String },
-    /// The allowed users (not the bot) now in the room's call; empty once they have all left.
     CallMembers { room_id: String, user_ids: Vec<String> },
     CallJoined { room_id: String },
-    /// The bot is out of the call: `reason` is empty when it left as asked or because everyone else did.
     CallLeft { room_id: String, reason: String },
-    /// A participant started speaking. Whatever the bot was saying has been stopped.
     CallSpeech { room_id: String, user_id: String },
-    /// One utterance, as a 16 kHz mono WAV file. The agent deletes it once done.
+    /// The agent deletes the file once done.
     CallUtterance { room_id: String, user_id: String, path: String, started_at: u64, duration_ms: u64 },
-    /// A `callSpeak` finished playing, or was cut off (`interrupted`) after `played_ms`.
     CallSpoken { room_id: String, id: String, played_ms: u64, interrupted: bool },
 }
 
-/// A text or voice message from an allowed user.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
     pub room_id: String,
     pub event_id: String,
     pub sender: String,
-    /// The text; for audio, the file name or description the sender's client gave it.
+    /// For audio, the file name or description the sender's client gave it.
     pub body: String,
-    /// `origin_server_ts`, milliseconds.
     pub ts: u64,
-    /// Present for an audio message: the recording, already downloaded and decrypted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<Audio>,
-    /// The event this message replies to, if it is a reply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
 }
@@ -56,15 +47,13 @@ pub struct Message {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Audio {
-    /// Absolute path of the file. The agent deletes it once it no longer needs it.
+    /// The agent deletes it once it no longer needs it.
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mimetype: Option<String>,
-    /// Whether the sender's client marked it as a voice message rather than an audio file.
     pub voice: bool,
 }
 
-/// A line the gateway reads.
 #[derive(Debug, Deserialize, PartialEq)]
 #[cfg_attr(test, derive(Serialize))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -81,24 +70,21 @@ pub enum Command {
         #[serde(default)]
         notice: bool,
     },
-    /// Sends an Ogg Opus file as a voice message.
     SendVoice {
         request_id: String,
         room_id: String,
         txn_id: String,
         path: String,
         duration_ms: u64,
-        /// Loudness over time, each between 0 and 1, for the client to draw.
+        /// Each between 0 and 1, for the client to draw.
         #[serde(default)]
         waveform: Vec<f32>,
     },
-    /// Sends a PNG file as an image.
     SendImage {
         request_id: String,
         room_id: String,
         txn_id: String,
         path: String,
-        /// The file name the client shows.
         name: String,
         width: u32,
         height: u32,
@@ -107,7 +93,6 @@ pub enum Command {
         room_id: String,
         on: bool,
     },
-    /// Reacts to an event with `key`; answered with `sent` (the reaction's event ID) or `error`.
     React {
         request_id: String,
         room_id: String,
@@ -122,7 +107,7 @@ pub enum Command {
     LeaveCall {
         room_id: String,
     },
-    /// Plays a 48 kHz mono 16-bit WAV file in the room's call, after whatever is queued. The file is read at once.
+    /// The file is read at once.
     CallSpeak {
         room_id: String,
         id: String,
@@ -132,7 +117,7 @@ pub enum Command {
 
 pub type Outbox = mpsc::UnboundedSender<Event>;
 
-/// Starts the only writer of stdout: one JSON object per line, in the order sent.
+/// The only writer of stdout, so lines never interleave.
 pub fn spawn_writer() -> Outbox {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     tokio::spawn(async move {
@@ -155,7 +140,7 @@ mod tests {
 
     use super::*;
 
-    /// The lines of `test/protocol.json`, which the agent's tests check against its own types.
+    /// The agent's tests check the same file against its own types.
     fn examples(kind: &str) -> Vec<Value> {
         let all: Value = serde_json::from_str(include_str!("../../test/protocol.json")).unwrap();
         all[kind].as_array().unwrap().clone()

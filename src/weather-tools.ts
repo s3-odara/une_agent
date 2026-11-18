@@ -2,7 +2,7 @@ import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
 import { formatForecast, type WeatherSource } from "./weather.ts";
 
-/** The weather forecast as a tool, on its own: it needs `weather` in the config, not the calendar. */
+/** An extension of its own: it needs `weather` in the config, not the calendar. */
 export function createWeatherExtension(weather: WeatherSource) {
 	return defineExtension({
 		name: "weather",

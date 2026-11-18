@@ -6,16 +6,11 @@ import { EgressError, type EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
 import { httpUrl } from "./urls.ts";
 
-/** A page read as text. */
 export type ReadPage = {
-	/** Where the page ended up, after redirects. */
 	readonly url: string;
 	readonly title: string;
-	/** The content as Markdown. */
 	readonly markdown: string;
-	/** `article`: the main content alone, as Readability found it; `page`: the whole page, with no main content found. */
 	readonly scope: "article" | "page";
-	/** HTTP status of the page, when it is not 2xx. */
 	readonly status?: number;
 };
 
@@ -24,18 +19,14 @@ export interface PageReader {
 	close(): Promise<void>;
 }
 
-/** A page that could not be read; its message is written for the model. */
+/** Its message is written for the model. */
 export class ReadError extends Error {}
 
 export type PlaywrightReaderOptions = {
-	/** Every connection of the browser goes through it. */
 	readonly egress: EgressProxy;
 	readonly timezone: string;
-	/** A browser binary to use instead of the Chromium that Playwright installs. */
 	readonly executablePath?: string;
-	/** A browser nobody used for this long is closed. */
 	readonly idleMs: number;
-	/** Longest one page may take, from opening it to its text. */
 	readonly timeoutMs?: number;
 };
 
@@ -43,8 +34,7 @@ const require = createRequire(import.meta.url);
 const source = (module: string) => readFileSync(require.resolve(module), "utf8");
 
 /**
- * Runs in the page: finds the main content with Readability, or takes the whole page, and turns it into Markdown with
- * Turndown. Both libraries are loaded inside a function of their own, so the page's globals are left alone and the
+ * Runs in the page. Both libraries are loaded inside a function of their own, so the page's globals are left alone and the
  * page's `module` or `exports`, if it has any, are not used. The page's scripts can still change what this reads, as
  * they can change the page itself; they cannot reach anything outside the page.
  */
@@ -99,9 +89,8 @@ function tidy(markdown: string): string {
 }
 
 /**
- * Reads pages in a headless Chromium of its own, apart from the browser the browser tools drive: every page opens in
- * a new context, with no cookies, no logins and nothing kept, and every connection goes through the egress proxy.
- * The browser is launched at first use and closed again when idle.
+ * Apart from the browser the browser tools drive: every page opens in a new context, with no cookies, no logins and
+ * nothing kept, and every connection goes through the egress proxy.
  */
 export class PlaywrightReader implements PageReader {
 	readonly #options: PlaywrightReaderOptions;
@@ -216,7 +205,6 @@ export class PlaywrightReader implements PageReader {
 	}
 }
 
-/** Why a page did not open, from Playwright's message, in words for the model. */
 function openFailure(message: string): string {
 	if (message.includes("Download is starting")) return "この URL はページではなくファイルのダウンロードなので読めません。";
 	if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED/.test(message)) {

@@ -14,7 +14,6 @@ const ROOM = "!main:example.org";
 const at = (local: string) => localToEpoch(local, tz);
 const DENTIST = "Home/dentist.ics";
 
-/** The agent with the calendar tools on a CalDAV server in memory, with the dentist on 11/18 at 15:30. */
 async function setup() {
 	const backend = new MemoryCalDav();
 	backend.put("Home", "dentist.ics", buildEvent("dentist", { summary: "歯医者", start: "2026-11-18T15:30" }, tz, 0));
@@ -42,7 +41,6 @@ async function setup() {
 	});
 	bridge = env.bridge({ handlers: [approvals] });
 	let n = 0;
-	/** The tool results the model was given, in order. */
 	const results: ToolResult[] = [];
 	return {
 		env,
@@ -53,9 +51,7 @@ async function setup() {
 		bridge,
 		now: () => clock,
 		setClock: (local: string) => void (clock = at(local)),
-		/** The user writes in the room. */
 		write: (body: string) => env.link.emit(message(ROOM, `$m${++n}`, body, clock)),
-		/** Resolves with the approval request's event once the bot has put the choices under it. */
 		request: async (count = 1) => {
 			const seen = new Set<string>();
 			const reaction = await env.link.waitFor("react", (command) => {

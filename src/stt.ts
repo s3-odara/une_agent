@@ -5,22 +5,19 @@ import { readFile } from "node:fs/promises";
 import { request } from "node:http";
 import { ffmpeg } from "./ffmpeg.ts";
 
-/** Turns a recording into text. */
 export interface Transcriber {
 	transcribe(path: string): Promise<string>;
 }
 
 export type WhisperServerOptions = {
-	/** The `whisper-server` binary of whisper.cpp (`stt/install.sh` builds it). */
 	readonly server: string;
 	readonly model: string;
-	/** The Silero VAD model. Without VAD, whisper.cpp dropped a whole sentence at a 30-second boundary. */
+	/** Without VAD, whisper.cpp dropped a whole sentence at a 30-second boundary. */
 	readonly vadModel: string;
 	readonly threads: number;
 	readonly beamSize: number;
-	/** Language code such as `ja`, or `auto`. */
 	readonly language: string;
-	/** Padding added around each stretch of speech VAD finds. The default 30 ms made the model invent a word in trailing silence. */
+	/** The default 30 ms made the model invent a word in trailing silence. */
 	readonly vadSpeechPadMs: number;
 	/** The server listens here, so no port is taken and nothing else on the network can reach it. */
 	readonly socketPath: string;
@@ -28,16 +25,13 @@ export type WhisperServerOptions = {
 	readonly idleMs: number;
 	readonly startTimeoutMs?: number;
 	readonly requestTimeoutMs?: number;
-	/** Turns any recording into 16 kHz mono WAV, which is all the server reads; tests replace it. */
+	/** 16 kHz mono WAV is all the server reads. */
 	readonly toWav?: (path: string) => Promise<Buffer>;
 };
 
 type Server = { readonly child: ChildProcess; ready: Promise<void>; readonly log: string[]; exited: boolean };
 
-/**
- * whisper.cpp's `whisper-server`, started at the first recording and stopped when idle. It loads in well under a
- * second, so stopping it costs little. Requests go over a Unix socket; the server runs one inference at a time.
- */
+/** `whisper-server` loads in well under a second, so stopping it when idle costs little. It runs one inference at a time. */
 export class WhisperServer implements Transcriber {
 	readonly #options: WhisperServerOptions;
 	readonly #toWav: (path: string) => Promise<Buffer>;
@@ -150,7 +144,6 @@ export class WhisperServer implements Transcriber {
 		});
 	}
 
-	/** Stops the server; the next recording starts it again. */
 	close(): void {
 		clearTimeout(this.#idleTimer);
 		const server = this.#server;
@@ -159,17 +152,14 @@ export class WhisperServer implements Transcriber {
 	}
 }
 
-/**
- * Any recording ffmpeg can read, as 16 kHz mono 16-bit WAV. Needs the `ffmpeg` command, except for a file that is in
- * that form already, as a call's utterances are.
- */
+/** A file already in 16 kHz mono 16-bit WAV, as a call's utterances are, skips ffmpeg. */
 export async function toWav16k(path: string): Promise<Buffer> {
 	const file = await readFile(path);
 	if (isWav16kMono(file)) return file;
 	return ffmpeg(["-i", path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"]);
 }
 
-/** A plain WAV whose `fmt ` chunk, right after the header, says PCM, one channel, 16 kHz, 16 bits. */
+/** Only a plain WAV whose `fmt ` chunk comes right after the header; anything else goes through ffmpeg. */
 function isWav16kMono(file: Buffer): boolean {
 	return (
 		file.length >= 36 &&

@@ -5,7 +5,6 @@ export type CalDavOptions = {
 	readonly url: string;
 	readonly username: string;
 	readonly password: string;
-	/** Display names of the calendars to use. */
 	readonly calendars: readonly string[];
 };
 
@@ -21,8 +20,6 @@ function displayName(calendar: DAVCalendar): string {
 }
 
 /**
- * CalDAV over tsdav for discovery and queries, and plain conditional HTTP requests for single objects.
- *
  * The connection is made at first use and again after any failure, so a server that is down when the agent starts, or
  * goes away later, only fails the calls made while it is down.
  */

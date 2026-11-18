@@ -10,7 +10,6 @@ import { addDays, dateOf, startOfDay } from "./time.ts";
 export type CalendarToolsOptions = {
 	readonly calendars: Calendars;
 	readonly db: HostDb;
-	/** Changing and deleting wait for the user's decision here. */
 	readonly approvals: Approvals;
 };
 
@@ -27,9 +26,7 @@ function describeChanges(changes: ItemChanges): string {
 }
 
 /**
- * The calendar as tools. Reading, creating and completing run at once. Changing and deleting an existing item ask the
- * user first, in code rather than by instruction: the call posts an approval request to the room and waits for the
- * user's decision (see `Approvals`), and runs only on a yes.
+ * Changing and deleting an existing item ask the user first, in code rather than by instruction (see `Approvals`).
  *
  * Every tool is safe to rerun after a crash: a created item gets a UID remembered with the call, an approval request
  * is remembered with the call too, and changing, completing and deleting all end in the same state however often they

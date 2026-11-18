@@ -1,5 +1,4 @@
-# The agent: its TypeScript as Node runs it (no build step), the runtime dependencies, and a wrapper that points the
-# config's defaults at the gateway, the speech recognizer and its models built here.
+# Node runs the TypeScript as it is, so there is no build step.
 {
   lib,
   buildNpmPackage,

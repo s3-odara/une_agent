@@ -1,4 +1,3 @@
-# The Matrix gateway. Its git dependencies are pinned by Cargo.lock; libwebrtc comes from ./libwebrtc.nix.
 {
   lib,
   craneLib,

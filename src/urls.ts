@@ -1,4 +1,4 @@
-/** `raw` as an http or https URL; anything else is an error whose message is for the model. */
+/** Its error messages are for the model. */
 export function httpUrl(raw: string): URL {
 	let url: URL;
 	try {

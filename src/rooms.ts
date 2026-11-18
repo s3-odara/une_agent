@@ -26,21 +26,16 @@ export type BridgeOptions = {
 	readonly link: GatewayLink;
 	readonly config: Config;
 	readonly context: Context;
-	/** Waits between attempts to send one answer; after the last, the answer waits for the next start. */
+	/** After the last, the answer waits for the next start. */
 	readonly sendRetryDelaysMs?: readonly number[];
-	/** How long one send waits for the gateway's result before it counts as failed. */
 	readonly sendTimeoutMs?: number;
 	readonly log?: (message: string) => void;
-	/** Without it, voice messages are answered with a notice that they are not supported. */
 	readonly voice?: VoiceOptions;
-	/** Get each text message before the model, in order; one that is taken never reaches the conversation. */
 	readonly handlers?: readonly MessageHandler[];
 };
 
-/** What a handler did with a message: passed it on, or took it, with a notice to reply with. */
 export type Handled = { readonly handled: false } | { readonly handled: true; readonly reply?: string };
 
-/** Something that may take a user's message before the model sees it, such as a command. */
 export interface MessageHandler {
 	onMessage(message: { readonly roomId: string; readonly body: string; readonly replyTo?: string }): Handled;
 	/** The user sent a voice message, which no handler takes. */
@@ -50,15 +45,11 @@ export interface MessageHandler {
 
 export type VoiceOptions = {
 	readonly transcriber: Transcriber;
-	/** Without it, a voice message is answered in text only. Its settings are `config.voice.tts`. */
 	readonly synthesizer?: Synthesizer;
-	/** Where spoken answers are written until the gateway has uploaded them. */
 	readonly outDir: string;
 };
 
 /**
- * Connects Matrix rooms to conversations: one conversation per room, with the room's persona as its instructions.
- *
  * A message is answered exactly once across crashes because every step can be repeated: the gateway resends a message
  * until it is acked, `submit()` with the event ID as `requestId` returns the submission it already made, the ledger row
  * is `INSERT OR IGNORE`, and the answer is sent under a transaction ID derived from the event ID, which the homeserver
@@ -71,7 +62,6 @@ export class Bridge {
 	readonly #log: (message: string) => void;
 	/** Per room, the tail of its admissions, so two messages never race to create the room's conversation. */
 	readonly #admissions = new Map<string, Promise<void>>();
-	/** Event IDs whose answer is being awaited or sent. */
 	readonly #inFlight = new Map<string, string>();
 	readonly #sends = new Map<string, { resolve: (eventId: string) => void; reject: (error: Error) => void }>();
 	readonly #work = new Set<Promise<void>>();
@@ -83,13 +73,11 @@ export class Bridge {
 		this.#log = options.log ?? ((message) => console.error(message));
 	}
 
-	/** Starts listening to the gateway and picks up the answers the last process still owed. */
 	start(): void {
 		this.#options.link.onEvent((event) => this.#onEvent(event));
 		for (const delivery of this.#options.db.pendingDeliveries()) this.#startDelivery(delivery);
 	}
 
-	/** Resolves once every admission and delivery started so far has finished. */
 	async idle(): Promise<void> {
 		while (this.#work.size > 0) await Promise.allSettled([...this.#work]);
 	}
@@ -164,10 +152,7 @@ export class Bridge {
 		if (message.audio !== undefined) await rm(message.audio.path, { force: true });
 	}
 
-	/**
-	 * A recording becomes its transcript, marked as heard rather than typed. When it cannot be, the user is told so and
-	 * the message is acked all the same: a recording that failed once would fail again at every start.
-	 */
+	/** When it cannot be transcribed, the message is acked all the same: a recording that failed once would fail again at every start. */
 	async #admitAudio(message: MessageEvent, path: string, time: string | undefined): Promise<void> {
 		const { link } = this.#options;
 		const voice = this.#options.voice;
@@ -190,7 +175,6 @@ export class Bridge {
 		await this.#submit(message.roomId, message.eventId, `[${time === undefined ? "" : `${time} `}音声] ${text}`, true);
 	}
 
-	/** Admits one input to a room's conversation and starts delivering its answer. Safe to repeat with the same key. */
 	async #submit(roomId: string, key: string, content: string, voice = false): Promise<void> {
 		const { db, context } = this.#options;
 		const conversation = await this.#conversationFor(roomId);
@@ -200,10 +184,7 @@ export class Bridge {
 		this.#startDelivery(delivery);
 	}
 
-	/**
-	 * Asks a room's persona to write something on the scheduler's behalf; the answer is sent to the room like any other.
-	 * Resolves once the request is stored. `key` names the request: the same key again asks for nothing new.
-	 */
+	/** The same key again asks for nothing new. */
 	submitScheduled(roomId: string, key: string, content: string): Promise<void> {
 		const eventId = `${SCHEDULED_PREFIX}${key}`;
 		return this.#serial(roomId, async () => {
@@ -212,9 +193,8 @@ export class Bridge {
 	}
 
 	/**
-	 * Puts something said in a call to the room's conversation and resolves with the answer. Nothing is sent to the
-	 * room: the caller speaks it. Not in the delivery ledger either, so an answer still owed when the process stops is
-	 * left in the conversation and not sent later, by which time the call is over.
+	 * Not in the delivery ledger, so an answer still owed when the process stops is left in the conversation and not
+	 * sent later, by which time the call is over.
 	 */
 	async ask(roomId: string, key: string, content: string): Promise<Answer> {
 		const { harness, context } = this.#options;
@@ -222,7 +202,6 @@ export class Bridge {
 		return answerOf(harness, await submission.wait(context), context);
 	}
 
-	/** Runs `admit` after the room's earlier admissions, so two never race to create its conversation. */
 	#serial<T>(roomId: string, admit: () => Promise<T>): Promise<T> {
 		const result = (this.#admissions.get(roomId) ?? Promise.resolve()).then(admit);
 		const settled = result.then(
@@ -234,22 +213,20 @@ export class Bridge {
 		return result;
 	}
 
-	/** Sends a notice under a transaction ID and resolves with its event ID. The same ID again sends nothing new. */
+	/** The same ID again sends nothing new. */
 	post(roomId: string, txnId: string, body: string): Promise<string> {
 		return this.#send(roomId, txnId, body, true);
 	}
 
-	/** Sends a PNG file as an image under a transaction ID and resolves with its event ID. */
 	sendImage(roomId: string, txnId: string, image: { readonly path: string; readonly name: string; readonly width: number; readonly height: number }): Promise<string> {
 		return this.#request({ type: "sendImage", requestId: txnId, roomId, txnId, ...image });
 	}
 
-	/** Reacts to an event under a transaction ID. */
 	async react(roomId: string, txnId: string, eventId: string, key: string): Promise<void> {
 		await this.#request({ type: "react", requestId: txnId, roomId, txnId, eventId, key });
 	}
 
-	/** Sends a notice to a room as it is, without the model. The same key again sends nothing new. */
+	/** The same key again sends nothing new. */
 	async notice(roomId: string, key: string, body: string): Promise<void> {
 		await this.#send(roomId, `notice:${key}`, body, true);
 	}
@@ -312,7 +289,6 @@ export class Bridge {
 		db.markDelivered(delivery.eventId, replyEventId);
 	}
 
-	/** Runs `attempt` until it succeeds, waiting between tries; after the last wait, its error is thrown. */
 	async #retrying<T>(what: string, attempt: () => Promise<T>): Promise<T> {
 		for (let tries = 0; ; tries++) {
 			try {
@@ -326,7 +302,6 @@ export class Bridge {
 		}
 	}
 
-	/** Reads the answer aloud in the room persona's voice and sends it as a voice message. */
 	async #sendSpoken(delivery: Delivery, body: string): Promise<void> {
 		const { config } = this.#options;
 		const synthesizer = this.#options.voice?.synthesizer;
@@ -359,13 +334,11 @@ export class Bridge {
 		return { body: answer.reason === "empty answer" ? "（空の応答でした）" : `応答できませんでした（${answer.reason}）`, notice: true };
 	}
 
-	/** Sends one message through the gateway and resolves with the ID of the event it became. */
 	#send(roomId: string, txnId: string, body: string, notice: boolean): Promise<string> {
 		// The transaction ID doubles as the request ID: one send per ID is in flight at a time.
 		return this.#request({ type: "send", requestId: txnId, roomId, txnId, body, notice });
 	}
 
-	/** Passes a command that the gateway answers with `sent` or `error` under its request ID. */
 	#request(command: Extract<GatewayCommand, { requestId: string }>): Promise<string> {
 		const { requestId } = command;
 		return new Promise<string>((resolve, reject) => {

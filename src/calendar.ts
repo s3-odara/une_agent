@@ -1,26 +1,21 @@
 import ICAL from "ical.js";
 import { addDays, dateOf, formatClock, formatDay, isTimeZone, localToEpoch, startOfDay } from "./time.ts";
 
-/** One stored calendar object: an `.ics` resource with the ETag the server gave it. */
 export type RawObject = { readonly url: string; readonly etag?: string; readonly data: string };
 
 type ItemBase = {
-	/** `<calendar name>/<file name>`: what the tools take to name an item. */
 	readonly id: string;
 	readonly calendar: string;
 	readonly uid: string;
 	readonly summary: string;
 	readonly description?: string;
 	readonly etag?: string;
-	/** When the object was last written, as far as it says (LAST-MODIFIED, DTSTAMP, CREATED), epoch ms. */
 	readonly modified?: number;
 };
 
-/** One occurrence of an event. A recurring event gives one item per occurrence, all with the same `id`. */
 export type EventItem = ItemBase & {
 	readonly kind: "event";
 	readonly allDay: boolean;
-	/** Epoch ms. An all-day event runs from the start of its first day to the start of the day after its last. */
 	readonly start: number;
 	readonly end: number;
 	readonly location?: string;
@@ -30,17 +25,14 @@ export type EventItem = ItemBase & {
 export type TodoItem = ItemBase & {
 	readonly kind: "todo";
 	readonly done: boolean;
-	/** The due date, and the due instant when the task has a time of day. */
 	readonly due?: { readonly date: string; readonly at?: number };
 };
 
 export type CalItem = EventItem | TodoItem;
 
-/** Times as the tools take them: `YYYY-MM-DD` for a whole day, `YYYY-MM-DDTHH:MM` for a time in the agent's zone. */
 export type EventFields = {
 	readonly summary: string;
 	readonly start: string;
-	/** Timed: the end time, default one hour after the start. All-day: the last day, default the first. */
 	readonly end?: string;
 	readonly location?: string;
 	readonly description?: string;
@@ -54,7 +46,7 @@ export class CalendarError extends Error {}
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/;
 
-/** An ETag without its quotes and weakness marker, so one read from a header equals one read from a report. */
+/** So an ETag read from a header equals one read from a report. */
 export function normalizeEtag(etag: string | undefined): string {
 	return (etag ?? "").replace(/^W\//, "").replace(/^"|"$/g, "");
 }
@@ -80,9 +72,9 @@ function plainDate(time: ICAL.Time): string {
 }
 
 /**
- * An iCalendar time as an instant. The TZID is taken as an IANA zone name, which is what current clients write; the
- * VTIMEZONE definitions in the file are not consulted. A floating time, or one whose TZID is not a zone this runtime
- * knows, is read in the agent's own zone.
+ * The TZID is taken as an IANA zone name, which is what current clients write; the VTIMEZONE definitions in the file
+ * are not consulted. A floating time, or one whose TZID is not a zone this runtime knows, is read in the agent's own
+ * zone.
  */
 function toEpoch(time: ICAL.Time, tzid: string | undefined, tz: string): number {
 	if (time.isDate) return startOfDay(plainDate(time), tz);
@@ -120,10 +112,9 @@ function parse(raw: RawObject): ICAL.Component | undefined {
 	}
 }
 
-/** Occurrences a recurring event is expanded to at most, counted from its first: about 27 years of a daily event. */
+/** About 27 years of a daily event. */
 const MAX_OCCURRENCES = 10_000;
 
-/** The occurrences of the object's event that overlap `[from, to)`. */
 export function parseEvents(raw: RawObject, calendar: string, range: { from: number; to: number }, tz: string): EventItem[] {
 	const root = parse(raw);
 	if (root === undefined) return [];
@@ -171,7 +162,7 @@ export function parseEvents(raw: RawObject, calendar: string, range: { from: num
 	return items;
 }
 
-/** The object's task, if it holds one. A recurring task is read as its first occurrence only. */
+/** A recurring task is read as its first occurrence only. */
 export function parseTodo(raw: RawObject, calendar: string, tz: string): TodoItem | undefined {
 	const todo = parse(raw)?.getAllSubcomponents("vtodo").find((component) => !component.hasProperty("recurrence-id"));
 	if (todo === undefined) return undefined;
@@ -203,7 +194,7 @@ function setProperty(component: ICAL.Component, name: string, value: ICAL.Time |
 	if (value !== undefined && value !== "") component.addPropertyWithValue(name, value);
 }
 
-/** Start and end of an event as iCalendar values. Timed values are written in UTC, which every client reads the same. */
+/** Timed values are written in UTC, which every client reads the same. */
 function eventTimes(start: string, end: string | undefined, tz: string): { start: ICAL.Time; end: ICAL.Time } {
 	if (DATE.test(start)) {
 		if (end !== undefined && !DATE.test(end)) throw new CalendarError("終日の予定の end は YYYY-MM-DD で指定してください。");
@@ -266,7 +257,6 @@ export function buildTodo(uid: string, fields: TodoFields, tz: string, now: numb
 	return calendarWith(todo);
 }
 
-/** Fields to change; an absent one stays, and an empty `location`, `description` or `due` removes it. */
 export type ItemChanges = {
 	readonly summary?: string;
 	readonly start?: string;
@@ -297,7 +287,7 @@ function touch(component: ICAL.Component, now: number): void {
 	setProperty(component, "sequence", (typeof sequence === "number" ? sequence : 0) + 1);
 }
 
-/** The object with the changes applied to its event or task; everything else in it, such as alarms, is kept. */
+/** Edited in place so that everything else in the object, such as alarms, is kept. */
 export function applyChanges(data: string, changes: ItemChanges, tz: string, now: number): string {
 	const { root, main, kind } = mainComponent(data);
 	if (changes.summary !== undefined) setProperty(main, "summary", summaryOf(changes.summary));
@@ -333,7 +323,6 @@ export function applyChanges(data: string, changes: ItemChanges, tz: string, now
 	return root.toString();
 }
 
-/** The object with its task marked completed. `undefined` when it already is. */
 export function completeTodo(data: string, now: number): string | undefined {
 	const { root, main, kind } = mainComponent(data);
 	if (kind !== "todo") throw new CalendarError("これは予定です。完了にできるのはタスクだけです。");
@@ -345,7 +334,6 @@ export function completeTodo(data: string, now: number): string | undefined {
 	return root.toString();
 }
 
-/** `11/17(火) 15:30–16:00 歯医者 @駅前` */
 export function formatEvent(item: EventItem, tz: string): string {
 	const first = dateOf(item.start, tz);
 	let when: string;
@@ -361,32 +349,27 @@ export function formatEvent(item: EventItem, tz: string): string {
 	return `${when} ${item.summary}${place}${item.recurring ? "（繰り返し）" : ""}`;
 }
 
-/** `レポート提出 期日 11/20(金) 15:00` */
 export function formatTodo(item: TodoItem, tz: string): string {
 	if (item.due === undefined) return `${item.summary} 期日なし`;
 	const time = item.due.at === undefined ? "" : ` ${formatClock(item.due.at, tz)}`;
 	return `${item.summary} 期日 ${formatDay(item.due.date)}${time}`;
 }
 
-/** What the agent needs from a CalDAV server. `src/caldav.ts` implements it; tests use one in memory. */
+/** `src/caldav.ts` implements it; tests use one in memory. */
 export interface CalDavBackend {
-	/** The objects of a calendar holding events that overlap `[from, to)`. */
 	events(calendar: string, from: number, to: number): Promise<RawObject[]>;
-	/** The objects of a calendar holding tasks. */
 	todos(calendar: string): Promise<RawObject[]>;
 	get(calendar: string, file: string): Promise<RawObject | undefined>;
-	/** Stores a new object. `exists` when one of that name is already there. */
 	create(calendar: string, file: string, data: string): Promise<"created" | "exists">;
-	/** Replaces an object, if it still has `object.etag`. */
+	/** Only if it still has `object.etag`. */
 	update(object: RawObject): Promise<"updated" | "conflict">;
-	/** Deletes an object, if it still has `object.etag`. */
+	/** Only if it still has `object.etag`. */
 	remove(object: RawObject): Promise<"deleted" | "gone" | "conflict">;
 }
 
 type CalendarKind = "events" | "todos";
 export type CalendarConfig = Readonly<Record<string, { readonly kind: CalendarKind; readonly description: string }>>;
 
-/** The configured calendars as the agent uses them: typed items in, field changes out. */
 export class Calendars {
 	readonly #backend: CalDavBackend;
 	readonly calendars: CalendarConfig;
@@ -408,7 +391,6 @@ export class Calendars {
 		return found.kind;
 	}
 
-	/** Event occurrences overlapping `[from, to)`, earliest first. */
 	async events(from: number, to: number): Promise<EventItem[]> {
 		const lists = await Promise.all(
 			this.#names("events").map(async (calendar) =>
@@ -418,7 +400,6 @@ export class Calendars {
 		return lists.flat().sort((a, b) => a.start - b.start || a.summary.localeCompare(b.summary));
 	}
 
-	/** Every task, done or not, by due date; tasks without one come last. */
 	async todos(): Promise<TodoItem[]> {
 		const lists = await Promise.all(
 			this.#names("todos").map(async (calendar) =>
@@ -428,7 +409,7 @@ export class Calendars {
 		return lists.flat().sort((a, b) => (a.due?.date ?? "9999").localeCompare(b.due?.date ?? "9999") || a.summary.localeCompare(b.summary));
 	}
 
-	/** The stored object, or `undefined` when it does not exist; the id is checked either way. */
+	/** The id is checked even when the object does not exist. */
 	async #find(id: string): Promise<RawObject | undefined> {
 		const { calendar, file } = splitId(id);
 		this.#kindOf(calendar);
@@ -441,13 +422,12 @@ export class Calendars {
 		return object;
 	}
 
-	/** The item's current ETag, normalized; `undefined` when it does not exist. */
 	async etag(id: string): Promise<string | undefined> {
 		const object = await this.#find(id);
 		return object === undefined ? undefined : normalizeEtag(object.etag);
 	}
 
-	/** The item as it is now, for showing what a change would touch. */
+	/** For showing what a change would touch. */
 	async describe(id: string): Promise<string> {
 		const object = await this.#object(id);
 		const { calendar } = splitId(id);
@@ -475,10 +455,7 @@ export class Calendars {
 		return formatEvent(item, this.tz);
 	}
 
-	/**
-	 * Creates an event or a task under a caller-chosen UID. Repeating the call with the same UID stores nothing new, so
-	 * a caller that remembers its UID may retry.
-	 */
+	/** Repeating the call with the same UID stores nothing new, so a caller that remembers its UID may retry. */
 	async create(calendar: string, uid: string, fields: EventFields | TodoFields, now: number): Promise<string> {
 		const kind = this.#kindOf(calendar);
 		const data = kind === "todos" ? buildTodo(uid, fields as TodoFields, this.tz, now) : buildEvent(uid, fields as EventFields, this.tz, now);
@@ -487,7 +464,6 @@ export class Calendars {
 		return `${calendar}/${file}`;
 	}
 
-	/** Applies changes to the item as it is now. A write that loses a race with another client is retried once. */
 	async update(id: string, changes: ItemChanges, now: number): Promise<void> {
 		await this.#retryOnConflict(async () => {
 			const object = await this.#object(id);
@@ -495,7 +471,6 @@ export class Calendars {
 		});
 	}
 
-	/** Deletes the item. Succeeds when it is already gone. */
 	async remove(id: string): Promise<void> {
 		await this.#retryOnConflict(async () => {
 			const object = await this.#find(id);
@@ -503,7 +478,6 @@ export class Calendars {
 		});
 	}
 
-	/** Marks a task completed. Succeeds when it already is. */
 	async complete(id: string, now: number): Promise<void> {
 		await this.#retryOnConflict(async () => {
 			const object = await this.#object(id);
@@ -512,7 +486,7 @@ export class Calendars {
 		});
 	}
 
-	/** Reads and writes again when the write lost a race with another client; a second loss is the model's to sort out. */
+	/** A second lost race is the model's to sort out. */
 	async #retryOnConflict(attempt: () => Promise<string>): Promise<void> {
 		if ((await attempt()) !== "conflict") return;
 		if ((await attempt()) !== "conflict") return;

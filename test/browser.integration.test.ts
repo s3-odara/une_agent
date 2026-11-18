@@ -61,10 +61,6 @@ const refOf = (tree: string, role: string, name: string): string => {
 	return ref;
 };
 
-/**
- * The small site and a real browser with its profiles in a temporary directory, or `undefined` (the test skipped) where
- * Chromium cannot be launched. `restart` closes the browser and starts a new one on the same profiles.
- */
 async function realBrowser(t: TestContext) {
 	const dir = tempDir();
 	const server = await site();
@@ -89,7 +85,6 @@ async function realBrowser(t: TestContext) {
 		get browsers() {
 			return browsers;
 		},
-		/** A page of `profile` for conversation `conversation`, at `path` of the site. */
 		open: async (path: string, profile = "default", conversation = 1) => {
 			const tab = await browsers.page(profile, conversation);
 			await tab.goto(`${base}${path}`);
@@ -154,7 +149,6 @@ test("the snapshot shows what a text box holds, but never what a password field 
 	assert.doesNotMatch(after, /correct-horse/);
 });
 
-/** Logs in on the site's form in `tab`. */
 async function logIn(tab: BrowserPage) {
 	const tree = (await tab.snapshot()).tree;
 	await tab.fill(refOf(tree, "textbox", "ユーザー名"), "me");

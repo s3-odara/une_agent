@@ -1,4 +1,4 @@
-# The speech recognition model and the VAD model, as `voice.stt.model` and `voice.stt.vadModel` expect them.
+# Named as `voice.stt.model` and `voice.stt.vadModel` expect them.
 { fetchurl, linkFarm }:
 linkFarm "stt-models" {
   "ggml-large-v3-turbo-q8_0.bin" = fetchurl {

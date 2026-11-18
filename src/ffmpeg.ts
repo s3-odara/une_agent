@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 
-/** Runs the `ffmpeg` command with `input` on its stdin, if any, and resolves with what it wrote to stdout. */
 export function ffmpeg(args: readonly string[], input?: Buffer): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 		const child = spawn("ffmpeg", ["-nostdin", "-loglevel", "error", ...args], { stdio: ["pipe", "pipe", "pipe"] });

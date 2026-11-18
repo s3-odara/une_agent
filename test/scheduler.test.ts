@@ -14,10 +14,6 @@ const at = (local: string) => localToEpoch(local, tz);
 /** Written well before the tests' days, so nothing counts as news unless a test says so. */
 const LONG_AGO = at("2026-10-01T09:00");
 
-/**
- * A scheduler on a CalDAV server in memory, with what it asks the room's persona to say (`submitted`) and what it
- * tells the room itself (`notices`) recorded. The clock is moved by `tickAt`, which also runs one check.
- */
 function setup(proactive: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) {
 	const dir = tempDir();
 	const config = testConfig(dir.path, {
@@ -48,12 +44,10 @@ function setup(proactive: Record<string, unknown> = {}, extra: Record<string, un
 		notices,
 		event: (file: string, summary: string, start: string, written = LONG_AGO) => backend.put(file === "meeting" ? "Work" : "Home", `${file}.ics`, buildEvent(file, { summary, start }, tz, written)),
 		task: (file: string, summary: string, due?: string, written = LONG_AGO) => backend.put("ToDo", `${file}.ics`, buildTodo(file, { summary, ...(due === undefined ? {} : { due }) }, tz, written)),
-		/** Moves the clock and runs one check. */
 		tickAt: async (local: string) => {
 			now = at(local);
 			await scheduler.tick();
 		},
-		/** Runs the checks through a day, every 15 minutes, from `from` to `to`. */
 		ticksFrom: async (from: string, to: string) => {
 			for (let time = at(from); time <= at(to); time += 15 * 60_000) {
 				now = time;
@@ -229,7 +223,6 @@ test("the brief goes out once the calendar can be reached again", async () => {
 	assert.equal(t.submitted.length, 1);
 });
 
-/** A scheduler with only the memory tidy, whose fingerprint and runs the test controls. */
 function tidySetup() {
 	const t = setup({}, { memory: { tidyTime: "02:00", tidyEveryDays: 1 } });
 	let fingerprint = "a";
@@ -254,7 +247,6 @@ function tidySetup() {
 	return {
 		...t,
 		runs,
-		/** Memory written since the last look. */
 		write: () => void (fingerprint = `${fingerprint}+`),
 		tickAt: async (local: string) => {
 			clock = at(local);

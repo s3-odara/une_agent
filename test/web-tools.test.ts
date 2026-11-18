@@ -8,7 +8,6 @@ import { call, message, noting, type ToolResult } from "./fakes.ts";
 
 const ROOM = "!main:example.org";
 
-/** A reader that serves pages from a table and records what it was asked to open. */
 class FakeReader implements PageReader {
 	readonly opened: string[] = [];
 	readonly pages: Record<string, ReadPage | Error>;

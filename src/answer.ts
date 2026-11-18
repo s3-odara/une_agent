@@ -6,7 +6,6 @@ type Settled = Awaited<ReturnType<Submission["wait"]>>;
 
 export type Answer = { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string };
 
-/** The text the model answered a settled input with, or why there is none. */
 export async function answerOf(harness: Harness, settled: Settled, context: Context): Promise<Answer> {
 	if (settled.status !== "done" || settled.type !== "input") {
 		const reason = settled.status === "unanswered" ? settled.reason : "no answer";

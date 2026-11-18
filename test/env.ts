@@ -16,13 +16,11 @@ export { context };
 
 export const ME = "@me:example.org";
 
-/** A directory that is removed with everything in it when the test is done with it (`using`). */
 export function tempDir(): { readonly path: string; [Symbol.dispose](): void } {
 	const path = mkdtempSync(join(tmpdir(), "agent-test-"));
 	return { path, [Symbol.dispose]: () => rmSync(path, { recursive: true, force: true }) };
 }
 
-/** A config read from `overrides` over a minimal valid one, in `dir`. */
 export function testConfig(dir: string, overrides: Record<string, unknown> = {}): Config {
 	return parseConfig(
 		{
@@ -37,21 +35,13 @@ export function testConfig(dir: string, overrides: Record<string, unknown> = {})
 }
 
 export type EnvOptions = {
-	/** Config over a minimal one whose model is the faux model. */
 	readonly config?: Record<string, unknown>;
-	/** Persona files by name; `soul.md` says `SOUL` unless given. */
 	readonly souls?: Readonly<Record<string, string>>;
 	/** Built again at each (re)start, with that start's database. */
 	readonly extensions?: (env: { readonly config: Config; readonly db: HostDb }) => Extension[];
-	/** The clock the tools see. */
 	readonly now?: () => number;
 };
 
-/**
- * An agent as the process runs it, on files in a temporary directory, with the faux model and a fake gateway. It can
- * be restarted on the same files, as a crash and a new process would, and is removed when the test is done with it
- * (`await using`).
- */
 export async function agentEnv(options: EnvOptions = {}) {
 	const dir = tempDir();
 	for (const [name, soul] of Object.entries({ "soul.md": "SOUL", ...options.souls })) writeFileSync(join(dir.path, name), soul);
@@ -91,21 +81,17 @@ export async function agentEnv(options: EnvOptions = {}) {
 		get harness() {
 			return harness;
 		},
-		/** The extensions of this start, to install more into while it runs. */
 		get registry() {
 			return registry;
 		},
-		/** The gateway of the current start. */
 		get link() {
 			return link;
 		},
-		/** A started bridge on this start's harness, database and gateway. */
 		bridge(overrides: Partial<BridgeOptions> = {}): Bridge {
 			const bridge = new Bridge({ harness, db, link, config, context, log: () => {}, ...overrides });
 			bridge.start();
 			return bridge;
 		},
-		/** Stops and starts again on the same files, with a new gateway, as a new process would. */
 		async restart() {
 			await close();
 			await open();

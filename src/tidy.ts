@@ -9,14 +9,12 @@ import { type MemoryPersona, type MemoryScope, type MemoryStore, withoutTag } fr
 export type TidyOptions = {
 	readonly harness: Harness;
 	readonly store: MemoryStore;
-	/** Every persona; those with a memo of their own get it tidied too. */
 	readonly personas: readonly MemoryPersona[];
 	readonly model: ModelRef;
 	readonly context: Context;
 	readonly log?: (message: string) => void;
 };
 
-/** What a tidy did to one list. */
 export type TidyChange = { readonly label: string; readonly removed: readonly string[]; readonly added: readonly string[] };
 
 const INSTRUCTIONS = [
@@ -31,7 +29,6 @@ const INSTRUCTIONS = [
 	"- 各行は「- 」で始める。それ以外の文は書かない。残す項目が無ければ「（なし）」とだけ書く。",
 ].join("\n");
 
-/** The targets of a tidy: the shared list, then each private memo. */
 function targets(personas: readonly MemoryPersona[]): { label: string; scope: MemoryScope; persona: MemoryPersona }[] {
 	const first = personas[0] ?? { name: "shared", privateMemory: false };
 	return [
@@ -40,7 +37,7 @@ function targets(personas: readonly MemoryPersona[]): { label: string; scope: Me
 	];
 }
 
-/** Changes whenever any memory list changes: lets the scheduler skip a tidy when nothing was written since the last. */
+/** Lets the scheduler skip a tidy when nothing was written since the last. */
 export function memoryFingerprint(store: MemoryStore, personas: readonly MemoryPersona[]): string {
 	const hash = createHash("sha256");
 	for (const target of targets(personas)) hash.update(JSON.stringify([target.label, store.entries(target.scope, target.persona)]));
@@ -51,7 +48,6 @@ function size(entries: readonly string[]): number {
 	return [...entries.join("\n")].length;
 }
 
-/** The entries of a model's answer, or `undefined` when it is not the list that was asked for. */
 function parseList(text: string): string[] | undefined {
 	const lines = text.split("\n").map((line) => line.trim()).filter((line) => line !== "");
 	if (lines.length === 1 && /^（なし）$|^\(なし\)$/.test(lines[0] ?? "")) return [];
@@ -60,13 +56,12 @@ function parseList(text: string): string[] | undefined {
 }
 
 /**
- * Has the model go over each memory list once and replaces the list with the result, keeping the old file under
- * `history/`. Memory written during conversations tends to be wordy and to keep what did not need keeping; this is the
- * second look.
+ * Memory written during conversations tends to be wordy and to keep what did not need keeping; this is the second
+ * look.
  *
  * The model's answer is not trusted further than it has to be: it must be a plain list, it must not be longer than
  * what it replaces, and an entry it returned unchanged keeps its original date. Anything else leaves the list as it
- * was. Each list is its own conversation, with no tools and no memory section.
+ * was.
  */
 export async function tidyMemory(options: TidyOptions, date: string): Promise<TidyChange[]> {
 	const { harness, store, context } = options;
@@ -116,7 +111,6 @@ export async function tidyMemory(options: TidyOptions, date: string): Promise<Ti
 	return changes;
 }
 
-/** A report of a tidy a person can check at a glance. */
 export function formatTidy(changes: readonly TidyChange[]): string {
 	const blocks = changes.map((change) =>
 		[

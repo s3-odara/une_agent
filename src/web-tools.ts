@@ -6,30 +6,23 @@ import { httpUrl } from "./urls.ts";
 
 export type WebToolsOptions = {
 	readonly reader: PageReader;
-	/** Longest part of a page one result carries, in characters. */
 	readonly maxChars: number;
 	readonly now?: () => number;
 };
 
-/** How long a page read stays to be read on from; after that, `offset` opens it again. */
 const KEEP_MS = 60 * 60_000;
 const KEEP_PAGES = 20;
-/** Longer pages are kept and shown only up to here. */
 const MAX_STORED = 500_000;
 
 type Kept = ReadPage & { readonly at: number };
 
-/** `index` moved back off the second half of a surrogate pair, so a cut never splits a character. */
+/** So a cut never splits a surrogate pair. */
 function onCharacter(text: string, index: number): number {
 	const code = text.charCodeAt(index - 1);
 	return index > 0 && index < text.length && code >= 0xd800 && code <= 0xdbff ? index - 1 : index;
 }
 
-/**
- * `web_extract`: a page as Markdown, from a browser of its own with no logins. A long page comes in parts, and the next
- * part is read from the copy kept in memory, without opening the page again. It only reads, so it is rerun after a
- * crash, and works in runs the scheduler started too.
- */
+/** It only reads, so it is rerun after a crash, and works in runs the scheduler started too. */
 export function createWebExtension(options: WebToolsOptions) {
 	const { reader, maxChars } = options;
 	const now = options.now ?? Date.now;

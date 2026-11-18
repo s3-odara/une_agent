@@ -17,26 +17,19 @@ export type BrowserToolsOptions = {
 	readonly browsers: Browsers;
 	readonly credentials: Credentials;
 	readonly db: HostDb;
-	/** The browser profile a conversation uses; `undefined` for a conversation that has no browser. */
 	readonly profileOf: (conversationId: number) => string | undefined;
-	/** Longest page content one tool result carries, in characters. */
 	readonly maxChars?: number;
-	/** With it, `browser_request_code` asks the user for a one-time code. */
 	readonly codes?: CodeRequests;
-	/** With it, `browser_screenshot` sends the page to the room as an image. */
 	readonly screenshots?: {
 		readonly send: (roomId: string, txnId: string, image: { path: string; name: string; width: number; height: number }) => Promise<string>;
-		/** Where an image is written until it is sent. */
 		readonly dir: string;
 	};
 };
 
-/** Width and height of a PNG image, from its header. */
 export function pngSize(png: Buffer): { width: number; height: number } {
 	return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
 }
 
-/** Input fields a code can be typed into. */
 const CODE_FIELDS = new Set(["text", "tel", "number", "password", "search", "email", "url", "textarea"]);
 
 /** A refused request. Its message is written for the model. */
@@ -44,8 +37,6 @@ class BrowserError extends Error {}
 
 
 /**
- * A web browser as tools: open a page, read it as a tree of elements, and click, type and press keys by element ref.
- *
  * What the code guarantees, whatever the model or a page asks for:
  * - A stored password is typed only by `browser_fill_credential`, only into a password field, and only when that
  *   field's document has exactly the origin the password is stored for. It is removed from everything a tool returns.
@@ -72,7 +63,6 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 		return browsers.page(profile, conversationId);
 	};
 
-	/** The page as the model gets it after every action: where it is, and what is on it. `secret` is hidden too. */
 	const view = async (page: BrowserPage, note?: string, secret?: string): Promise<{ output: { type: "text"; text: string }[] }> => {
 		const snapshot = await page.snapshot();
 		const text = [...(note === undefined ? [] : [note, ""]), `URL: ${snapshot.url}`, `タイトル: ${snapshot.title}`, "", UNTRUSTED, "", clip(snapshot.tree)].join("\n");

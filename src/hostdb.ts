@@ -1,31 +1,26 @@
 import { DatabaseSync } from "node:sqlite";
 
 export type Delivery = {
-	/** The Matrix event being answered; also the submission's `requestId`. */
+	/** Also the submission's `requestId`. */
 	readonly eventId: string;
 	readonly roomId: string;
 	readonly submissionId: number;
-	/** The input was a voice message, so the answer is also sent as one. */
 	readonly voice?: boolean;
 };
 
 /** Event IDs of deliveries the scheduler asked for start with this; Matrix event IDs start with `$`. */
 export const SCHEDULED_PREFIX = "sched:";
 
-/** How the user answered an approval request. */
 export type Decision = "approve" | "approve_session" | "approve_always" | "reject";
 
-/** A tool call waiting for, or given, the user's decision. */
 export type ApprovalRow = {
 	readonly id: string;
 	readonly roomId: string;
 	/** The run the call belongs to: `approve_session` covers the same tool in the rest of it. */
 	readonly runKey: string;
 	readonly tool: string;
-	/** What the user is asked about, as shown to them. */
 	readonly summary: string;
 	readonly createdAt: number;
-	/** The request message, once sent. */
 	readonly promptEventId?: string;
 	readonly decision?: Decision;
 	/** Why it was rejected without a reject: `message` (the user wrote something else instead) or `timeout`. */
@@ -33,9 +28,8 @@ export type ApprovalRow = {
 };
 
 /**
- * The host's own ledger beside the pi-durable session: which conversation a room talks to, and which answers still have
- * to reach Matrix. It is a separate file from the session, so nothing here is atomic with a session commit; every step
- * that uses it is safe to repeat instead (see `Bridge`).
+ * It is a separate file from the pi-durable session, so nothing here is atomic with a session commit; every step that
+ * uses it is safe to repeat instead (see `Bridge`).
  */
 export class HostDb {
 	readonly #db: DatabaseSync;
@@ -108,7 +102,6 @@ export class HostDb {
 			.run(roomId, conversationId);
 	}
 
-	/** Records an answer owed to Matrix. A repeat for the same event changes nothing. */
 	addDelivery(delivery: Delivery): void {
 		this.#db
 			.prepare("INSERT OR IGNORE INTO deliveries (event_id, room_id, submission_id, voice) VALUES (?, ?, ?, ?)")
@@ -119,7 +112,6 @@ export class HostDb {
 		this.#db.prepare("UPDATE deliveries SET delivered = 1, reply_event_id = ? WHERE event_id = ?").run(replyEventId, eventId);
 	}
 
-	/** Whether the event was admitted, answered yet or not. */
 	hasDelivery(eventId: string): boolean {
 		return this.#db.prepare("SELECT 1 FROM deliveries WHERE event_id = ?").get(eventId) !== undefined;
 	}
@@ -139,13 +131,11 @@ export class HostDb {
 		}));
 	}
 
-	/** Whether a submission is a message a person sent, as opposed to one the scheduler made. */
 	isUserSubmission(submissionId: number): boolean {
 		const row = this.#db.prepare("SELECT event_id FROM deliveries WHERE submission_id = ?").get(submissionId);
 		return row !== undefined && !String(row.event_id).startsWith(SCHEDULED_PREFIX);
 	}
 
-	/** The ledger of notifications already made, so none is made twice. */
 	wasNotified(key: string): boolean {
 		return this.#db.prepare("SELECT 1 FROM notified WHERE key = ?").get(key) !== undefined;
 	}
@@ -155,7 +145,6 @@ export class HostDb {
 		for (const key of keys) insert.run(key, at);
 	}
 
-	/** Calendar items as last seen, by ID with their ETag: what "added or changed" is measured against. */
 	seenItems(): Map<string, string> {
 		const rows = this.#db.prepare("SELECT id, etag FROM calendar_seen").all();
 		return new Map(rows.map((row) => [String(row.id), String(row.etag)]));
@@ -174,13 +163,12 @@ export class HostDb {
 		}
 	}
 
-	/** Records an item the agent itself wrote, so the watcher does not report the agent's own work back to the user. */
+	/** So the watcher does not report the agent's own work back to the user. */
 	setSeenItem(id: string, etag: string | undefined): void {
 		if (etag === undefined) this.#db.prepare("DELETE FROM calendar_seen WHERE id = ?").run(id);
 		else this.#db.prepare("INSERT INTO calendar_seen (id, etag) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET etag = excluded.etag").run(id, etag);
 	}
 
-	/** Records an approval request; a repeat with the same ID changes nothing. Decided requests older than a week go. */
 	addApproval(row: Omit<ApprovalRow, "promptEventId" | "decision" | "reason">): void {
 		this.#db
 			.prepare("INSERT OR IGNORE INTO approvals (id, room_id, run_key, tool, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -198,7 +186,6 @@ export class HostDb {
 		return row === undefined ? undefined : approvalRow(row);
 	}
 
-	/** Undecided requests of a room, oldest first. */
 	undecidedApprovals(roomId: string): ApprovalRow[] {
 		return this.#db.prepare("SELECT * FROM approvals WHERE room_id = ? AND decision IS NULL ORDER BY created_at, rowid").all(roomId).map(approvalRow);
 	}
@@ -207,17 +194,14 @@ export class HostDb {
 		this.#db.prepare("UPDATE approvals SET prompt_event_id = ? WHERE id = ?").run(promptEventId, id);
 	}
 
-	/** Decides a request unless it already is; returns whether this call decided it. */
 	decideApproval(id: string, decision: Decision, reason?: string): boolean {
 		return this.#db.prepare("UPDATE approvals SET decision = ?, reason = ? WHERE id = ? AND decision IS NULL").run(decision, reason ?? null, id).changes > 0;
 	}
 
-	/** Whether the user allowed `tool` for the rest of the run. */
 	approvedForRun(runKey: string, tool: string): boolean {
 		return this.#db.prepare("SELECT 1 FROM approvals WHERE run_key = ? AND tool = ? AND decision = 'approve_session'").get(runKey, tool) !== undefined;
 	}
 
-	/** Tools the user allowed for good. */
 	alwaysApproved(): string[] {
 		return this.#db.prepare("SELECT tool FROM approval_rules ORDER BY tool").all().map((row) => String(row.tool));
 	}

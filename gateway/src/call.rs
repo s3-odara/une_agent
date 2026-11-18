@@ -1,6 +1,3 @@
-//! Calls: noticing that an allowed user is in a room's call, joining it, cutting what they say into utterances for the
-//! agent, and playing what the agent says back.
-//!
 //! The call is Element Call's, in its room-state membership format (`org.matrix.msc3401.call.member`): matrix-rust-rtc
 //! can write no other format Element Call reads, and it is the only one that arrives over the plain `/sync` the gateway
 //! runs (the current format needs sticky events over sliding sync).
@@ -30,7 +27,6 @@ use tracing::{info, warn};
 use crate::audio::{Cut, Cutter, SAMPLE_RATE, VAD_RATE, VadConfig, read_wav, write_wav};
 use crate::ipc::{Event, Outbox};
 
-/// Element Call's membership state event before sticky events.
 const MEMBER_EVENT_TYPE: &str = "org.matrix.msc3401.call.member";
 /// What Element Call assumes when a membership states no lifetime.
 const DEFAULT_EXPIRES_MS: u64 = 4 * 60 * 60 * 1000;
@@ -40,18 +36,15 @@ const PLAY_FRAME: usize = (SAMPLE_RATE / 100) as usize;
 
 #[derive(Debug)]
 pub enum Control {
-    /// Play a 48 kHz mono 16-bit WAV file after whatever is queued.
     Speak { id: String, path: String },
     Leave,
 }
 
-/// The calls the bot is in, one per room.
 #[derive(Clone)]
 pub struct Calls {
     rooms: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Control>>>>,
     out: Outbox,
     allowed: Arc<Vec<OwnedUserId>>,
-    /// Where utterances are written for the agent.
     dir: Arc<PathBuf>,
 }
 
@@ -64,7 +57,6 @@ impl Calls {
         let _ = self.out.send(event);
     }
 
-    /// Joins the room's call unless already in it. `CallJoined` or `CallLeft` (with the reason) reports how it went.
     pub fn join(&self, room: Room, vad: VadConfig) {
         let room_id = room.room_id().to_string();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -160,7 +152,6 @@ impl Calls {
         }
     }
 
-    /// Starts cutting a participant's microphone into utterances. Only allowed users are heard.
     fn listen(&self, call: &LiveKitCall, room_id: &str, member_id: &str, vad: VadConfig, player: &Player, listeners: &mut HashMap<String, AbortOnDrop>) {
         let Some(participant) = call.participants().into_iter().find(|p| p.member_id == member_id) else { return };
         if !self.allowed.iter().any(|user| user.as_str() == participant.user_id) {
@@ -194,7 +185,6 @@ fn first_channel(frame: AudioFrame) -> Vec<i16> {
     if channels == 1 { frame.data } else { frame.data.iter().step_by(channels).copied().collect() }
 }
 
-/// A task that stops when its owner is dropped: listening to a participant, or playing into the call.
 struct AbortOnDrop(JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
@@ -205,7 +195,7 @@ impl Drop for AbortOnDrop {
 
 static UTTERANCES: AtomicU64 = AtomicU64::new(0);
 
-/// One participant's audio, cut into utterances. The VAD needs well under a millisecond per frame, so it runs inline.
+/// The VAD needs well under a millisecond per frame, so it runs inline.
 struct Utterances {
     room_id: String,
     user_id: String,
@@ -247,7 +237,6 @@ impl Utterances {
     }
 }
 
-/// Plays queued speech into the bot's microphone track, and silence when there is none.
 #[derive(Clone)]
 struct Player {
     queue: Arc<Mutex<VecDeque<Clip>>>,
@@ -306,7 +295,6 @@ impl Player {
         let _ = self.out.send(spoken(&self.room_id, &Clip { id, samples: Vec::new(), position: 0 }, true));
     }
 
-    /// Drops everything queued, reporting how much of each was heard.
     fn hush(&self) {
         let dropped: Vec<Clip> = self.queue.lock().unwrap().drain(..).collect();
         for clip in dropped {
@@ -324,8 +312,7 @@ fn spoken(room_id: &str, clip: &Clip, interrupted: bool) -> Event {
     }
 }
 
-/// Reports which allowed users are in each room's call, whenever that changes. Memberships carry a deadline, so the
-/// rooms are also looked at again every half minute.
+/// Memberships carry a deadline, so the rooms are also looked at again every half minute.
 pub fn watch_memberships(client: &Client, out: Outbox, allowed: Arc<Vec<OwnedUserId>>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<OwnedRoomId>();
     client.add_event_handler(move |event: Raw<AnySyncStateEvent>, room: Room| {
@@ -357,7 +344,6 @@ pub fn watch_memberships(client: &Client, out: Outbox, allowed: Arc<Vec<OwnedUse
     });
 }
 
-/// Allowed users (not the bot) with a live membership in the room-wide call, sorted.
 async fn members_in_call(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> Vec<String> {
     let events = match room.get_state_events(StateEventType::from(MEMBER_EVENT_TYPE)).await {
         Ok(events) => events,
@@ -386,7 +372,7 @@ async fn members_in_call(client: &Client, room: &Room, allowed: &[OwnedUserId]) 
     members
 }
 
-/// A membership of the room-wide `m.call` that has not passed its deadline. `{}` is how a member leaves.
+/// `{}` is how a member leaves.
 fn is_live_room_call(content: &Value, origin_server_ts: u64, now: u64) -> bool {
     let Some(object) = content.as_object() else { return false };
     if object.is_empty() || object.get("application").and_then(Value::as_str) != Some("m.call") {

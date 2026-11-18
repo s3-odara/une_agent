@@ -3,59 +3,48 @@ import { join } from "node:path";
 import { type BrowserContext, chromium, type Page } from "playwright-core";
 import { HIDDEN } from "./credentials.ts";
 
-/** What an element is, as far as typing a secret into it is concerned. */
 export type FieldInfo = {
-	/** `password`, `text`, `email`, ... for an `<input>`; otherwise the tag name in lower case. */
 	readonly kind: string;
-	/** Origin of the document the element is in, which for an element inside an `<iframe>` is the frame's. */
+	/** For an element inside an `<iframe>`, this is the frame's origin. */
 	readonly origin: string;
 };
 
 export type PageSnapshot = { readonly url: string; readonly title: string; readonly tree: string };
 
-/**
- * One tab, as the browser tools drive it. Elements are named by the `ref` the latest snapshot gave them, so every
- * action is followed by a new snapshot.
- */
+/** Elements are named by the `ref` the latest snapshot gave them, so every action is followed by a new snapshot. */
 export interface BrowserPage {
 	goto(url: string): Promise<void>;
 	back(): Promise<void>;
-	/** The page as an accessibility tree with `[ref=...]` on what can be acted on. */
 	snapshot(): Promise<PageSnapshot>;
-	/** The visible text of the page. */
 	text(): Promise<string>;
 	click(ref: string): Promise<void>;
 	fill(ref: string, text: string): Promise<void>;
 	press(key: string, ref?: string): Promise<void>;
 	field(ref: string): Promise<FieldInfo>;
-	/** The page as a PNG image, password fields blacked out. */
+	/** Password fields are blacked out. */
 	screenshot(fullPage: boolean): Promise<Buffer>;
 }
 
 export interface Browsers {
-	/** The tab of a conversation in a profile, opened on first use. Conversations sharing a profile share its cookies. */
+	/** Conversations sharing a profile share its cookies. */
 	page(profile: string, conversationId: number): Promise<BrowserPage>;
 	close(): Promise<void>;
 }
 
 export type BrowserOptions = {
-	/** Profiles are kept under this directory, one subdirectory each. */
 	readonly dir: string;
 	readonly headless: boolean;
-	/** A browser binary to use instead of the Chromium that Playwright installs. */
 	readonly executablePath?: string;
 	readonly timezone: string;
-	/** A profile nobody used for this long is closed; its cookies stay on disk. */
 	readonly idleMs: number;
 };
 
 type Profile = { readonly context: BrowserContext; readonly pages: Map<number, Page>; lastUsed: number };
 
 
-/** A snapshot line of a text box that has a value: everything up to the value, and the ref. */
 const VALUED_TEXTBOX = /^(\s*- textbox\b.*\[ref=(\w+)\](?: \[[^\]]*\])*): .+$/;
 
-/** What an element is; runs in the page. The project is compiled without DOM types, so the element is described here. */
+/** Runs in the page. The project is compiled without DOM types, so the element is described here. */
 function describeField(node: unknown): FieldInfo {
 	const element = node as { tagName: string; type?: string; ownerDocument: { location: { origin: string } } };
 	const isInput = element.tagName === "INPUT" && typeof element.type === "string";
@@ -63,8 +52,7 @@ function describeField(node: unknown): FieldInfo {
 }
 
 /**
- * The snapshot without the contents of password fields. The accessibility tree shows what is typed into a text box,
- * and a password field is one: whatever is in it, typed by the agent, filled in by the site or by the browser, would
+ * The accessibility tree shows what is typed into a text box, and a password field is one: whatever is in it, typed by the agent, filled in by the site or by the browser, would
  * otherwise be handed to the model. Fields are told apart by asking the page about each ref, not by matching values.
  */
 async function hidePasswords(page: Page, tree: string): Promise<string> {
@@ -84,16 +72,13 @@ async function hidePasswords(page: Page, tree: string): Promise<string> {
 	return lines.join("\n");
 }
 
-/** Lets a page settle after something that may have navigated it, without waiting on pages that never go quiet. */
+/** Short timeouts, with failures ignored, because some pages never go quiet. */
 export async function settle(page: Page): Promise<void> {
 	await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
 	await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
 }
 
-/**
- * Chromium through Playwright, with one persistent profile directory per profile name. A profile is launched at first
- * use and closed again when idle, so the agent does not keep a browser running around the clock.
- */
+/** Profiles are closed when idle so the agent does not keep a browser running around the clock. */
 export class PlaywrightBrowsers implements Browsers {
 	readonly #options: BrowserOptions;
 	readonly #profiles = new Map<string, Promise<Profile>>();
@@ -197,7 +182,6 @@ export class PlaywrightBrowsers implements Browsers {
 		};
 	}
 
-	/** Makes `page` the conversation's page, and any tab it opens the page after it. */
 	#follow(profile: Profile, conversationId: number, page: Page): void {
 		profile.pages.set(conversationId, page);
 		page.on("popup", (popup) => this.#follow(profile, conversationId, popup));

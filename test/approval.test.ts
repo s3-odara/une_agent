@@ -8,10 +8,7 @@ import { tempDir } from "./env.ts";
 const ROOM = "!a:example.org";
 const DAY = 86_400_000;
 
-/**
- * Approvals on a real database, posting to a room that only records what it was given. The clock is a fake one, moved
- * by the test: a request left open does not hold the process for a day.
- */
+/** The clock is a fake one, moved by the test: a request left open does not hold the process for a day. */
 function setup() {
 	mock.timers.enable({ apis: ["setTimeout"] });
 	const dir = tempDir();
@@ -32,7 +29,6 @@ function setup() {
 	});
 	let n = 0;
 	const request = (fields: Partial<ApprovalRequest> = {}): ApprovalRequest => ({ id: `r${++n}`, roomId: ROOM, runKey: "run-1", tool: "calendar_delete", summary: `削除 ${n}`, ...fields });
-	/** Asks, and resolves with the request's event once it is up with its choices under it. */
 	const ask = async (fields: Partial<ApprovalRequest> = {}) => {
 		const outcome = approvals.ask(request(fields));
 		let settled: Outcome | undefined;
@@ -59,17 +55,15 @@ function setup() {
 
 const PENDING = Symbol("pending");
 
-/** The promise's value if it has settled by the time what is queued now has run, else `PENDING`. */
 function now<T>(promise: Promise<T>): Promise<T | typeof PENDING> {
 	return Promise.race([promise, new Promise<typeof PENDING>((resolve) => setImmediate(() => resolve(PENDING)))]);
 }
 
-/** Whether a promise has settled, without waiting for it. */
 async function isSettled(promise: Promise<unknown>): Promise<boolean> {
 	return (await now(promise)) !== PENDING;
 }
 
-/** What was decided, which must be decided already: a test fails here instead of waiting for ever. */
+/** Must be decided already: a test fails here instead of waiting for ever. */
 async function decided(outcome: Promise<Outcome>): Promise<Outcome> {
 	const value = await now(outcome);
 	assert.notEqual(value, PENDING, "not decided");

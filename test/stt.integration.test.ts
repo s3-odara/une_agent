@@ -28,7 +28,6 @@ const audio = process.env.STT_TEST_AUDIO?.split(":").filter((path) => path !== "
 const texts = process.env.STT_TEST_TEXT?.split(":").filter((path) => path !== "") ?? [];
 const needsRecordings = { skip: !haveServer || audio.length === 0 ? "the server is not built, or STT_TEST_AUDIO is not set" : false };
 
-/** The share of the script's characters found in the transcript, ignoring spaces and punctuation. */
 function overlap(script: string, transcript: string): number {
 	const normalize = (text: string) => [...text.normalize("NFKC").replace(/[\s\p{P}\p{S}]/gu, "")];
 	const [expected, got] = [normalize(script), normalize(transcript)];

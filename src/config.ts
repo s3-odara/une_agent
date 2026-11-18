@@ -5,7 +5,6 @@ import type { CallVad } from "./gateway.ts";
 import { isTimeZone, parseClock } from "./time.ts";
 
 export type Config = {
-	/** Directory of the config file; relative paths in it resolve against this. */
 	readonly baseDir: string;
 	readonly dataDir: string;
 	readonly gatewayBin: string;
@@ -13,25 +12,19 @@ export type Config = {
 		readonly homeserver: string;
 		readonly userId: string;
 		readonly deviceName: string;
-		/** Only these users can invite the bot and talk to it. */
 		readonly allowedUsers: readonly string[];
 	};
-	/** The model of every persona that does not name its own. */
 	readonly model: ModelRef;
 	readonly personas: Readonly<Record<string, Persona>>;
 	readonly defaultPersona: string;
-	/** Room ID → persona name. Rooms not listed use `defaultPersona`. */
 	readonly rooms: Readonly<Record<string, string>>;
 	readonly memory: {
-		/** Upper bounds of the memory files, in characters. Memory is always shown in full, so it has to stay small. */
+		/** Memory is always shown in full, so it has to stay small. */
 		readonly sharedLimit: number;
 		readonly privateLimit: number;
-		/** When the daily tidy of memory runs, minutes since midnight; `undefined` turns it off. */
 		readonly tidyAt?: number;
-		/** Days between tidies. */
 		readonly tidyEveryDays: number;
 	};
-	/** The zone the user lives in: what "today" and "06:00" mean. */
 	readonly timezone: string;
 	readonly caldav?: {
 		readonly url: string;
@@ -42,83 +35,57 @@ export type Config = {
 	readonly weather?: {
 		/** Office code of the Japan Meteorological Agency forecast, e.g. `130000` for Tokyo. */
 		readonly jmaOfficeCode: string;
-		/** Which of the office's areas to read, counted from 0. */
 		readonly areaIndex: number;
 	};
-	/** Present when the agent has a web browser. */
 	readonly browser?: {
 		readonly headless: boolean;
-		/** A browser binary to use instead of the Chromium that Playwright installs. */
 		readonly executablePath?: string;
-		/** A browser nobody used for this long is closed; its cookies stay on disk. */
 		readonly idleMinutes: number;
 	};
-	/** Present when the agent reads web pages with `web_extract`, in a browser of its own with no logins. */
+	/** `web_extract` reads pages in a browser of its own with no logins. */
 	readonly web?: {
-		/** Longest part of a page one result carries, in characters; the model reads on with `offset`. */
 		readonly maxChars: number;
 	};
-	/** MCP servers over Streamable HTTP, by name; their tools are offered as `mcp__<name>__<tool>`. */
 	readonly mcp: Readonly<Record<string, McpServerConfig>>;
-	/** Present when the agent takes voice messages. Its answer to one comes as text and as a voice message. */
 	readonly voice?: {
-		/** whisper.cpp's `whisper-server`, as `stt/install.sh` builds it. */
 		readonly stt: {
 			readonly server: string;
 			readonly model: string;
 			readonly vadModel: string;
 			readonly threads: number;
 			readonly beamSize: number;
-			/** Language code such as `ja`, or `auto`. */
 			readonly language: string;
 			/** Padding VAD adds around speech. 0: the default 30 ms made the model invent words in trailing silence. */
 			readonly vadSpeechPadMs: number;
 			/** The recognizer holds about a gigabyte of memory; one unused for this long is stopped. */
 			readonly idleMinutes: number;
 		};
-		/** Absent: voice messages are understood but answered in text only. */
 		readonly tts?: {
 			/** VOICEVOX Engine. */
 			readonly url: string;
-			/** The VOICEVOX style ID of personas that do not set `voice`. */
 			readonly speaker: number;
-			/** Longer answers are read up to here; the text reply has the rest. */
 			readonly maxChars: number;
 		};
-		/**
-		 * Present when the bot joins calls: once an allowed user is in a room's call, it joins and talks with the room's
-		 * persona, in the room's conversation. Needs `tts`.
-		 */
 		readonly call?: {
-			/** Longer answers are spoken up to here. */
 			readonly maxChars: number;
 			readonly vad: CallVad;
 		};
 	};
-	/** Messages the agent sends on its own. Without it the agent only answers. */
 	readonly proactive?: {
-		/** The room they go to; they are written by that room's persona, in that room's conversation. */
 		readonly roomId: string;
-		/** Minutes since midnight. */
 		readonly briefAt: number;
-		/** Reminders are only sent between these, minutes since midnight. */
 		readonly windowStart: number;
 		readonly windowEnd: number;
 		readonly tickMinutes: number;
-		/** How long before a timed event its reminder is sent. */
 		readonly eventLeadMinutes: number;
-		/** How many days before a task's due date its reminders are sent. */
 		readonly dueLeadDays: readonly number[];
 	};
 };
 
 export type McpServerConfig = {
 	readonly url: string;
-	/** Headers sent as they are. */
 	readonly headers: Readonly<Record<string, string>>;
-	/** Headers whose value is the environment variable named, such as an API key; left out when it is not set. */
 	readonly headersFromEnv: Readonly<Record<string, string>>;
-	/** Only these of its tools are offered; absent offers them all. */
 	readonly tools?: readonly string[];
 	/** `safe` when its tools only read, so a call a crash cut off may be made again; otherwise it is not. */
 	readonly replay: "safe" | "unsafe";
@@ -132,13 +99,11 @@ export type ModelRef = { readonly provider: string; readonly modelId: string };
  * `browserProfile`, inherited from the base config unless set).
  */
 export type Persona = {
-	/** Path of the SOUL file: the persona's tone. */
 	readonly soul: string;
 	readonly privateMemory: boolean;
 	readonly model?: ModelRef;
-	/** The browser profile it uses, and so whose cookies and logins it has. Personas share `default` unless set. */
+	/** Decides whose cookies and logins the persona has. */
 	readonly browserProfile: string;
-	/** The VOICEVOX style ID it speaks with; `voice.tts.speaker` unless set. */
 	readonly voice?: number;
 };
 
@@ -331,7 +296,6 @@ function proactive(value: unknown): Config["proactive"] {
 	return result;
 }
 
-/** A persona is its SOUL path alone, or an object that also sets `privateMemory` or `model`. */
 function personas(value: unknown): Record<string, Persona> {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) fail("personas must be an object");
 	const out: Record<string, Persona> = {};
@@ -359,8 +323,8 @@ function personas(value: unknown): Record<string, Persona> {
 }
 
 /**
- * Where the parts the agent runs are, when the config does not say. The packaged agent (`nix build`) sets these to its
- * own parts; in a source checkout they are the build outputs under the repository, relative to the config file.
+ * The packaged agent (`nix build`) sets these to its own parts; in a source checkout they are the build outputs under
+ * the repository, relative to the config file.
  */
 const PARTS = {
 	gatewayBin: process.env.AGENT_GATEWAY_BIN ?? "gateway/target/release/matrix-gateway",
@@ -430,7 +394,7 @@ export function persona(config: Config, name: string): Persona {
 	return config.personas[name] ?? fail(`persona "${name}" is not defined`);
 }
 
-/** The SOUL text of a persona, read at each use so an edit applies without a restart. */
+/** Read at each use so an edit applies without a restart. */
 export function readSoul(config: Config, name: string): string {
 	return readFileSync(resolve(config.baseDir, persona(config, name).soul), "utf8").trim();
 }

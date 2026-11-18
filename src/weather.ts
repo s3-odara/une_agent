@@ -3,7 +3,6 @@ import { dateOf } from "./time.ts";
 export type DayForecast = {
 	readonly date: string;
 	readonly weather?: string;
-	/** Chance of rain per 6-hour block, e.g. `06-12時 30%`. */
 	readonly rain: readonly string[];
 	readonly minTemp?: string;
 	readonly maxTemp?: string;
@@ -26,8 +25,6 @@ function areaOf(series: Series | undefined, index: number): Record<string, unkno
 }
 
 /**
- * Reads the Japan Meteorological Agency's forecast JSON for one office (`.../forecast/<office code>.json`).
- *
  * The file is not a documented API: the layout is read defensively, and anything missing is left out instead of
  * failing. It holds the short-range forecast as three time series: weather per day, chance of rain per 6 hours, and
  * temperatures as (min, max) pairs per day.

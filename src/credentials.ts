@@ -3,19 +3,18 @@ import { writeFileAtomic } from "./files.ts";
 
 export type Credential = { readonly username: string; readonly password: string };
 
-/** A credentials file that cannot be used. Its message never contains a secret. */
+/** Its message never contains a secret. */
 export class CredentialError extends Error {}
 
 export const HIDDEN = "［伏せ字］";
 
 /**
- * Site passwords, kept in a plain JSON file a person edits by hand:
+ * A plain JSON file a person edits by hand:
  *
  *     { "https://example.com": { "username": "me", "password": "..." } }
  *
- * The key is the site's origin. The file is read at each use, so an edit applies at once. Nothing here hands a password
- * to the model: the browser tools type it into the page themselves, and `scrub()` removes it from everything they
- * return. `set()` and `remove()` write it for the `!cred` commands; the file stays readable by its owner only.
+ * The file is read at each use, so an edit applies at once. Nothing here hands a password to the model: the browser
+ * tools type it into the page themselves, and `scrub()` removes it from everything they return.
  */
 export class Credentials {
 	readonly #path: string;
@@ -24,7 +23,6 @@ export class Credentials {
 		this.#path = path;
 	}
 
-	/** The file as it is, keys as written. */
 	#raw(): Record<string, unknown> {
 		let text: string;
 		try {
@@ -62,10 +60,7 @@ export class Credentials {
 		return found;
 	}
 
-	/**
-	 * Stores the credential of `origin`, replacing the one it had, whatever key that was written under. A file that
-	 * cannot be read is left alone rather than overwritten. Resolves with whether one was replaced.
-	 */
+	/** A file that cannot be read is left alone rather than overwritten. */
 	set(origin: string, credential: Credential): boolean {
 		const { raw, removed } = this.#without(origin);
 		raw[origin] = { username: credential.username, password: credential.password };
@@ -79,7 +74,6 @@ export class Credentials {
 		return removed;
 	}
 
-	/** The file without `origin`, whatever key it was written under; a file that cannot be read is an error. */
 	#without(origin: string): { raw: Record<string, unknown>; removed: boolean } {
 		const raw = this.#raw();
 		this.#load(raw);
@@ -88,7 +82,7 @@ export class Credentials {
 		return { raw, removed: keys.length > 0 };
 	}
 
-	/** The usernames by origin. Not secret: the user is shown them with `!cred list`. */
+	/** Not secret: the user is shown them with `!cred list`. */
 	usernames(): [origin: string, username: string][] {
 		return [...this.#load()].map(([origin, credential]): [string, string] => [origin, credential.username]).sort(([a], [b]) => a.localeCompare(b));
 	}
@@ -97,17 +91,16 @@ export class Credentials {
 		writeFileAtomic(this.#path, `${JSON.stringify(raw, null, "\t")}\n`, 0o600);
 	}
 
-	/** The origins that have a credential. Not secret: the model is told where it can log in. */
+	/** Not secret: the model is told where it can log in. */
 	origins(): string[] {
 		return [...this.#load().keys()].sort();
 	}
 
-	/** The credential of exactly this origin: scheme, host and port all have to match. */
 	forOrigin(origin: string): Credential | undefined {
 		return this.#load().get(origin);
 	}
 
-	/** The text with every stored password replaced. A page may echo what was typed into it. */
+	/** A page may echo what was typed into it. */
 	scrub(text: string, ...others: string[]): string {
 		let clean = text;
 		let passwords: string[];

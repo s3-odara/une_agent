@@ -16,7 +16,7 @@ mime = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# Calls (MatrixRTC over LiveKit). AGPL-3.0 (or Element's commercial licence); pulls a prebuilt libwebrtc at build time.
+# AGPL-3.0 (or Element's commercial licence); pulls a prebuilt libwebrtc at build time.
 matrix-rtc-call-sdk = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0", features = ["matrix-sdk"] }
 matrix-rtc-call = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
 matrix-rtc-core = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }

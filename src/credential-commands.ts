@@ -9,7 +9,6 @@ const HELP = [
 	"- !cred remove https://example.com … 削除",
 ].join("\n");
 
-/** `https://example.com/login` or `example.com` as an origin, or `undefined` when it is not a web address. */
 function originOf(site: string): string | undefined {
 	try {
 		const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(site) ? site : `https://${site}`);
@@ -22,8 +21,8 @@ function originOf(site: string): string | undefined {
 }
 
 /**
- * `!cred` commands, which add, list and remove site passwords from the chat. Every message starting with `!cred` is
- * taken here and never reaches the model or the conversation, also one that is malformed: it may hold a password.
+ * Every message starting with `!cred` is taken here and never reaches the model or the conversation, also one that
+ * is malformed: it may hold a password.
  * The message itself stays in the room until the user deletes it; the reply says so.
  */
 export class CredentialCommands implements MessageHandler {

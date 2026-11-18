@@ -3,10 +3,8 @@ import type { McpServerConfig } from "./config.ts";
 import { errorMessage } from "./errors.ts";
 import { fromServer } from "./untrusted.ts";
 
-/** A server of the config, with the headers it takes from the environment already read. */
 export type McpServer = Omit<McpServerConfig, "headersFromEnv">;
 
-/** The servers of the config, with each `headersFromEnv` read from `env`; a variable that is unset or empty sends no header. */
 export function serversFromConfig(servers: Readonly<Record<string, McpServerConfig>>, env: NodeJS.ProcessEnv): Record<string, McpServer> {
 	return Object.fromEntries(
 		Object.entries(servers).map(([name, server]) => {
@@ -31,7 +29,6 @@ export type McpTool = { readonly name: string; readonly description?: string; re
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
-/** A request the server answered with an error, or a call its tool failed; its message is the server's. */
 export class McpError extends Error {}
 
 /** The session ended on the server's side: initialize again and resend. */
@@ -43,9 +40,8 @@ const REQUEST_TIMEOUT_MS = 30_000;
 type JsonRpcResponse = { jsonrpc: "2.0"; id?: number | string; result?: unknown; error?: { code: number; message: string } };
 
 /**
- * A client of one MCP server over Streamable HTTP, for what the agent uses: listing tools and calling them. It does not
- * take requests from the server (sampling, elicitation) and does not listen for notifications, so a server whose tools
- * change is read again at the next start.
+ * Only what the agent uses: it does not take requests from the server (sampling, elicitation) and does not listen for
+ * notifications, so a server whose tools change is read again at the next start.
  */
 export class McpHttpClient {
 	readonly #url: string;
@@ -69,7 +65,6 @@ export class McpHttpClient {
 		return tools;
 	}
 
-	/** The tool's result as content for the model. A result the tool marked as an error is thrown, with its text. */
 	async callTool(name: string, args: unknown, signal?: AbortSignal): Promise<Content[]> {
 		const result = (await this.#request("tools/call", { name, arguments: args ?? {} }, signal)) as {
 			content?: { type: string; text?: string; data?: string; mimeType?: string; resource?: { text?: string; uri?: string } }[];
@@ -90,7 +85,6 @@ export class McpHttpClient {
 		return content;
 	}
 
-	/** Ends the session on the server, if there is one. */
 	async close(): Promise<void> {
 		const session = await this.#session?.catch(() => undefined);
 		this.#session = undefined;
@@ -139,7 +133,6 @@ export class McpHttpClient {
 		return session;
 	}
 
-	/** Posts one message. A request resolves with its result, read from JSON or from an event stream; a notification with nothing. */
 	async #send(
 		session: { id: string | undefined; version: string },
 		message: { jsonrpc: "2.0"; id?: number; method: string; params?: unknown },
@@ -181,7 +174,6 @@ export class McpHttpClient {
 	}
 }
 
-/** The response to request `id` from a server-sent event stream; other messages on it are skipped. */
 async function fromEventStream(response: Response, id: number): Promise<JsonRpcResponse> {
 	const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
 	if (reader === undefined) throw new McpError("MCP サーバーの応答が空でした。");
@@ -216,13 +208,12 @@ async function fromEventStream(response: Response, id: number): Promise<JsonRpcR
 	throw new McpError("MCP サーバーが応答を返さずにストリームを閉じました。");
 }
 
-/** A name the model's API accepts: letters, digits, `_` and `-`, up to 64 characters. */
+/** The model's API accepts only letters, digits, `_` and `-`, up to 64 characters. */
 function toolName(server: string, tool: string): string {
 	return `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
 }
 
 
-/** The tools of one server, as they are offered to the model: `mcp__<server>__<tool>`. */
 export function createMcpExtension(server: string, client: McpHttpClient, tools: readonly McpTool[], replay: "safe" | "unsafe"): Extension {
 	return defineExtension({
 		name: `mcp-${server}`,
@@ -244,15 +235,11 @@ export function createMcpExtension(server: string, client: McpHttpClient, tools:
 export type McpServersOptions = {
 	readonly servers: Readonly<Record<string, McpServer>>;
 	readonly registry: Pick<Registry, "install">;
-	/** Waits between attempts to connect to a server that did not answer; the last one repeats. */
 	readonly retryDelaysMs?: readonly number[];
 	readonly log?: (message: string) => void;
 };
 
-/**
- * Connects to the configured MCP servers and installs each one's tools once it has listed them. The agent does not
- * wait for them: a server that is down is tried again in the background, and its tools appear when it answers.
- */
+/** The agent does not wait for them: a server that is down is tried again in the background, and its tools appear when it answers. */
 export class McpServers {
 	readonly #options: McpServersOptions;
 	readonly #clients = new Map<string, McpHttpClient>();
@@ -265,7 +252,6 @@ export class McpServers {
 		this.#log = options.log ?? ((message) => console.error(message));
 	}
 
-	/** Starts connecting; resolves once every server has been tried once. */
 	start(): Promise<void> {
 		return Promise.all(Object.keys(this.#options.servers).map((name) => this.#connect(name, 0))).then(() => {});
 	}
