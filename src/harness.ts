@@ -22,19 +22,22 @@ export function openAgentHarness(
 	storage: Storage,
 	models: HarnessOptions["models"],
 	context: Context,
-	extensions: readonly Extension[] = [],
-	/** The clock tools and tasks see; tests pass a fixed one. */
-	now?: () => number,
-	/** Extensions installed later, such as an MCP server's once it answers, go into this. */
-	registry: Registry = createRegistry(),
+	options: {
+		readonly extensions?: readonly Extension[];
+		/** The clock tools and tasks see; tests pass a fixed one. */
+		readonly now?: () => number;
+		/** For extensions installed later, such as an MCP server's once it answers. */
+		readonly registry?: Registry;
+	} = {},
 ): Promise<Harness> {
-	for (const extension of extensions) registry.install(extension);
+	const registry = options.registry ?? createRegistry();
+	for (const extension of options.extensions ?? []) registry.install(extension);
 	return Harness.open(
 		storage,
 		{
 			models,
 			registry,
-			now,
+			now: options.now,
 			identity: { attribution: null },
 			onReport: (report) => console.error(`harness report: ${report.kind}`, report.error),
 		},

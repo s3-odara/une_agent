@@ -119,6 +119,19 @@ pub async fn run(config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Older clients start a reply with the quoted message (`> <@user> ...`) and a blank line; the agent wants only what
+/// was said.
+fn without_reply_fallback(body: &str) -> &str {
+    if !body.starts_with('>') {
+        return body;
+    }
+    let mut rest = body;
+    while rest.starts_with('>') {
+        rest = rest.split_once('\n').map_or("", |(_, after)| after);
+    }
+    rest.strip_prefix('\n').unwrap_or(rest)
+}
+
 /// Larger recordings are refused rather than downloaded: several minutes of speech is far below this.
 const MAX_AUDIO_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -136,7 +149,12 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
     if shared.state.lock().unwrap().has(&event_id) {
         return;
     }
+    let reply_to = match &event.content.relates_to {
+        Some(Relation::Reply(reply)) => Some(reply.in_reply_to.event_id.to_string()),
+        _ => None,
+    };
     let (body, audio) = match &event.content.msgtype {
+        MessageType::Text(text) if reply_to.is_some() => (without_reply_fallback(&text.body).to_owned(), None),
         MessageType::Text(text) => (text.body.clone(), None),
         MessageType::Audio(content) => match download_audio(&client, &shared.voice_dir, &event_id, content).await {
             Ok(audio) => (content.body.clone(), Some(audio)),
@@ -147,10 +165,6 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
             }
         },
         _ => return,
-    };
-    let reply_to = match &event.content.relates_to {
-        Some(Relation::Reply(reply)) => Some(reply.in_reply_to.event_id.to_string()),
-        _ => None,
     };
     let message = Message { room_id, event_id, sender: event.sender.to_string(), body, ts, audio, reply_to };
 
@@ -340,33 +354,40 @@ async fn react(client: &Client, room_id: &str, txn_id: String, event_id: &str, k
 /// Uploads the file (encrypted in an encrypted room) and sends it as a voice message. A retry under the same transaction
 /// ID uploads again but still becomes one event.
 async fn send_voice(client: &Client, room_id: &str, txn_id: String, path: &str, duration_ms: u64, waveform: Vec<f32>) -> Result<String> {
+    let mime: mime::Mime = "audio/ogg".parse().expect("a valid MIME type");
+    send_file(client, room_id, txn_id, path, "voice-message.ogg", &mime, |size| {
+        AttachmentInfo::Voice(BaseAudioInfo {
+            duration: Some(Duration::from_millis(duration_ms)),
+            size,
+            waveform: if waveform.is_empty() { None } else { Some(waveform) },
+        })
+    })
+    .await
+}
+
+/// A retry under the same transaction ID uploads again but still becomes one event.
+async fn send_file(
+    client: &Client,
+    room_id: &str,
+    txn_id: String,
+    path: &str,
+    name: &str,
+    mime: &mime::Mime,
+    info: impl FnOnce(Option<UInt>) -> AttachmentInfo,
+) -> Result<String> {
     let room = joined_room(client, room_id)?;
     let data = tokio::fs::read(path).await.with_context(|| format!("reading {path}"))?;
-    let info = BaseAudioInfo {
-        duration: Some(Duration::from_millis(duration_ms)),
-        size: UInt::new(data.len() as u64),
-        waveform: if waveform.is_empty() { None } else { Some(waveform) },
-    };
-    let config = AttachmentConfig::new().txn_id(OwnedTransactionId::from(txn_id)).info(AttachmentInfo::Voice(info));
-    let mime: mime::Mime = "audio/ogg".parse().expect("a valid MIME type");
-    let response = room.send_attachment("voice-message.ogg", &mime, data, config).await?;
+    let config = AttachmentConfig::new().txn_id(OwnedTransactionId::from(txn_id)).info(info(UInt::new(data.len() as u64)));
+    let response = room.send_attachment(name, mime, data, config).await?;
     Ok(response.event_id.to_string())
 }
 
 /// Uploads a PNG file (encrypted in an encrypted room) and sends it as an image.
 async fn send_image(client: &Client, room_id: &str, txn_id: String, path: &str, name: &str, width: u32, height: u32) -> Result<String> {
-    let room = joined_room(client, room_id)?;
-    let data = tokio::fs::read(path).await.with_context(|| format!("reading {path}"))?;
-    let info = BaseImageInfo {
-        width: Some(UInt::from(width)),
-        height: Some(UInt::from(height)),
-        size: UInt::new(data.len() as u64),
-        blurhash: None,
-        is_animated: Some(false),
-    };
-    let config = AttachmentConfig::new().txn_id(OwnedTransactionId::from(txn_id)).info(AttachmentInfo::Image(info));
-    let response = room.send_attachment(name, &mime::IMAGE_PNG, data, config).await?;
-    Ok(response.event_id.to_string())
+    send_file(client, room_id, txn_id, path, name, &mime::IMAGE_PNG, |size| {
+        AttachmentInfo::Image(BaseImageInfo { width: Some(UInt::from(width)), height: Some(UInt::from(height)), size, blurhash: None, is_animated: Some(false) })
+    })
+    .await
 }
 
 /// A typing notice lasts a few seconds on the homeserver, so "on" keeps renewing it until "off".
@@ -390,5 +411,17 @@ fn set_typing(client: &Client, shared: &Shared, room_id: String, on: bool) {
         tokio::spawn(async move {
             let _ = room.typing_notice(false).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_reply_fallback;
+
+    #[test]
+    fn a_reply_loses_the_quote_it_starts_with() {
+        assert_eq!(without_reply_fallback("> <@bot:example.org> コードを送って\n> 二行目\n\nAB12"), "AB12");
+        assert_eq!(without_reply_fallback("AB12"), "AB12");
+        assert_eq!(without_reply_fallback("a > b"), "a > b");
     }
 }

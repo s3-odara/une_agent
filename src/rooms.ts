@@ -3,7 +3,6 @@ import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
 import { type Answer, answerOf } from "./answer.ts";
-import type { Approvals } from "./approval.ts";
 import { errorMessage } from "./errors.ts";
 import { type Config, persona, personaFor, readSoul } from "./config.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
@@ -34,12 +33,7 @@ export type BridgeOptions = {
 	readonly log?: (message: string) => void;
 	/** Without it, voice messages are answered with a notice that they are not supported. */
 	readonly voice?: VoiceOptions;
-	/** Gets reactions and the user's messages first: they may answer an approval request. */
-	readonly approvals?: Approvals;
-	/**
-	 * Get each text message before approvals and the model, in order; the first that takes it ends its way. One that is
-	 * taken is acked and never reaches the conversation.
-	 */
+	/** Get each text message before the model, in order; one that is taken never reaches the conversation. */
 	readonly handlers?: readonly MessageHandler[];
 };
 
@@ -51,6 +45,7 @@ export interface MessageHandler {
 	onMessage(message: { readonly roomId: string; readonly body: string; readonly replyTo?: string }): Handled;
 	/** The user sent a voice message, which no handler takes. */
 	interrupt?(roomId: string): void;
+	onReaction?(roomId: string, relatesTo: string, key: string): void;
 }
 
 export type VoiceOptions = {
@@ -133,7 +128,7 @@ export class Bridge {
 				this.#log(`gateway ready as ${event.userId} (device ${event.deviceId})`);
 				return;
 			case "reaction":
-				this.#options.approvals?.onReaction(event.roomId, event.relatesTo, event.key);
+				for (const handler of this.#options.handlers ?? []) handler.onReaction?.(event.roomId, event.relatesTo, event.key);
 				return;
 		}
 	}
@@ -143,29 +138,17 @@ export class Bridge {
 		// The time it was sent, so "tomorrow" means something. A system prompt that changed every minute would
 		// defeat the provider's prompt cache; a stamp on the message does not.
 		const time = message.ts > 0 ? formatStamp(message.ts, config.timezone) : undefined;
-		// A message that already went to the conversation is resent after a crash; it was not one of these.
+		// A message already in the conversation is one resent after a crash: no handler took it the first time.
 		if (!db.hasDelivery(message.eventId)) {
-			for (const handler of this.#options.handlers ?? []) {
-				if (message.audio !== undefined) {
-					handler.interrupt?.(message.roomId);
-					continue;
-				}
-				const result = handler.onMessage({ roomId: message.roomId, body: message.body, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) });
-				if (result.handled) {
+			const handlers = this.#options.handlers ?? [];
+			if (message.audio !== undefined) {
+				for (const handler of handlers) handler.interrupt?.(message.roomId);
+			} else {
+				const text = { roomId: message.roomId, body: message.body, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) };
+				for (const handler of handlers) {
+					const result = handler.onMessage(text);
+					if (!result.handled) continue;
 					if (result.reply !== undefined) await this.#send(message.roomId, `cmd:${message.eventId}`, result.reply, true);
-					link.send({ type: "ack", eventId: message.eventId });
-					return;
-				}
-			}
-		}
-		const approvals = this.#options.approvals;
-		if (approvals !== undefined && !db.hasDelivery(message.eventId)) {
-			if (message.audio !== undefined) approvals.interrupt(message.roomId);
-			else {
-				const command = approvals.onMessage(message.roomId, message.body);
-				if (command.handled) {
-					// An answer to an approval request, or about approvals: not for the model.
-					await this.#send(message.roomId, `cmd:${message.eventId}`, command.reply, true);
 					link.send({ type: "ack", eventId: message.eventId });
 					return;
 				}

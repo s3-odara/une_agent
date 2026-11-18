@@ -54,6 +54,8 @@ export function isPublicAddress(address: string): boolean {
 	}
 }
 
+const LOOKUP_TIMEOUT_MS = 10_000;
+
 /** A connection the proxy refused; its message is written for the model. */
 export class EgressError extends Error {}
 
@@ -63,8 +65,6 @@ export type EgressOptions = {
 	 * their own on this host.
 	 */
 	readonly allow?: (address: string, port: number) => boolean;
-	/** Longest a name lookup may take. */
-	readonly lookupTimeoutMs?: number;
 };
 
 /**
@@ -78,12 +78,10 @@ export type EgressOptions = {
 export class EgressProxy {
 	readonly #server: Server;
 	readonly #allow: (address: string, port: number) => boolean;
-	readonly #lookupTimeoutMs: number;
 	readonly #sockets = new Set<Duplex>();
 
 	private constructor(options: EgressOptions) {
 		this.#allow = options.allow ?? ((address) => isPublicAddress(address));
-		this.#lookupTimeoutMs = options.lookupTimeoutMs ?? 10_000;
 		this.#server = createServer((request, response) => void this.#forward(request, response));
 		this.#server.on("connect", (request: IncomingMessage, socket: Duplex, head: Buffer) => void this.#tunnel(request, socket, head));
 		this.#server.on("connection", (socket) => this.#keep(socket));
@@ -118,7 +116,7 @@ export class EgressProxy {
 		} else {
 			let timer: NodeJS.Timeout | undefined;
 			const timeout = new Promise<never>((_, reject) => {
-				timer = setTimeout(() => reject(new EgressError(`${bare} の名前解決が時間内に終わりませんでした。`)), this.#lookupTimeoutMs);
+				timer = setTimeout(() => reject(new EgressError(`${bare} の名前解決が時間内に終わりませんでした。`)), LOOKUP_TIMEOUT_MS);
 			});
 			try {
 				const found = await Promise.race([lookup(bare, { all: true, verbatim: true }), timeout]);

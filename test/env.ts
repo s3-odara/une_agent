@@ -69,14 +69,11 @@ export async function agentEnv(options: EnvOptions = {}) {
 	const open = async () => {
 		db = new HostDb(join(dir.path, "host.sqlite"));
 		registry = createRegistry();
-		harness = await openAgentHarness(
-			await openNodeSqliteStorage(join(dir.path, "session.sqlite")),
-			models,
-			context,
-			options.extensions?.({ config, db }) ?? [],
-			options.now,
+		harness = await openAgentHarness(await openNodeSqliteStorage(join(dir.path, "session.sqlite")), models, context, {
+			extensions: options.extensions?.({ config, db }) ?? [],
+			now: options.now,
 			registry,
-		);
+		});
 		link = new FakeLink();
 	};
 	const close = async () => {

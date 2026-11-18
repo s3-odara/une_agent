@@ -1,15 +1,11 @@
-import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
-import { UNTRUSTED } from "./browser-tools.ts";
-import { type PageReader, type ReadPage, ReadError } from "./extract.ts";
+import type { PageReader, ReadPage } from "./extract.ts";
+import { UNTRUSTED } from "./untrusted.ts";
+import { httpUrl } from "./urls.ts";
 
 export type WebToolsOptions = {
 	readonly reader: PageReader;
-	/** Where pages read are kept for a while, so reading on with `offset` does not open them again. */
-	readonly dir: string;
 	/** Longest part of a page one result carries, in characters. */
 	readonly maxChars: number;
 	readonly now?: () => number;
@@ -17,57 +13,47 @@ export type WebToolsOptions = {
 
 /** How long a page read stays to be read on from; after that, `offset` opens it again. */
 const KEEP_MS = 60 * 60_000;
-/** Pages longer than this are kept and shown only up to here. */
+const KEEP_PAGES = 20;
+/** Longer pages are kept and shown only up to here. */
 const MAX_STORED = 500_000;
 
-type Stored = ReadPage & { readonly requested: string; readonly at: number };
+type Kept = ReadPage & { readonly at: number };
 
-/** Characters, counted by code point so that a cut never splits one. */
-const chars = (text: string): string[] => [...text];
+/** `index` moved back off the second half of a surrogate pair, so a cut never splits a character. */
+function onCharacter(text: string, index: number): number {
+	const code = text.charCodeAt(index - 1);
+	return index > 0 && index < text.length && code >= 0xd800 && code <= 0xdbff ? index - 1 : index;
+}
 
 /**
- * Reading web pages as text: `web_extract` opens a URL in a browser of its own, with no logins, and gives the main
- * content as Markdown. A long page comes in parts; the next part is read from the copy kept in `dir`, without opening
- * the page again. Only reads, so it is rerun after a crash, and it works in runs the scheduler started too.
+ * `web_extract`: a page as Markdown, from a browser of its own with no logins. A long page comes in parts, and the next
+ * part is read from the copy kept in memory, without opening the page again. It only reads, so it is rerun after a
+ * crash, and works in runs the scheduler started too.
  */
 export function createWebExtension(options: WebToolsOptions) {
-	const { reader, dir, maxChars } = options;
+	const { reader, maxChars } = options;
 	const now = options.now ?? Date.now;
-	mkdirSync(dir, { recursive: true });
+	const kept = new Map<string, Kept>();
 
-	const fileOf = (url: string) => join(dir, `${createHash("sha256").update(url).digest("hex").slice(0, 32)}.json`);
-
-	const load = (url: string): Stored | undefined => {
-		try {
-			const stored = JSON.parse(readFileSync(fileOf(url), "utf8")) as Stored;
-			return stored.requested === url && now() - stored.at < KEEP_MS ? stored : undefined;
-		} catch {
-			return undefined;
-		}
+	const keep = (url: string, page: ReadPage): Kept => {
+		for (const [key, old] of kept) if (now() - old.at >= KEEP_MS) kept.delete(key);
+		while (kept.size >= KEEP_PAGES) kept.delete(kept.keys().next().value as string);
+		const cut = onCharacter(page.markdown, MAX_STORED);
+		const markdown = cut >= page.markdown.length ? page.markdown : `${page.markdown.slice(0, cut)}\n\n（ここまでで ${cut} 文字。残りは保存していません）`;
+		const entry = { ...page, markdown, at: now() };
+		kept.set(url, entry);
+		return entry;
 	};
 
-	const keep = (url: string, page: ReadPage): Stored => {
-		const all = chars(page.markdown);
-		const markdown = all.length <= MAX_STORED ? page.markdown : `${all.slice(0, MAX_STORED).join("")}\n\n（ここまでで ${MAX_STORED} 文字。残りは保存していません）`;
-		const stored: Stored = { ...page, markdown, requested: url, at: now() };
-		for (const name of readdirSync(dir)) {
-			const path = join(dir, name);
-			try {
-				if (now() - statSync(path).mtimeMs > KEEP_MS) rmSync(path, { force: true });
-			} catch {}
-		}
-		writeFileSync(fileOf(url), JSON.stringify(stored));
-		return stored;
-	};
-
-	const render = (page: Stored, offset: number): string => {
-		const all = chars(page.markdown);
-		if (offset >= all.length && all.length > 0) return `このページは全 ${all.length} 文字で、offset=${offset} から先はありません。`;
-		let end = Math.min(all.length, offset + maxChars);
-		// Cut at the end of a line when one is near, so a part does not stop mid-sentence.
-		if (end < all.length) {
-			const newline = all.lastIndexOf("\n", end);
-			if (newline > offset + maxChars / 2) end = newline + 1;
+	const render = (page: Kept, offset: number): string => {
+		const text = page.markdown;
+		if (offset >= text.length && text.length > 0) return `このページは全 ${text.length} 文字で、offset=${offset} から先はありません。`;
+		const start = onCharacter(text, offset);
+		let end = onCharacter(text, Math.min(text.length, start + maxChars));
+		// A part that ends at a line end does not stop mid-sentence.
+		if (end < text.length) {
+			const newline = text.lastIndexOf("\n", end);
+			if (newline > start + maxChars / 2) end = newline + 1;
 		}
 		const head = [
 			`URL: ${page.url}`,
@@ -75,12 +61,12 @@ export function createWebExtension(options: WebToolsOptions) {
 			...(page.status === undefined ? [] : [`HTTP ステータス: ${page.status}（エラーのページの可能性があります）`]),
 			page.scope === "article" ? "範囲: 本文と判定した部分" : "範囲: ページ全体（本文を判定できなかった）",
 		];
-		const part = all.slice(offset, end).join("");
+		const part = text.slice(start, end);
 		const foot =
-			end < all.length
-				? `（全 ${all.length} 文字のうち ${offset}〜${end} 文字目。続きは web_extract を同じ url と offset=${end} で呼ぶ）`
-				: offset > 0
-					? `（全 ${all.length} 文字のうち ${offset}〜${end} 文字目。ここで終わり）`
+			end < text.length
+				? `（全 ${text.length} 文字のうち ${start}〜${end} 文字目。続きは web_extract を同じ url と offset=${end} で呼ぶ）`
+				: start > 0
+					? `（全 ${text.length} 文字のうち ${start}〜${end} 文字目。ここで終わり）`
 					: undefined;
 		return [...head, "", UNTRUSTED, "", part === "" ? "（本文がありません）" : part, ...(foot === undefined ? [] : ["", foot])].join("\n");
 	};
@@ -106,14 +92,10 @@ export function createWebExtension(options: WebToolsOptions) {
 				}),
 				replay: "safe",
 				execute: async (args, _api, context) => {
-					let url: URL;
-					try {
-						url = new URL(args.url);
-					} catch {
-						throw new ReadError("URL の形が違います。https://example.com のように指定してください。");
-					}
+					const url = httpUrl(args.url).href;
 					const offset = args.offset ?? 0;
-					const page = (offset > 0 ? load(url.href) : undefined) ?? keep(url.href, await reader.read(url.href, context.abortSignal));
+					const fresh = kept.get(url);
+					const page = offset > 0 && fresh !== undefined && now() - fresh.at < KEEP_MS ? fresh : keep(url, await reader.read(url, context.abortSignal));
 					return { output: [{ type: "text" as const, text: render(page, offset) }] };
 				},
 			}),

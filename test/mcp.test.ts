@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
-import { fromServer, McpServers, serversFromConfig } from "../src/mcp.ts";
+import { McpServers, serversFromConfig } from "../src/mcp.ts";
+import { fromServer } from "../src/untrusted.ts";
 import { agentEnv, testConfig, tempDir } from "./env.ts";
 import { call, message, noting, type ToolResult } from "./fakes.ts";
 
@@ -86,11 +87,14 @@ async function setup(options: { down?: boolean; headers?: Record<string, string>
 	server.down = options.down === true;
 	const url = await server.start();
 	const env = await agentEnv();
+	const installed = Promise.withResolvers<void>();
 	const servers = new McpServers({
 		registry: env.registry,
 		servers: { keenable: { url, headers: options.headers ?? {}, tools: ["search_web_pages"], replay: "safe" } },
 		retryDelaysMs: [10],
-		log: () => {},
+		log: (line) => {
+			if (line.includes("installed")) installed.resolve();
+		},
 	});
 	await servers.start();
 	const bridge = env.bridge();
@@ -99,7 +103,7 @@ async function setup(options: { down?: boolean; headers?: Record<string, string>
 	return {
 		env,
 		server,
-		servers,
+		installed: installed.promise,
 		results,
 		noting: noting(results),
 		say: async (body: string) => {
@@ -165,7 +169,7 @@ test("a session the server has forgotten is started again, and the call goes thr
 test("a server that is down at start has its tools once it answers", async () => {
 	await using t = await setup({ down: true });
 	t.server.down = false;
-	await t.servers.installed("keenable");
+	await t.installed;
 	t.env.faux.setResponses([search("緑茶"), t.noting]);
 	await t.say("緑茶を調べて");
 	assert.equal(t.results[0]?.isError, false);

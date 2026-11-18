@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Decision, HostDb } from "./hostdb.ts";
+import type { Handled, MessageHandler } from "./rooms.ts";
 import { runInputs } from "./run.ts";
 import { errorMessage } from "./errors.ts";
 
@@ -48,7 +49,7 @@ export type ApprovalsOptions = {
  * Requests and decisions are in the host database, so a call rerun after a crash finds its decision, or waits again for
  * the same request.
  */
-export class Approvals {
+export class Approvals implements MessageHandler {
 	readonly #options: ApprovalsOptions;
 	readonly #now: () => number;
 	readonly #timeoutMs: number;
@@ -162,7 +163,7 @@ export class Approvals {
 	 * A text message from the user, before it goes to the model. A command is answered here and not passed on (the
 	 * returned text is the reply); any other message rejects what is waiting in the room and is passed on.
 	 */
-	onMessage(roomId: string, body: string): { readonly handled: false } | { readonly handled: true; readonly reply: string } {
+	onMessage({ roomId, body }: { readonly roomId: string; readonly body: string }): Handled {
 		const { db } = this.#options;
 		const text = body.trim();
 		const [command, ...args] = text.split(/\s+/);

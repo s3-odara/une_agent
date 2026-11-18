@@ -40,7 +40,7 @@ async function setup() {
 			return [createCalendarExtension({ calendars, db, approvals })];
 		},
 	});
-	bridge = env.bridge({ approvals });
+	bridge = env.bridge({ handlers: [approvals] });
 	let n = 0;
 	/** The tool results the model was given, in order. */
 	const results: ToolResult[] = [];

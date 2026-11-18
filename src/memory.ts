@@ -1,8 +1,9 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import { obj, oneOf, str } from "@earendil-works/pi-schema";
 import { dateOf } from "./time.ts";
+import { writeFileAtomic } from "./files.ts";
 
 export type MemoryScope = "shared" | "private";
 
@@ -83,9 +84,7 @@ export class MemoryStore {
 		}
 		const path = this.#path(scope, persona);
 		mkdirSync(dirname(path), { recursive: true });
-		// Renamed into place, so a crash leaves the old file or the new one.
-		writeFileSync(`${path}.tmp`, entries.length === 0 ? "" : `${render(entries)}\n`);
-		renameSync(`${path}.tmp`, path);
+		writeFileAtomic(path, entries.length === 0 ? "" : `${render(entries)}\n`);
 	}
 
 	/** The one entry containing `match`. */

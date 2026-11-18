@@ -125,14 +125,14 @@ test("a command answers the oldest open request in the room and is not passed on
 	const older = await t.ask();
 	const newer = await t.ask();
 
-	assert.equal(t.approvals.onMessage(ROOM, "!reject").handled, true);
+	assert.equal(t.approvals.onMessage({ roomId: ROOM, body: "!reject" }).handled, true);
 	assert.deepEqual(await decided(older.outcome), { approved: false, reason: "rejected" });
 	assert.equal(await isSettled(newer.outcome), false);
 });
 
 test("a command with nothing open is answered and decides nothing", () => {
 	using t = setup();
-	assert.equal(t.approvals.onMessage(ROOM, "!approve").handled, true);
+	assert.equal(t.approvals.onMessage({ roomId: ROOM, body: "!approve" }).handled, true);
 });
 
 test("saying something else instead of answering is a no for what waits in that room, and the message is passed on", async () => {
@@ -140,7 +140,7 @@ test("saying something else instead of answering is a no for what waits in that 
 	const here = await t.ask();
 	const elsewhere = await t.ask({ roomId: "!b:example.org" });
 
-	assert.equal(t.approvals.onMessage(ROOM, "いや、17時にして").handled, false);
+	assert.equal(t.approvals.onMessage({ roomId: ROOM, body: "いや、17時にして" }).handled, false);
 	assert.deepEqual(await decided(here.outcome), { approved: false, reason: "message" });
 	assert.equal(await isSettled(elsewhere.outcome), false);
 });
@@ -174,10 +174,10 @@ test("approve_always lets the tool through in every room and run, until it is re
 	await decided(first.outcome);
 
 	assert.deepEqual(await decided(t.approvals.ask(t.request({ roomId: "!b:example.org", runKey: "run-9" }))), { approved: true, by: "rule" });
-	const listed = t.approvals.onMessage(ROOM, "!approvals");
-	assert.ok(listed.handled && listed.reply.includes("calendar_delete"));
+	const listed = t.approvals.onMessage({ roomId: ROOM, body: "!approvals" });
+	assert.ok(listed.handled && listed.reply?.includes("calendar_delete"));
 
-	t.approvals.onMessage(ROOM, "!revoke calendar_delete");
+	t.approvals.onMessage({ roomId: ROOM, body: "!revoke calendar_delete" });
 	const after = await t.ask({ runKey: "run-10" });
 	assert.equal(await isSettled(after.outcome), false);
 });

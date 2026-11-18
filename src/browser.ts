@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { type BrowserContext, chromium, type Page } from "playwright-core";
+import { HIDDEN } from "./credentials.ts";
 
 /** What an element is, as far as typing a secret into it is concerned. */
 export type FieldInfo = {
@@ -50,7 +51,6 @@ export type BrowserOptions = {
 
 type Profile = { readonly context: BrowserContext; readonly pages: Map<number, Page>; lastUsed: number };
 
-const HIDDEN = "［伏せ字］";
 
 /** A snapshot line of a text box that has a value: everything up to the value, and the ref. */
 const VALUED_TEXTBOX = /^(\s*- textbox\b.*\[ref=(\w+)\](?: \[[^\]]*\])*): .+$/;

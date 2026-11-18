@@ -16,14 +16,6 @@ export type CodeRequestsOptions = {
 /** What counts as a code without being a reply to the request: one word of letters, digits and hyphens. */
 const CODE = /^[A-Za-z0-9-]{4,12}$/;
 
-/** A reply's body may start with the quoted message it answers; the code is what follows. */
-function withoutQuote(body: string): string {
-	const lines = body.split("\n");
-	let start = 0;
-	while (start < lines.length && lines[start]?.startsWith(">")) start++;
-	return start === 0 ? body : lines.slice(start).join("\n");
-}
-
 type Pending = { promptEventId?: string; readonly settle: (outcome: CodeOutcome) => void };
 
 /**
@@ -48,36 +40,29 @@ export class CodeRequests implements MessageHandler {
 	ask(roomId: string, key: string, what: string, signal?: AbortSignal): Promise<CodeOutcome> {
 		// Only one request per room: the newest is what the user is looking at.
 		this.#pending.get(roomId)?.settle({ ok: false, reason: "message" });
-		return new Promise<CodeOutcome>((resolve) => {
-			let timer: NodeJS.Timeout | undefined;
-			const settle = (outcome: CodeOutcome) => {
-				if (this.#pending.get(roomId) === pending) this.#pending.delete(roomId);
-				clearTimeout(timer);
-				signal?.removeEventListener("abort", abort);
-				resolve(outcome);
-			};
-			const abort = () => settle({ ok: false, reason: "aborted" });
-			const pending: Pending = { settle };
-			this.#pending.set(roomId, pending);
-			timer = setTimeout(() => settle({ ok: false, reason: "timeout" }), this.#timeoutMs);
-			signal?.addEventListener("abort", abort, { once: true });
-			if (signal?.aborted === true) return abort();
-			const body = [
-				`${what}`,
-				"この発言に返信してコードを送ってください（英数字とハイフンだけの発言でも受け付けます）。ほかの発言を送ると中止します。",
-			].join("\n");
-			this.#options.notice(roomId, `code:${key}`, body).then(
-				(eventId) => (pending.promptEventId = eventId),
-				// Without the notice the user does not know to send anything.
-				() => settle({ ok: false, reason: "aborted" }),
-			);
+		const { promise, resolve } = Promise.withResolvers<CodeOutcome>();
+		const pending: Pending = { settle: resolve };
+		this.#pending.set(roomId, pending);
+		const ended = AbortSignal.any([AbortSignal.timeout(this.#timeoutMs), ...(signal === undefined ? [] : [signal])]);
+		const end = () => resolve({ ok: false, reason: signal?.aborted === true ? "aborted" : "timeout" });
+		if (ended.aborted) end();
+		else ended.addEventListener("abort", end, { once: true });
+		const body = `${what}\nこの発言に返信してコードを送ってください（英数字とハイフンだけの発言でも受け付けます）。ほかの発言を送ると中止します。`;
+		this.#options.notice(roomId, `code:${key}`, body).then(
+			(eventId) => (pending.promptEventId = eventId),
+			// Without the notice the user does not know to send anything.
+			() => resolve({ ok: false, reason: "aborted" }),
+		);
+		return promise.finally(() => {
+			ended.removeEventListener("abort", end);
+			if (this.#pending.get(roomId) === pending) this.#pending.delete(roomId);
 		});
 	}
 
 	onMessage(message: { readonly roomId: string; readonly body: string; readonly replyTo?: string }): Handled {
 		const pending = this.#pending.get(message.roomId);
 		if (pending === undefined) return { handled: false };
-		const text = withoutQuote(message.body).trim();
+		const text = message.body.trim();
 		const reply = message.replyTo !== undefined && message.replyTo === pending.promptEventId;
 		if ((reply && text !== "") || CODE.test(text)) {
 			// Codes shown in groups ("123 456") are typed without the spaces.

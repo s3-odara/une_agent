@@ -1,11 +1,12 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeFileAtomic } from "./files.ts";
 
 export type Credential = { readonly username: string; readonly password: string };
 
 /** A credentials file that cannot be used. Its message never contains a secret. */
 export class CredentialError extends Error {}
 
-const HIDDEN = "［伏せ字］";
+export const HIDDEN = "［伏せ字］";
 
 /**
  * Site passwords, kept in a plain JSON file a person edits by hand:
@@ -43,9 +44,9 @@ export class Credentials {
 		return parsed as Record<string, unknown>;
 	}
 
-	#load(): Map<string, Credential> {
+	#load(raw = this.#raw()): Map<string, Credential> {
 		const found = new Map<string, Credential>();
-		for (const [site, value] of Object.entries(this.#raw())) {
+		for (const [site, value] of Object.entries(raw)) {
 			let origin: string;
 			try {
 				origin = new URL(site).origin;
@@ -66,23 +67,25 @@ export class Credentials {
 	 * cannot be read is left alone rather than overwritten. Resolves with whether one was replaced.
 	 */
 	set(origin: string, credential: Credential): boolean {
-		this.#load();
-		const raw = this.#raw();
-		const replaced = this.#keysOf(raw, origin);
-		for (const key of replaced) delete raw[key];
+		const { raw, removed } = this.#without(origin);
 		raw[origin] = { username: credential.username, password: credential.password };
 		this.#write(raw);
-		return replaced.length > 0;
+		return removed;
 	}
 
-	/** Removes the credential of `origin`. Resolves with whether there was one. */
 	remove(origin: string): boolean {
-		this.#load();
+		const { raw, removed } = this.#without(origin);
+		if (removed) this.#write(raw);
+		return removed;
+	}
+
+	/** The file without `origin`, whatever key it was written under; a file that cannot be read is an error. */
+	#without(origin: string): { raw: Record<string, unknown>; removed: boolean } {
 		const raw = this.#raw();
-		const keys = this.#keysOf(raw, origin);
+		this.#load(raw);
+		const keys = Object.keys(raw).filter((key) => URL.parse(key)?.origin === origin);
 		for (const key of keys) delete raw[key];
-		if (keys.length > 0) this.#write(raw);
-		return keys.length > 0;
+		return { raw, removed: keys.length > 0 };
 	}
 
 	/** The usernames by origin. Not secret: the user is shown them with `!cred list`. */
@@ -90,21 +93,8 @@ export class Credentials {
 		return [...this.#load()].map(([origin, credential]): [string, string] => [origin, credential.username]).sort(([a], [b]) => a.localeCompare(b));
 	}
 
-	#keysOf(raw: Record<string, unknown>, origin: string): string[] {
-		return Object.keys(raw).filter((key) => {
-			try {
-				return new URL(key).origin === origin;
-			} catch {
-				return false;
-			}
-		});
-	}
-
-	/** Written whole to a file beside it and moved over it, so a crash never leaves half a file. */
 	#write(raw: Record<string, unknown>): void {
-		const temporary = `${this.#path}.${process.pid}.tmp`;
-		writeFileSync(temporary, `${JSON.stringify(raw, null, "\t")}\n`, { mode: 0o600 });
-		renameSync(temporary, this.#path);
+		writeFileAtomic(this.#path, `${JSON.stringify(raw, null, "\t")}\n`, 0o600);
 	}
 
 	/** The origins that have a credential. Not secret: the model is told where it can log in. */
@@ -118,13 +108,13 @@ export class Credentials {
 	}
 
 	/** The text with every stored password replaced. A page may echo what was typed into it. */
-	scrub(text: string): string {
+	scrub(text: string, ...others: string[]): string {
 		let clean = text;
 		let passwords: string[];
 		try {
-			passwords = [...this.#load().values()].map((credential) => credential.password);
+			passwords = [...[...this.#load().values()].map((credential) => credential.password), ...others.filter((other) => other !== "")];
 		} catch {
-			return clean;
+			passwords = others.filter((other) => other !== "");
 		}
 		// Longest first, so a password that contains another is removed whole.
 		for (const password of passwords.sort((a, b) => b.length - a.length)) clean = clean.replaceAll(password, HIDDEN);

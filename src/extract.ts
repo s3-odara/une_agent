@@ -4,6 +4,7 @@ import { type Browser, chromium } from "playwright-core";
 import { settle } from "./browser.ts";
 import { EgressError, type EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
+import { httpUrl } from "./urls.ts";
 
 /** A page read as text. */
 export type ReadPage = {
@@ -47,7 +48,8 @@ const source = (module: string) => readFileSync(require.resolve(module), "utf8")
  * page's `module` or `exports`, if it has any, are not used. The page's scripts can still change what this reads, as
  * they can change the page itself; they cannot reach anything outside the page.
  */
-const EXTRACT = `(() => {
+let extractScript: string | undefined;
+const extract = () => (extractScript ??= `(() => {
 const Readability = (() => { const module = { exports: {} }; ${source("@mozilla/readability/Readability.js")}
 ; return module.exports; })();
 const TurndownService = (() => { const module = { exports: {} }; const exports = module.exports; ${source("turndown/lib/turndown.browser.umd.js")}
@@ -84,7 +86,7 @@ const body = document.body === null ? document.createElement("body") : document.
 // Readability makes links absolute; the whole page has to be done here.
 for (const link of body.querySelectorAll("a[href]")) link.setAttribute("href", link.href);
 return { title, markdown: turndown.turndown(body), scope: "page" };
-})()`;
+})()`);
 
 /** Blank lines run together and trailing spaces dropped: the shape of the text, without what costs only tokens. */
 function tidy(markdown: string): string {
@@ -147,8 +149,12 @@ export class PlaywrightReader implements PageReader {
 	}
 
 	async read(url: string, signal?: AbortSignal): Promise<ReadPage> {
-		const target = new URL(url);
-		if (target.protocol !== "http:" && target.protocol !== "https:") throw new ReadError("読めるのは http と https の URL だけです。");
+		let target: URL;
+		try {
+			target = httpUrl(url);
+		} catch (error) {
+			throw new ReadError(errorMessage(error));
+		}
 		// The proxy refuses it anyway; asking first gives the reason instead of a browser error.
 		try {
 			await this.#options.egress.resolve(target.hostname, Number(target.port || (target.protocol === "https:" ? 443 : 80)));
@@ -187,7 +193,7 @@ export class PlaywrightReader implements PageReader {
 				return { url: page.url(), title: "", markdown: tidy(await page.locator("body").innerText()), scope: "page", ...status };
 			}
 			if (!type.includes("html")) throw new ReadError(`HTML とテキスト以外は読めません（${type.split(";")[0]}）。`);
-			const extracted = (await page.evaluate(EXTRACT)) as { title: string; markdown: string; scope: "article" | "page" };
+			const extracted = (await page.evaluate(extract())) as { title: string; markdown: string; scope: "article" | "page" };
 			return { url: page.url(), title: extracted.title.trim(), markdown: tidy(extracted.markdown), scope: extracted.scope, ...status };
 		} catch (error) {
 			if (error instanceof ReadError) throw error;

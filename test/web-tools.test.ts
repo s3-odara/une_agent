@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
 import { test } from "node:test";
-import { UNTRUSTED } from "../src/browser-tools.ts";
+import { UNTRUSTED } from "../src/untrusted.ts";
 import { type PageReader, type ReadPage, ReadError } from "../src/extract.ts";
 import { createWebExtension } from "../src/web-tools.ts";
 import { agentEnv } from "./env.ts";
@@ -31,7 +30,7 @@ const LINES = Array.from({ length: 40 }, (_, i) => `${String(i).padStart(2, "0")
 async function setup(pages: Record<string, ReadPage | Error>) {
 	const reader = new FakeReader(pages);
 	const env = await agentEnv({
-		extensions: ({ config }) => [createWebExtension({ reader, dir: join(config.dataDir, "web"), maxChars: 200 })],
+		extensions: () => [createWebExtension({ reader, maxChars: 200 })],
 	});
 	const bridge = env.bridge();
 	const results: ToolResult[] = [];

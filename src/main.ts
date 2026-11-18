@@ -70,17 +70,7 @@ const browsers =
 				timezone: config.timezone,
 				idleMs: config.browser.idleMinutes * 60_000,
 			});
-// Pages read with web_extract open in a browser of their own, whose connections can reach only public addresses.
-const egress = config.web === undefined ? undefined : await EgressProxy.start();
-const reader =
-	egress === undefined
-		? undefined
-		: new PlaywrightReader({
-				egress,
-				timezone: config.timezone,
-				executablePath: config.browser?.executablePath,
-				idleMs: (config.browser?.idleMinutes ?? 10) * 60_000,
-			});
+const web = config.web === undefined ? undefined : await startWeb(config.web.maxChars);
 // The bridge is made after the harness, which needs the tools; approvals reach it once it exists.
 let bridge: Bridge | undefined;
 const viaBridge = () => bridge ?? fail("the bridge is not running yet");
@@ -108,11 +98,11 @@ const extensions = [
 					screenshots: { send: (roomId, txnId, image) => viaBridge().sendImage(roomId, txnId, image), dir: join(config.dataDir, "browser-shots") },
 				}),
 			]),
-	...(reader === undefined || config.web === undefined ? [] : [createWebExtension({ reader, dir: join(config.dataDir, "web"), maxChars: config.web.maxChars })]),
+	...(web === undefined ? [] : [web.extension]),
 ];
 
 const registry = createRegistry();
-const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), createAgentModels(), context, extensions, undefined, registry);
+const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), createAgentModels(), context, { extensions, registry });
 // Their tools are installed when each server answers; the agent does not wait for them.
 const mcp = new McpServers({
 	registry,
@@ -133,7 +123,7 @@ const voice =
 		: { transcriber, ...(synthesizer === undefined ? {} : { synthesizer }), outDir: join(config.dataDir, "voice", "out") };
 
 const gateway = spawnGateway(config.gatewayBin, ["run", "--config", configPath]);
-bridge = new Bridge({ harness, db, link: gateway, config, context, voice, approvals, handlers: [new CredentialCommands(credentials), codes] });
+bridge = new Bridge({ harness, db, link: gateway, config, context, voice, handlers: [new CredentialCommands(credentials), codes, approvals] });
 bridge.start();
 if (config.voice?.call !== undefined && transcriber !== undefined && synthesizer !== undefined) {
 	new Calls({
@@ -169,8 +159,7 @@ async function shutdown(exitCode: number): Promise<void> {
 	gateway.stop();
 	transcriber?.close();
 	await browsers?.close();
-	await reader?.close();
-	await egress?.close();
+	await web?.close();
 	await mcp.close();
 	await harness.close(context);
 	db.close();
@@ -193,6 +182,19 @@ gateway.exited.then(
 		void shutdown(1);
 	},
 );
+
+/** `web_extract`, reading pages in a browser of its own whose connections reach only public addresses. */
+async function startWeb(maxChars: number) {
+	const egress = await EgressProxy.start();
+	const reader = new PlaywrightReader({ egress, timezone: config.timezone, executablePath: config.browser?.executablePath, idleMs: (config.browser?.idleMinutes ?? 10) * 60_000 });
+	return {
+		extension: createWebExtension({ reader, maxChars }),
+		close: async () => {
+			await reader.close();
+			await egress.close();
+		},
+	};
+}
 
 function fail(message: string): never {
 	throw new Error(message);
