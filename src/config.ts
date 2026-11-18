@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { CalendarConfig } from "./calendar.ts";
 import type { CallVad } from "./gateway.ts";
 import { isTimeZone, parseClock } from "./time.ts";
@@ -191,9 +191,9 @@ function voice(value: unknown, baseDir: string): Config["voice"] {
 	const stt = object(root.stt ?? {}, "voice.stt");
 	return {
 		stt: {
-			server: resolve(baseDir, str(stt.server ?? "stt/whisper.cpp/build/bin/whisper-server", "voice.stt.server")),
-			model: resolve(baseDir, str(stt.model ?? "stt/models/ggml-large-v3-turbo-q8_0.bin", "voice.stt.model")),
-			vadModel: resolve(baseDir, str(stt.vadModel ?? "stt/models/ggml-silero-v5.1.2.bin", "voice.stt.vadModel")),
+			server: resolve(baseDir, str(stt.server ?? PARTS.whisperServer, "voice.stt.server")),
+			model: resolve(baseDir, str(stt.model ?? join(PARTS.sttModels, "ggml-large-v3-turbo-q8_0.bin"), "voice.stt.model")),
+			vadModel: resolve(baseDir, str(stt.vadModel ?? join(PARTS.sttModels, "ggml-silero-v5.1.2.bin"), "voice.stt.vadModel")),
 			threads: limit(stt.threads, 6, "voice.stt.threads"),
 			beamSize: limit(stt.beamSize, 5, "voice.stt.beamSize"),
 			language: str(stt.language ?? "ja", "voice.stt.language"),
@@ -307,6 +307,16 @@ function personas(value: unknown): Record<string, Persona> {
 	return out;
 }
 
+/**
+ * Where the parts the agent runs are, when the config does not say. The packaged agent (`nix build`) sets these to its
+ * own parts; in a source checkout they are the build outputs under the repository, relative to the config file.
+ */
+const PARTS = {
+	gatewayBin: process.env.AGENT_GATEWAY_BIN ?? "gateway/target/release/matrix-gateway",
+	whisperServer: process.env.AGENT_WHISPER_SERVER ?? "stt/whisper.cpp/build/bin/whisper-server",
+	sttModels: process.env.AGENT_STT_MODELS ?? "stt/models",
+};
+
 export function parseConfig(raw: unknown, baseDir: string): Config {
 	if (typeof raw !== "object" || raw === null) fail("must be a JSON object");
 	const root = raw as Record<string, unknown>;
@@ -327,7 +337,7 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 	return {
 		baseDir,
 		dataDir: resolve(baseDir, str(root.dataDir ?? "data", "dataDir")),
-		gatewayBin: resolve(baseDir, str(root.gatewayBin ?? "gateway/target/release/matrix-gateway", "gatewayBin")),
+		gatewayBin: resolve(baseDir, str(root.gatewayBin ?? PARTS.gatewayBin, "gatewayBin")),
 		matrix: {
 			homeserver: str(matrix.homeserver, "matrix.homeserver"),
 			userId: str(matrix.userId, "matrix.userId"),

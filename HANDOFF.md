@@ -67,12 +67,14 @@ Matrix のテキスト bot と durable な会話。2プロセス構成。
 
 1. `cp config.example.json config.json` して homeserver、bot のユーザー ID、`allowedUsers` を書く
 2. `cp .env.example .env` して `ANTHROPIC_API_KEY` を書く
-3. `npm install`、`npm run build:gateway`
-4. `npm run login`（パスワードは入力するか `MATRIX_PASSWORD` で渡す）
+3. `nix develop`（または direnv）で開発用シェルに入り、`npm install`
+4. `just login`（パスワードは入力するか `MATRIX_PASSWORD` で渡す）
    - 新規アカウントならリカバリーキーが表示されるので控える
-   - 既にリカバリー設定済みのアカウントなら `--recovery-key` を付けるか、
+   - 既にリカバリー設定済みのアカウントなら `just login --recovery-key '<key>'` とするか、
      後から `gateway/target/release/matrix-gateway recover --recovery-key '<key>'`
-5. `npm start`。Element で暗号化ルームを作り、bot を招待して話しかける
+5. `just run`。Element で暗号化ルームを作り、bot を招待して話しかける
+
+常駐させるときの手順は「Nix と just」の節。
 
 状態は `data/` に入る（`session.sqlite` 会話、`host.sqlite` ルームと配送の台帳、
 `matrix-store/` 暗号ストア、`matrix-session.json`、`gateway-state.json`）。消すときは `data/` ごと消す。
@@ -214,11 +216,11 @@ Web ブラウザ。`config.json` に `browser` があれば有効になる。`sr
 
 ### 準備
 
-1. `npm run browser-install`（Playwright 1.64.1 に対応する Chromium を取得）
-2. Chromium が要るシステムライブラリを入れる（`npx playwright-core install-deps chromium` は root が必要。
-   Gentoo などでは nss、nspr、atk、libX11 系、mesa(gbm)、alsa-lib、libxkbcommon、at-spi2 を個別に入れる）
-3. 二段階認証などエージェントにできないログインは、画面のある環境で
-   `npm run browser-login -- https://example.com` を実行して手で済ませる（エージェント停止中に）
+1. Chromium は nixpkgs の `playwright-driver.browsers`（Playwright 1.64.1 に対応）を使う。開発用シェルと
+   パッケージがどちらも `PLAYWRIGHT_BROWSERS_PATH` をそこに向けるので、取得もシステムライブラリも要らない
+2. 二段階認証などエージェントにできないログインは、画面のある環境で
+   `just browser-login https://example.com`（常駐中のものは `just deployed-browser-login https://example.com`、
+   エージェントを止めて開き、閉じたら起動し直す）で手で済ませる
 
 ### 検証の範囲
 
@@ -249,12 +251,10 @@ Web ブラウザ。`config.json` に `browser` があれば有効になる。`sr
 
 ### 準備
 
-1. ffmpeg を入れる（libopus 対応のもの）
-2. `npm run stt-install`（`stt/install.sh`: whisper.cpp を固定したコミットで `stt/whisper.cpp/` に取得して Vulkan つきで
-   ビルドし、モデル2つをハッシュを照合して `stt/models/` に取得、約0.9GB）。Vulkan のヘッダー、ローダー、glslc（shaderc）、
-   SPIRV-Headers が要る。CPU だけなら `VULKAN=0`。プロセス数に上限がある環境ではシェーダー生成の fork が失敗するので `JOBS=4` などで減らす
-3. VOICEVOX Engine を起動しておく（既定 `http://127.0.0.1:50021`。CPU 版なら `./run --cpu_num_threads 6` など）。
-   公開して使うならキャラクターごとのクレジット表記などの利用規約に従う
+1. ffmpeg、whisper-server、モデル2つ（約0.9GB）は Nix が用意する（`nix/whisper-server.nix`、`nix/stt-models.nix`。
+   whisper.cpp は測定したコミットに固定、モデルはハッシュ照合）。`just run` とパッケージはこれらを使う
+2. VOICEVOX Engine を起動しておく（既定 `http://127.0.0.1:50021`）。常駐させるなら `voicevox.service` が nixpkgs の
+   VOICEVOX Engine を起動する。公開して使うならキャラクターごとのクレジット表記などの利用規約に従う
 
 ### STT のベンチマーク（2026-11-17、このホスト: Ryzen 7 PRO 8840HS、物理6コアに固定）
 
@@ -346,6 +346,43 @@ large-v3 の q8_0 は配布されていないので、f16 版から `whisper-qua
 - 同じルームで複数の許可ユーザーが同時に話す場合（発話はそれぞれ別に会話に入る）
 - 通話の参加者の期限切れ（ブラウザが落ちたまま）: tuwunel が遅延イベント（MSC4140）に対応していないと、期限（既定4時間）まで
   参加中とみなされ bot も残る
+
+## Nix と just（2026-11-18）
+
+動かす先は Ubuntu 26.04 LTS の VM（GPU は Vulkan と virtio native context で使える）。NixOS ではないので、
+Nix はビルドと開発環境に使い、常駐は systemd のユーザーサービスにする。入口は `justfile`（`just` で一覧）。
+
+- `flake.nix` のパッケージ
+  - `agent`: TypeScript をそのまま Node 26 で動かすラッパー。gateway、whisper-server、モデル、ffmpeg、Chromium の
+    場所を環境変数（`AGENT_GATEWAY_BIN`、`AGENT_WHISPER_SERVER`、`AGENT_STT_MODELS`、`PLAYWRIGHT_BROWSERS_PATH`）で
+    渡す。config に書けばそちらが優先。ソースから動かすときは従来どおりリポジトリ内の場所
+  - `gateway`: crane でビルド。webrtc-sys はビルド中に libwebrtc をダウンロードするので、`nix/libwebrtc.nix` で
+    先に取得して `LK_CUSTOM_WEBRTC` で渡す（タグは Cargo.lock の webrtc-sys-build の `WEBRTC_TAG`。上げるときは一緒に）。
+    libwebrtc は Chromium の libc++ 向けなので C++ は clang 21 以上でないとビルドが止まる（開発用シェルも clang の環境）
+  - `whisper-server`: 測定したコミットの whisper.cpp を Vulkan つきで。CPU 向けコードは世代別に作って起動時に選ぶ
+    （ビルドしたマシンに依存しない）。GPU は nixpkgs の Mesa（`-Damdgpu-virtio=true` でビルドされ、AMD の native
+    context に対応）を使い、ホストの Ubuntu のドライバーと暗黙レイヤーは読まない
+  - `stt-models`、`voicevox-engine`（nixpkgs の 0.25.2。音声を測ったのは 0.26.2）、`units`（systemd ユニット）、
+    `vulkan-check`
+- VOICEVOX が使う onnxruntime は nixpkgs では unfree 扱い（VOICEVOX 独自の利用規約）。flake は名前が `voicevox` で
+  始まるものだけ許可している
+- 開発: `nix develop`（direnv なら `.envrc`）で Node、Rust、clang、ffmpeg、Radicale、just が入る。
+  `just check`、`just test-caldav`（Radicale を立てて CalDAV テスト）、`just test-stt 録音:… 台本:…`、`just run`
+- 常駐（Ubuntu の VM で、初回）:
+  1. `just setup`（linger を有効にし、`~/.config/agent/` に config・人格・秘密情報の雛形を置く）
+  2. `~/.config/agent/config.json` と `~/.config/agent/env`（`ANTHROPIC_API_KEY`、`CALDAV_PASSWORD` など）を書く
+  3. `just deployed-login`
+  4. `just vulkan` で GPU が見えるか確かめる（`AMD …（RADV …）` が出ればよい。llvmpipe だけなら CPU で動く）
+  5. `just install`。更新は `git pull` してもう一度 `just install`。ログは `just logs`
+- 確認済み（Gentoo のこのマシン）
+  - 全パッケージのビルド。whisper-server を使った STT の統合テスト（録音3本と台本で4件とも通過）
+  - Nix の Mesa 経由で Radeon 780M（RADV）が見えること（GPU を直接持つマシンで。VM ではない）
+  - `agent` パッケージを、Node も cargo も ffmpeg も PATH に無い環境で起動し、ローカルの tuwunel に gateway が
+    つながること
+  - nixpkgs の VOICEVOX Engine 0.25.2 で合成し、`ffmpeg-headless` で Ogg Opus と 48kHz WAV にできること
+  - 開発用シェルでの `just check`（Node 187件、gateway 13件）と `just test-caldav`（Radicale 3.9.0 で7件）
+- 未確認: Ubuntu の VM での一連の手順（`just setup` から `just install` まで、systemd のユーザーサービス、linger）、
+  virtio native context での GPU、常駐させた状態で実際に会話・音声・通話をすること
 
 ## テストの方針（2026-11-18）
 

@@ -1,0 +1,49 @@
+# The agent: its TypeScript as Node runs it (no build step), the runtime dependencies, and a wrapper that points the
+# config's defaults at the gateway, the speech recognizer and its models built here.
+{
+  lib,
+  buildNpmPackage,
+  nodejs_26,
+  makeWrapper,
+  ffmpeg-headless,
+  playwright-driver,
+  gateway,
+  whisper-server,
+  stt-models,
+}:
+buildNpmPackage {
+  pname = "agent";
+  version = "0.1.0";
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../package.json
+      ../package-lock.json
+      ../src
+    ];
+  };
+  nodejs = nodejs_26;
+  npmDepsHash = "sha256-1fJ1VIAPuUQiPwIZi2dB4ewKcko638Ag/E/dnP74x+g=";
+  dontNpmBuild = true;
+  nativeBuildInputs = [ makeWrapper ];
+  installPhase = ''
+    runHook preInstall
+    npm prune --omit=dev --no-save
+    mkdir -p $out/lib/agent $out/bin
+    cp -r package.json src node_modules $out/lib/agent/
+    for entry in agent:main.ts agent-browser-login:browser-login.ts; do
+      makeWrapper ${lib.getExe nodejs_26} $out/bin/''${entry%%:*} \
+        --add-flags $out/lib/agent/src/''${entry#*:} \
+        --set-default AGENT_GATEWAY_BIN ${lib.getExe gateway} \
+        --set-default AGENT_WHISPER_SERVER ${lib.getExe whisper-server} \
+        --set-default AGENT_STT_MODELS ${stt-models} \
+        --set-default PLAYWRIGHT_BROWSERS_PATH ${playwright-driver.browsers} \
+        --prefix PATH : ${lib.makeBinPath [ ffmpeg-headless ]}
+    done
+    runHook postInstall
+  '';
+  meta = {
+    description = "A personal agent on Matrix";
+    mainProgram = "agent";
+  };
+}

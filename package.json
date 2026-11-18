@@ -5,16 +5,6 @@
 	"engines": {
 		"node": ">=22.19.0"
 	},
-	"scripts": {
-		"start": "node --env-file-if-exists=.env src/main.ts",
-		"build:gateway": "cargo build --release --manifest-path gateway/Cargo.toml",
-		"login": "cargo run --release --manifest-path gateway/Cargo.toml -- login",
-		"typecheck": "tsc --noEmit",
-		"test": "node --test --test-timeout=60000 \"test/**/*.test.ts\"",
-		"browser-login": "node --env-file-if-exists=.env src/browser-login.ts",
-		"browser-install": "playwright-core install chromium",
-		"stt-install": "sh stt/install.sh"
-	},
 	"dependencies": {
 		"@earendil-works/chord": "1.5.2",
 		"@earendil-works/pi-ai": "1.5.2",

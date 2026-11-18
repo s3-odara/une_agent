@@ -1,6 +1,6 @@
-// Runs the real whisper-server when `sh stt/install.sh` has built it, on recordings named by the environment:
+// Runs the real whisper-server, built by nix, on recordings named by the environment:
 //
-//   STT_TEST_AUDIO=~/a.ogg:~/b.ogg STT_TEST_TEXT=~/a.txt:~/b.txt node --test test/stt.integration.test.ts
+//   just test-stt ~/a.ogg:~/b.ogg ~/a.txt:~/b.txt
 //
 // Without them only the tests that need no recording run.
 import assert from "node:assert/strict";
@@ -11,10 +11,12 @@ import { WhisperServer, type WhisperServerOptions } from "../src/stt.ts";
 import { tempDir } from "./env.ts";
 
 const root = resolve(import.meta.dirname, "..");
+// Where `just test-stt` puts what nix built, as the packaged agent does.
+const models = process.env.AGENT_STT_MODELS ?? join(root, "stt/models");
 const built: Omit<WhisperServerOptions, "socketPath"> = {
-	server: join(root, "stt/whisper.cpp/build/bin/whisper-server"),
-	model: join(root, "stt/models/ggml-large-v3-turbo-q8_0.bin"),
-	vadModel: join(root, "stt/models/ggml-silero-v5.1.2.bin"),
+	server: process.env.AGENT_WHISPER_SERVER ?? join(root, "stt/whisper.cpp/build/bin/whisper-server"),
+	model: join(models, "ggml-large-v3-turbo-q8_0.bin"),
+	vadModel: join(models, "ggml-silero-v5.1.2.bin"),
 	threads: 6,
 	beamSize: 5,
 	language: "ja",

@@ -155,7 +155,7 @@ gateway.exited.then(
 	},
 	(error) => {
 		console.error(`gateway could not be started (${config.gatewayBin}): ${errorMessage(error)}`);
-		console.error("build it with: npm run build:gateway");
+		console.error("build it with: just gateway (or run the packaged agent: nix run)");
 		void shutdown(1);
 	},
 );
