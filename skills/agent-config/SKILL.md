@@ -10,6 +10,7 @@ description: このエージェントの設定（人格、ルームの人格、�
 ## 構成
 
 - Matrix の bot。ルームごとに会話が分かれ、ルームごとに人格が決まる。bot のアカウントは1つ
+- 2つのプロセス: Matrix とやり取りするゲートウェイ（Rust）と、このエージェント（Node、pi-durable）
 - 常駐しているときは systemd のユーザーサービス `agent.service`。ログは `journalctl --user -u agent.service`。
   `agent_restart` で起動し直すのは常駐しているときだけで、それ以外（`just run`）では止まったままになる
 - `!` で始まるコマンド（会話のやり直し、承認、認証情報の登録など）はモデルに届かない。ユーザーは `!help` で一覧を見られる
