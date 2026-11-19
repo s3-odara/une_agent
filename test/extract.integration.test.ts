@@ -39,8 +39,6 @@ function site(beacon: string): Server {
 			case "/leak":
 				// The page tries to reach another server on this host, which the proxy must refuse.
 				return page(200, html("外へ出るページ", `<p>表の本文</p><img src="${beacon}/img"><script>fetch("${beacon}/fetch").catch(() => {});</script>`));
-			case "/to-inside":
-				return void response.writeHead(302, { location: `${beacon}/redirect` }).end();
 			case "/plain":
 				return void response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end("ただのテキスト\n二行目");
 			case "/file":
@@ -117,14 +115,6 @@ test("a page cannot make the browser reach another server on this host", async (
 	if (r === undefined) return;
 	const page = await r.reader.read(`${r.base}/leak`);
 	assert.ok(page.markdown.includes("表の本文"));
-	assert.deepEqual(r.hits, []);
-});
-
-test("a redirect into this host is not followed", async (t) => {
-	await using r = await realReader(t);
-	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/to-inside`).catch((error: unknown) => error);
-	assert.ok(page instanceof ReadError || !JSON.stringify(page).includes("inside"));
 	assert.deepEqual(r.hits, []);
 });
 

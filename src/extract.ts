@@ -4,7 +4,7 @@ import type { Browser } from "playwright-core";
 import { settle } from "./browser.ts";
 import { EgressError, type EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
-import { launchSandboxed } from "./sandbox.ts";
+import { IdleChromium, launchSandboxed } from "./sandbox.ts";
 import { httpUrl } from "./urls.ts";
 
 export type ReadPage = {
@@ -96,35 +96,12 @@ function tidy(markdown: string): string {
 export class PlaywrightReader implements PageReader {
 	readonly #options: PlaywrightReaderOptions;
 	readonly #timeoutMs: number;
-	#browser: Promise<Browser> | undefined;
-	#lastUsed = 0;
-	#busy = 0;
-	readonly #reaper: NodeJS.Timeout;
+	readonly #chromium: IdleChromium<Browser>;
 
 	constructor(options: PlaywrightReaderOptions) {
 		this.#options = options;
 		this.#timeoutMs = options.timeoutMs ?? 45_000;
-		this.#reaper = setInterval(() => void this.#closeIdle(), 60_000);
-		this.#reaper.unref();
-	}
-
-	#launch(): Promise<Browser> {
-		if (this.#browser === undefined) {
-			const launching = launchSandboxed({ proxy: this.#options.egress.url, executablePath: this.#options.executablePath });
-			this.#browser = launching;
-			const forget = () => {
-				if (this.#browser === launching) this.#browser = undefined;
-			};
-			launching.then((browser) => browser.on("disconnected", forget), forget);
-		}
-		return this.#browser;
-	}
-
-	async #closeIdle(): Promise<void> {
-		const pending = this.#browser;
-		if (pending === undefined || this.#busy > 0 || Date.now() - this.#lastUsed <= this.#options.idleMs) return;
-		this.#browser = undefined;
-		await (await pending.catch(() => undefined))?.close().catch(() => {});
+		this.#chromium = new IdleChromium((onClosed) => launchSandboxed({ proxy: options.egress.url, executablePath: options.executablePath }, onClosed), options.idleMs);
 	}
 
 	async read(url: string, signal?: AbortSignal): Promise<ReadPage> {
@@ -142,9 +119,8 @@ export class PlaywrightReader implements PageReader {
 			throw error;
 		}
 
-		this.#busy++;
-		this.#lastUsed = Date.now();
-		const browser = await this.#launch();
+		// Not kept from closing for idleness while it reads: a read ends within its timeout, well under the shortest idle time.
+		const browser = await this.#chromium.get();
 		const context = await browser.newContext({
 			locale: "ja-JP",
 			timezoneId: this.#options.timezone,
@@ -182,16 +158,11 @@ export class PlaywrightReader implements PageReader {
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", stop);
 			stop();
-			this.#busy--;
-			this.#lastUsed = Date.now();
 		}
 	}
 
-	async close(): Promise<void> {
-		clearInterval(this.#reaper);
-		const pending = this.#browser;
-		this.#browser = undefined;
-		await (await pending?.catch(() => undefined))?.close().catch(() => {});
+	close(): Promise<void> {
+		return this.#chromium.close();
 	}
 }
 

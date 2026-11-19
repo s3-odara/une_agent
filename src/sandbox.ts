@@ -77,11 +77,14 @@ function chromiumHome(): { readonly path: string; remove(): void } {
 }
 
 /** A sandboxed Chromium whose contexts start empty each time, with no profile on disk. */
-export async function launchSandboxed(sandbox: ChromiumSandbox): Promise<Browser> {
+export async function launchSandboxed(sandbox: ChromiumSandbox, onClosed: () => void = () => {}): Promise<Browser> {
 	const home = chromiumHome();
 	try {
 		const browser = await chromium.launch(sandboxedChromium({ ...sandbox, home: home.path }));
-		browser.on("disconnected", home.remove);
+		browser.on("disconnected", () => {
+			home.remove();
+			onClosed();
+		});
 		return browser;
 	} catch (error) {
 		home.remove();
@@ -92,14 +95,59 @@ export async function launchSandboxed(sandbox: ChromiumSandbox): Promise<Browser
 type ContextOptions = Pick<NonNullable<Parameters<typeof chromium.launchPersistentContext>[1]>, "viewport" | "locale" | "timezoneId">;
 
 /** A sandboxed Chromium on the profile in `dir`, which it may write. */
-export async function launchPersistentSandboxed(dir: string, sandbox: ChromiumSandbox, options: ContextOptions): Promise<BrowserContext> {
+export async function launchPersistentSandboxed(dir: string, sandbox: ChromiumSandbox, options: ContextOptions, onClosed: () => void = () => {}): Promise<BrowserContext> {
 	const home = chromiumHome();
 	try {
 		const context = await chromium.launchPersistentContext(dir, { ...sandboxedChromium({ ...sandbox, home: home.path }), ...options });
-		context.on("close", home.remove);
+		context.on("close", () => {
+			home.remove();
+			onClosed();
+		});
 		return context;
 	} catch (error) {
 		home.remove();
 		throw error;
+	}
+}
+
+/**
+ * A Chromium launched at its first use and closed once unused for `idleMs`, so the agent does not keep one running
+ * around the clock. One that failed to launch, died or was closed by hand is launched again at the next use.
+ */
+export class IdleChromium<T extends { close(): Promise<void> }> {
+	readonly #launch: (onClosed: () => void) => Promise<T>;
+	readonly #reaper: NodeJS.Timeout;
+	#pending: Promise<T> | undefined;
+	#lastUsed = 0;
+
+	constructor(launch: (onClosed: () => void) => Promise<T>, idleMs: number) {
+		this.#launch = launch;
+		this.#reaper = setInterval(() => {
+			if (Date.now() - this.#lastUsed > idleMs) void this.#closePending();
+		}, 60_000).unref();
+	}
+
+	get(): Promise<T> {
+		this.#lastUsed = Date.now();
+		if (this.#pending === undefined) {
+			const forget = () => {
+				if (this.#pending === launching) this.#pending = undefined;
+			};
+			const launching = this.#launch(forget);
+			this.#pending = launching;
+			launching.catch(forget);
+		}
+		return this.#pending;
+	}
+
+	async #closePending(): Promise<void> {
+		const pending = this.#pending;
+		this.#pending = undefined;
+		await (await pending?.catch(() => undefined))?.close().catch(() => {});
+	}
+
+	close(): Promise<void> {
+		clearInterval(this.#reaper);
+		return this.#closePending();
 	}
 }

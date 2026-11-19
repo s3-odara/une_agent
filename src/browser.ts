@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 import { HIDDEN } from "./credentials.ts";
 import type { EgressProxy } from "./egress.ts";
-import { launchPersistentSandboxed } from "./sandbox.ts";
+import { IdleChromium, launchPersistentSandboxed } from "./sandbox.ts";
 
 export type FieldInfo = {
 	readonly kind: string;
@@ -42,8 +42,7 @@ export type BrowserOptions = {
 	readonly idleMs: number;
 };
 
-type Profile = { readonly context: BrowserContext; readonly pages: Map<number, Page>; lastUsed: number };
-
+type Profile = { readonly chromium: IdleChromium<BrowserContext>; readonly pages: Map<number, Page> };
 
 const VALUED_TEXTBOX = /^(\s*- textbox\b.*\[ref=(\w+)\](?: \[[^\]]*\])*): .+$/;
 
@@ -81,66 +80,45 @@ export async function settle(page: Page): Promise<void> {
 	await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
 }
 
-/** Profiles are closed when idle so the agent does not keep a browser running around the clock. */
 export class PlaywrightBrowsers implements Browsers {
 	readonly #options: BrowserOptions;
-	readonly #profiles = new Map<string, Promise<Profile>>();
-	readonly #reaper: NodeJS.Timeout;
+	readonly #profiles = new Map<string, Profile>();
 
 	constructor(options: BrowserOptions) {
 		this.#options = options;
-		this.#reaper = setInterval(() => void this.#closeIdle(), 60_000);
-		this.#reaper.unref();
 	}
 
-	async #launch(name: string): Promise<Profile> {
-		const dir = join(this.#options.dir, name);
-		mkdirSync(dir, { recursive: true });
-		const context = await launchPersistentSandboxed(
-			dir,
-			{ proxy: this.#options.egress.url, executablePath: this.#options.executablePath },
-			{ viewport: { width: 1280, height: 800 }, locale: "ja-JP", timezoneId: this.#options.timezone },
-		);
-		context.setDefaultTimeout(15_000);
-		context.setDefaultNavigationTimeout(30_000);
-		return { context, pages: new Map(), lastUsed: Date.now() };
-	}
-
-	#profile(name: string): Promise<Profile> {
+	#profile(name: string): Profile {
 		let profile = this.#profiles.get(name);
 		if (profile === undefined) {
-			const launching = this.#launch(name);
-			profile = launching;
-			this.#profiles.set(name, launching);
-			const forget = () => {
-				if (this.#profiles.get(name) === launching) this.#profiles.delete(name);
-			};
-			// A launch that failed, or a browser that died or was closed by hand: the next use launches it again.
-			launching.then((launched) => launched.context.on("close", forget), forget);
+			const { dir, egress, executablePath, timezone, idleMs } = this.#options;
+			const chromium = new IdleChromium(async (onClosed) => {
+				mkdirSync(join(dir, name), { recursive: true });
+				const context = await launchPersistentSandboxed(
+					join(dir, name),
+					{ proxy: egress.url, executablePath },
+					{ viewport: { width: 1280, height: 800 }, locale: "ja-JP", timezoneId: timezone },
+					onClosed,
+				);
+				context.setDefaultTimeout(15_000);
+				context.setDefaultNavigationTimeout(30_000);
+				return context;
+			}, idleMs);
+			profile = { chromium, pages: new Map() };
+			this.#profiles.set(name, profile);
 		}
 		return profile;
 	}
 
-	async #closeIdle(): Promise<void> {
-		for (const [name, pending] of this.#profiles) {
-			const profile = await pending.catch(() => undefined);
-			if (profile !== undefined && Date.now() - profile.lastUsed > this.#options.idleMs) {
-				this.#profiles.delete(name);
-				await profile.context.close().catch(() => {});
-			}
-		}
-	}
-
 	async page(profileName: string, conversationId: number): Promise<BrowserPage> {
-		const profile = await this.#profile(profileName);
-		profile.lastUsed = Date.now();
+		const profile = this.#profile(profileName);
 		const current = async (): Promise<Page> => {
+			const context = await profile.chromium.get();
 			let page = profile.pages.get(conversationId);
 			if (page === undefined || page.isClosed()) {
-				page = await profile.context.newPage();
+				page = await context.newPage();
 				this.#follow(profile, conversationId, page);
 			}
-			profile.lastUsed = Date.now();
 			return page;
 		};
 
@@ -189,9 +167,8 @@ export class PlaywrightBrowsers implements Browsers {
 	}
 
 	async close(): Promise<void> {
-		clearInterval(this.#reaper);
 		const profiles = [...this.#profiles.values()];
 		this.#profiles.clear();
-		await Promise.all(profiles.map(async (pending) => (await pending.catch(() => undefined))?.context.close().catch(() => {})));
+		await Promise.all(profiles.map((profile) => profile.chromium.close()));
 	}
 }
