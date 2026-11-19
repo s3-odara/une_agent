@@ -50,6 +50,10 @@ export class HostDb {
 				reply_event_id TEXT,
 				voice INTEGER NOT NULL DEFAULT 0
 			);
+			CREATE TABLE IF NOT EXISTS answers (
+				answer INTEGER PRIMARY KEY,
+				event_id TEXT NOT NULL
+			);
 			CREATE TABLE IF NOT EXISTS notified (
 				key TEXT PRIMARY KEY,
 				at INTEGER NOT NULL
@@ -108,8 +112,18 @@ export class HostDb {
 			.run(delivery.eventId, delivery.roomId, delivery.submissionId, delivery.voice === true ? 1 : 0);
 	}
 
-	markDelivered(eventId: string, replyEventId: string): void {
-		this.#db.prepare("UPDATE deliveries SET delivered = 1, reply_event_id = ? WHERE event_id = ?").run(replyEventId, eventId);
+	/**
+	 * Messages that joined one run all settle with its answer; the first to claim it sends it, the others send nothing.
+	 * Returns the event ID of the message that sends it.
+	 */
+	claimAnswer(answer: number, eventId: string): string {
+		this.#db.prepare("INSERT OR IGNORE INTO answers (answer, event_id) VALUES (?, ?)").run(answer, eventId);
+		return String(this.#db.prepare("SELECT event_id FROM answers WHERE answer = ?").get(answer)?.event_id);
+	}
+
+	/** Without a reply event when nothing was sent. */
+	markDelivered(eventId: string, replyEventId?: string): void {
+		this.#db.prepare("UPDATE deliveries SET delivered = 1, reply_event_id = ? WHERE event_id = ?").run(replyEventId ?? null, eventId);
 	}
 
 	hasDelivery(eventId: string): boolean {

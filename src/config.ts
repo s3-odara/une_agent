@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { MODEL_THINKING_LEVELS, type ModelThinkingLevel } from "@earendil-works/pi-ai/providers/model-schema";
 import { dirname, join, resolve } from "node:path";
 import type { CalendarConfig } from "./calendar.ts";
 import type { CallVad } from "./gateway.ts";
@@ -15,6 +16,7 @@ export type Config = {
 		readonly allowedUsers: readonly string[];
 	};
 	readonly model: ModelRef;
+	readonly thinking: ModelThinkingLevel;
 	readonly personas: Readonly<Record<string, Persona>>;
 	readonly defaultPersona: string;
 	readonly rooms: Readonly<Record<string, string>>;
@@ -102,6 +104,7 @@ export type Persona = {
 	readonly soul: string;
 	readonly privateMemory: boolean;
 	readonly model?: ModelRef;
+	readonly thinking?: ModelThinkingLevel;
 	/** Decides whose cookies and logins the persona has. */
 	readonly browserProfile: string;
 	readonly voice?: number;
@@ -130,6 +133,11 @@ function modelRef(value: unknown, name: string): ModelRef {
 	const text = value as string;
 	if (slash <= 0 || slash === text.length - 1) fail(`${name} must be "provider/model", such as "anthropic/claude-fable-5-2"`);
 	return { provider: text.slice(0, slash), modelId: text.slice(slash + 1) };
+}
+
+function thinking(value: unknown, name: string): ModelThinkingLevel {
+	if (!(MODEL_THINKING_LEVELS as readonly unknown[]).includes(value)) fail(`${name} must be one of ${MODEL_THINKING_LEVELS.join(", ")}`);
+	return value as ModelThinkingLevel;
 }
 
 function limit(value: unknown, fallback: number, name: string): number {
@@ -319,6 +327,7 @@ function personas(value: unknown): Record<string, Persona> {
 			browserProfile: profileName(persona.browserProfile ?? "default", `personas.${name}.browserProfile`),
 			...(persona.voice === undefined ? {} : { voice: nonNegativeInteger(persona.voice, `personas.${name}.voice`) }),
 			...(persona.model === undefined ? {} : { model: modelRef(persona.model, `personas.${name}.model`) }),
+			...(persona.thinking === undefined ? {} : { thinking: thinking(persona.thinking, `personas.${name}.thinking`) }),
 		};
 	}
 	return out;
@@ -362,6 +371,7 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 			allowedUsers: allowed.map((user, i) => str(user, `matrix.allowedUsers[${i}]`)),
 		},
 		model: modelRef(root.model ?? fail("model is required"), "model"),
+		thinking: thinking(root.thinking ?? "off", "thinking"),
 		personas: definedPersonas,
 		defaultPersona,
 		rooms,
@@ -394,6 +404,10 @@ export function personaFor(config: Config, roomId: string): string {
 
 export function modelFor(config: Config, name: string): ModelRef {
 	return persona(config, name).model ?? config.model;
+}
+
+export function thinkingFor(config: Config, name: string): ModelThinkingLevel {
+	return persona(config, name).thinking ?? config.thinking;
 }
 
 export function persona(config: Config, name: string): Persona {

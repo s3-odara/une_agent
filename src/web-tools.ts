@@ -3,6 +3,7 @@ import { int, obj, opt, str } from "@earendil-works/pi-schema";
 import type { PageReader, ReadPage } from "./extract.ts";
 import { UNTRUSTED } from "./untrusted.ts";
 import { httpUrl } from "./urls.ts";
+import { onCharacter } from "./text.ts";
 
 export type WebToolsOptions = {
 	readonly reader: PageReader;
@@ -15,12 +16,6 @@ const KEEP_PAGES = 20;
 const MAX_STORED = 500_000;
 
 type Kept = ReadPage & { readonly at: number };
-
-/** So a cut never splits a surrogate pair. */
-function onCharacter(text: string, index: number): number {
-	const code = text.charCodeAt(index - 1);
-	return index > 0 && index < text.length && code >= 0xd800 && code <= 0xdbff ? index - 1 : index;
-}
 
 /** It only reads, so it is rerun after a crash, and works in runs the scheduler started too. */
 export function createWebExtension(options: WebToolsOptions) {

@@ -40,10 +40,13 @@
 
 - `model`: 全人格の既定のモデル。`"プロバイダー/モデル"`。プロバイダーは `anthropic`（`ANTHROPIC_API_KEY`）、
   `openai-codex`（ChatGPT のログイン）、`openrouter`（`OPENROUTER_API_KEY`、`openrouter/anthropic/claude-fable-5.2` のように書く）
+- `thinking`: 思考の深さ。`off`（既定）、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。深いほど遅く、高くつく。
+  思考は返答の前の途中経過の通知に表示される
 - `personas`: 人格の名前 → 設定。値は SOUL ファイルのパスだけでもよい
   - `soul`: SOUL ファイル（設定ファイルからの相対パス）
   - `privateMemory`: その人格だけの専用メモを持つか
   - `model`: その人格だけ別のモデルにする
+  - `thinking`: その人格だけ思考の深さを変える
   - `browserProfile`: ブラウザの cookie とログインをどれと共有するか（既定 `default`）
   - `voice`: 読み上げの声（VOICEVOX のスタイル ID）
 - `defaultPersona`: `rooms` に無いルームの人格

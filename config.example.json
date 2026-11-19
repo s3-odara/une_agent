@@ -6,6 +6,7 @@
 		"allowedUsers": ["@you:example.org"]
 	},
 	"model": "anthropic/claude-fable-5-2",
+	"thinking": "medium",
 	"personas": {
 		"default": { "soul": "personas/default.md", "privateMemory": false, "browserProfile": "default", "voice": 2 }
 	},

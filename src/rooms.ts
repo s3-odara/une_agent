@@ -1,12 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
-import type { Conversation, Harness } from "@earendil-works/pi-durable";
-import { type Answer, answerOf } from "./answer.ts";
+import { type Conversation, type Harness, LiveDoc } from "@earendil-works/pi-durable";
+import { type Answer, answerOf, type Settled, type Submission } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
-import { type Config, modelFor, persona, personaFor, readSoul } from "./config.ts";
+import { type Config, modelFor, persona, personaFor, readSoul, thinkingFor } from "./config.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
 import { type Delivery, type HostDb, SCHEDULED_PREFIX } from "./hostdb.ts";
+import { ProgressReport } from "./progress.ts";
 import type { Transcriber } from "./stt.ts";
 import { formatStamp } from "./time.ts";
 import { type Synthesizer, toSpeech } from "./tts.ts";
@@ -29,6 +31,8 @@ export type BridgeOptions = {
 	/** After the last, the answer waits for the next start. */
 	readonly sendRetryDelaysMs?: readonly number[];
 	readonly sendTimeoutMs?: number;
+	/** The least time between two edits of a run's progress notice. */
+	readonly progressIntervalMs?: number;
 	readonly log?: (message: string) => void;
 	readonly voice?: VoiceOptions;
 	readonly handlers?: readonly MessageHandler[];
@@ -177,7 +181,9 @@ export class Bridge {
 	async #submit(roomId: string, key: string, content: string, voice = false): Promise<void> {
 		const { db, context } = this.#options;
 		const conversation = await this.#conversationFor(roomId);
-		const submission = await conversation.submit({ type: "input", content, requestId: key }, context);
+		// A brief or a reminder waits for the work in progress instead of steering it.
+		const whenBusy = key.startsWith(SCHEDULED_PREFIX) ? "followUp" : "steer";
+		const submission = await conversation.submit({ type: "input", content, requestId: key, whenBusy }, context);
 		const delivery: Delivery = { eventId: key, roomId, submissionId: Number(submission.id), voice };
 		db.addDelivery(delivery);
 		this.#startDelivery(delivery);
@@ -197,7 +203,9 @@ export class Bridge {
 	 */
 	async ask(roomId: string, key: string, content: string): Promise<Answer> {
 		const { harness, context } = this.#options;
-		const submission = await this.#serial(roomId, async () => (await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key }, context));
+		const submission = await this.#serial(roomId, async () =>
+			(await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key, whenBusy: "steer" }, context),
+		);
 		return answerOf(harness, await submission.wait(context), context);
 	}
 
@@ -274,18 +282,24 @@ export class Bridge {
 		const { harness, config, context, db } = this.#options;
 		const name = personaFor(config, roomId);
 		const model = modelFor(config, name);
+		const thinkingLevel = thinkingFor(config, name);
 		const instructions = readSoul(config, name);
 
 		const existing = await this.#existingConversation(roomId);
 		if (existing !== undefined) {
 			// The persona file and the model may have changed since the conversation last ran.
 			const agent = await existing.agent(context);
-			if (agent.instructions !== instructions || agent.model?.provider !== model.provider || agent.model.modelId !== model.modelId) {
-				await existing.configure({ model, instructions }, context);
+			if (
+				agent.instructions !== instructions ||
+				agent.model?.provider !== model.provider ||
+				agent.model.modelId !== model.modelId ||
+				agent.thinkingLevel !== thinkingLevel
+			) {
+				await existing.configure({ model, thinkingLevel, instructions }, context);
 			}
 			return existing;
 		}
-		const created = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, instructions } }, context);
+		const created = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, thinkingLevel, instructions } }, context);
 		db.setConversation(roomId, Number(created.id));
 		return created;
 	}
@@ -310,6 +324,7 @@ export class Bridge {
 	async #deliver(delivery: Delivery): Promise<void> {
 		const { db } = this.#options;
 		const answer = await this.#answerOf(delivery);
+		if (answer === undefined) return void db.markDelivered(delivery.eventId);
 		const replyEventId = await this.#retrying(`the answer to ${delivery.eventId}`, () =>
 			this.#send(delivery.roomId, `reply:${delivery.eventId}`, answer.body, answer.notice),
 		);
@@ -362,21 +377,55 @@ export class Bridge {
 		}
 	}
 
-	async #answerOf(delivery: Delivery): Promise<{ body: string; notice: boolean }> {
+	/** Undefined when nothing is to be sent: the run was stopped by `!new`, or another message of the same run answers. */
+	async #answerOf(delivery: Delivery): Promise<{ body: string; notice: boolean } | undefined> {
 		const { harness, context } = this.#options;
 		const submission = await harness.submission(idFromNumber<SubmissionId>(delivery.submissionId), context);
 		if (submission === undefined) return { body: "この発言の記録が見つからず、応答できませんでした。", notice: true };
 
-		const answer = await answerOf(harness, await submission.wait(context), context);
+		const report = await this.#progress(delivery, submission);
+		const settled = await submission.wait(context);
+		const [answer] = await Promise.all([answerOf(harness, settled, context), report?.finish(settled)]);
+		if ((!answer.ok && answer.stopped) || !(await this.#answers(delivery, settled))) return undefined;
 		if (answer.ok) return { body: answer.text, notice: false };
 		if (answer.reason === "empty answer") return { body: "（空の応答でした）", notice: true };
-		if (answer.stopped) return { body: "（中断しました）", notice: true };
 		return { body: `応答できませんでした（${answer.reason}）`, notice: true };
 	}
 
-	#send(roomId: string, txnId: string, body: string, notice: boolean): Promise<string> {
+	/** Whether this message, of all that joined its run, is the one that answers it. */
+	async #answers(delivery: Delivery, settled: Settled): Promise<boolean> {
+		if (settled.type === "input" && settled.status === "done") return this.#options.db.claimAnswer(Number(settled.answer), delivery.eventId) === delivery.eventId;
+		const { harness, context, db } = this.#options;
+		const conversationId = db.conversationOf(delivery.roomId);
+		const failure = conversationId === undefined ? undefined : (await harness.snapshot(LiveDoc, idFromNumber<ConversationId>(conversationId), context))?.runFailure;
+		// Once the next run has started the failure is gone, and each of its messages tells it: twice rather than never.
+		const inputs = (failure?.inputs ?? []).map(Number);
+		return !inputs.includes(delivery.submissionId) || inputs[0] === delivery.submissionId;
+	}
+
+	/** Scheduled runs write a brief or a reminder, whose steps the user did not ask to watch. */
+	async #progress(delivery: Delivery, submission: Submission): Promise<ProgressReport | undefined> {
+		if (!this.#options.db.isUserSubmission(delivery.submissionId)) return undefined;
+		const conversation = await this.#existingConversation(delivery.roomId);
+		if (conversation === undefined) return undefined;
+		const report = new ProgressReport({
+			conversation,
+			submission,
+			// The first send is keyed to the message, so after a restart the run goes on in the same notice. Edits need no
+			// such key: an edit sent twice shows the same thing.
+			send: (body, replaces) =>
+				this.#send(delivery.roomId, replaces === undefined ? `progress:${delivery.eventId}` : `progress:${delivery.eventId}:${randomUUID()}`, body, true, replaces),
+			intervalMs: this.#options.progressIntervalMs ?? 2_000,
+			context: this.#options.context,
+			log: this.#log,
+		});
+		await report.start();
+		return report;
+	}
+
+	#send(roomId: string, txnId: string, body: string, notice: boolean, replaces?: string): Promise<string> {
 		// The transaction ID doubles as the request ID: one send per ID is in flight at a time.
-		return this.#request({ type: "send", requestId: txnId, roomId, txnId, body, notice });
+		return this.#request({ type: "send", requestId: txnId, roomId, txnId, body, notice, ...(replaces === undefined ? {} : { replaces }) });
 	}
 
 	#request(command: Extract<GatewayCommand, { requestId: string }>): Promise<string> {

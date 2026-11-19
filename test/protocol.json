@@ -126,6 +126,15 @@
 			"notice": true
 		},
 		{
+			"type": "send",
+			"requestId": "q",
+			"roomId": "!r:example.org",
+			"txnId": "t",
+			"body": "hello again",
+			"notice": true,
+			"replaces": "$p"
+		},
+		{
 			"type": "sendVoice",
 			"requestId": "q",
 			"roomId": "!r:example.org",

@@ -85,6 +85,8 @@ export function openAgentHarness(
 			now: options.now,
 			env: options.env,
 			identity: { attribution: null },
+			// Messages sent while the agent works join that work, and those sent during one tool round join together.
+			settings: { steeringMode: "all" },
 			onReport: (report) => console.error(`harness report: ${report.kind}`, report.error),
 		},
 		context,

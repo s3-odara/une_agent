@@ -37,7 +37,10 @@ export const events: Examples<GatewayEvent> = {
 
 export const commands: Examples<GatewayCommand> = {
 	ack: [{ type: "ack", eventId: "$e" }],
-	send: [{ type: "send", requestId: "q", roomId: room, txnId: "t", body: "hello", notice: true }],
+	send: [
+		{ type: "send", requestId: "q", roomId: room, txnId: "t", body: "hello", notice: true },
+		{ type: "send", requestId: "q", roomId: room, txnId: "t", body: "hello again", notice: true, replaces: "$p" },
+	],
 	sendVoice: [{ type: "sendVoice", requestId: "q", roomId: room, txnId: "t", path: "/d/v.ogg", durationMs: 1500, waveform: [0.5, 0.25] }],
 	sendImage: [{ type: "sendImage", requestId: "q", roomId: room, txnId: "t", path: "/d/s.png", name: "screenshot.png", width: 1280, height: 800 }],
 	typing: [{ type: "typing", roomId: room, on: true }],

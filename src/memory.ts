@@ -4,6 +4,7 @@ import { defineExtension, defineTool, section } from "@earendil-works/pi-durable
 import { obj, oneOf, str } from "@earendil-works/pi-schema";
 import { dateOf } from "./time.ts";
 import { writeFileAtomic } from "./files.ts";
+import { oneLine } from "./text.ts";
 
 export type MemoryScope = "shared" | "private";
 
@@ -19,10 +20,6 @@ const TAG = / \(\d{4}-\d{2}-\d{2}\)$/;
 
 export function withoutTag(entry: string): string {
 	return entry.replace(TAG, "");
-}
-
-function oneLine(text: string): string {
-	return text.replace(/\s+/g, " ").trim();
 }
 
 function render(entries: readonly string[]): string {

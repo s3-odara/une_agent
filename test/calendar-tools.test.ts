@@ -187,10 +187,10 @@ test("an approval can be given by command, which does not reach the model", asyn
 	assert.doesNotMatch(lastInput(requests[0]!), /!approve/);
 });
 
-test("writing something else instead of answering is a no, and what was written goes to the model next", async () => {
+test("writing something else instead of answering is a no, and what was written reaches the model with the refusal", async () => {
 	await using t = await setup();
 	const requests: Request[] = [];
-	t.env.faux.setResponses([call("calendar_update", { id: DENTIST, start: "2026-11-18T16:00" }), t.noting, answer("17時にしますね。", requests)]);
+	t.env.faux.setResponses([call("calendar_update", { id: DENTIST, start: "2026-11-18T16:00" }), noting(t.results, requests)]);
 	t.write("歯医者を16時に");
 	await t.request();
 	t.write("いや、17時にして");

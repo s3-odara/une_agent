@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+import { obj } from "@earendil-works/pi-schema";
 import { CodeRequests } from "../src/codes.ts";
 import type { MessageHandler } from "../src/rooms.ts";
 import { agentEnv } from "./env.ts";
-import { answer, everything, instructionsOf, lastInput, message, type Request } from "./fakes.ts";
+import { answer, call, everything, instructionsOf, lastInput, message, type Request } from "./fakes.ts";
 
 const ROOM = "!a:example.org";
 
@@ -157,7 +159,7 @@ test("!new in a room that has not talked yet starts it fresh all the same", asyn
 	assert.equal(env.link.of("send").filter((send) => send.notice).length, 1);
 });
 
-test("!new while an answer is being written stops it: the message gets a notice instead of an answer", async () => {
+test("!new while an answer is being written stops it, and nothing is sent for the stopped answer", async () => {
 	await using env = await agentEnv();
 	const { promise: writing, resolve: started } = Promise.withResolvers<void>();
 	env.faux.setResponses([
@@ -176,10 +178,7 @@ test("!new while an answer is being written stops it: the message gets a notice 
 
 	assert.deepEqual(
 		env.link.of("send").map((send) => [send.txnId, send.notice]),
-		[
-			["reply:$1", true],
-			["cmd:$2", true],
-		],
+		[["cmd:$2", true]],
 	);
 });
 
@@ -213,4 +212,116 @@ test("!help while a code is awaited leaves the request open for the code", async
 	await bridge.idle();
 
 	assert.deepEqual(await outcome, { ok: true, code: "123456" });
+});
+
+for (const { name, config, room, level } of [
+	{ name: "the default", config: { thinking: "high" }, room: ROOM, level: "high" },
+	{
+		name: "a persona's own over the default",
+		config: { thinking: "high", personas: { default: "soul.md", deep: { soul: "soul.md", thinking: "low" } }, rooms: { "!deep:example.org": "deep" } },
+		room: "!deep:example.org",
+		level: "low",
+	},
+]) {
+	test(`the thinking level the model is asked for is ${name}`, async () => {
+		await using env = await agentEnv({ config });
+		const asked: unknown[] = [];
+		env.faux.setResponses([
+			(_context, options) => {
+				asked.push(options?.reasoning);
+				return fauxAssistantMessage("ok");
+			},
+		]);
+		const bridge = env.bridge();
+
+		env.link.emit(message(room, "$1", "hi"));
+		await bridge.idle();
+
+		assert.deepEqual(asked, [level]);
+	});
+}
+
+/** A tool that runs until the test lets it finish, so messages can arrive while the agent works. */
+function gated() {
+	const { promise: running, resolve: started } = Promise.withResolvers<void>();
+	const { promise: released, resolve: release } = Promise.withResolvers<void>();
+	const extension = defineExtension({
+		name: "gate",
+		tools: [
+			defineTool({
+				name: "gate",
+				description: "Waits.",
+				parameters: obj({}),
+				execute: async () => {
+					started();
+					await released;
+					return { output: [{ type: "text" as const, text: "done" }] };
+				},
+			}),
+		],
+	});
+	return { extension, running, release };
+}
+
+test("a message sent while the agent works joins that work: the model sees it before answering, and one answer is sent", async () => {
+	const gate = gated();
+	await using env = await agentEnv({ extensions: () => [gate.extension] });
+	const requests: Request[] = [];
+	env.faux.setResponses([call("gate", {}), answer("両方に答えます", requests)]);
+	const bridge = env.bridge();
+
+	env.link.emit(message(ROOM, "$1", "first"));
+	await gate.running;
+	env.link.emit(message(ROOM, "$2", "second"));
+	await env.link.waitFor("ack", (ack) => ack.eventId === "$2");
+	gate.release();
+	await bridge.idle();
+
+	assert.match(lastInput(requests[0]!), /second$/);
+	assert.deepEqual(
+		env.link.of("send").filter((send) => !send.notice).map((send) => send.body),
+		["両方に答えます"],
+	);
+	assert.equal(env.faux.state.callCount, 2);
+});
+
+test("a run that a later message joined and that then failed is told once", async () => {
+	const gate = gated();
+	await using env = await agentEnv({ extensions: () => [gate.extension] });
+	env.faux.setResponses([
+		call("gate", {}),
+		() => {
+			throw new Error("the model is down");
+		},
+	]);
+	const bridge = env.bridge();
+
+	env.link.emit(message(ROOM, "$1", "first"));
+	await gate.running;
+	env.link.emit(message(ROOM, "$2", "second"));
+	await env.link.waitFor("ack", (ack) => ack.eventId === "$2");
+	gate.release();
+	await bridge.idle();
+
+	assert.equal(env.link.of("send").filter((send) => send.body.includes("the model is down")).length, 1);
+});
+
+test("a brief that comes while the agent works waits for that work and is answered on its own", async () => {
+	const gate = gated();
+	await using env = await agentEnv({ extensions: () => [gate.extension] });
+	const requests: Request[] = [];
+	env.faux.setResponses([call("gate", {}), answer("ユーザーへの答え", requests), answer("ブリーフ", requests)]);
+	const bridge = env.bridge();
+
+	env.link.emit(message(ROOM, "$1", "first"));
+	await gate.running;
+	await bridge.submitScheduled(ROOM, "brief:1", "[朝のブリーフ]");
+	gate.release();
+	await bridge.idle();
+
+	assert.doesNotMatch(lastInput(requests[0]!), /朝のブリーフ/);
+	assert.deepEqual(
+		env.link.of("send").filter((send) => !send.notice).map((send) => send.body),
+		["ユーザーへの答え", "ブリーフ"],
+	);
 });

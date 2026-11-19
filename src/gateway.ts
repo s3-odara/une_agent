@@ -71,6 +71,8 @@ export type GatewayCommand =
 			readonly body: string;
 			/** Sent as `m.notice` instead of `m.text`. */
 			readonly notice?: boolean;
+			/** Sent as an edit of this event. */
+			readonly replaces?: string;
 	  }
 	| {
 			/** `path` must be an Ogg Opus file. */

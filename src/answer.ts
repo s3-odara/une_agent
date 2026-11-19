@@ -1,8 +1,8 @@
 import type { Context } from "@earendil-works/chord/context";
 import { AssistantEntry, type Harness } from "@earendil-works/pi-durable";
 
-type Submission = NonNullable<Awaited<ReturnType<Harness["submission"]>>>;
-type Settled = Awaited<ReturnType<Submission["wait"]>>;
+export type Submission = NonNullable<Awaited<ReturnType<Harness["submission"]>>>;
+export type Settled = Awaited<ReturnType<Submission["wait"]>>;
 
 export type Answer = { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string; readonly stopped: boolean };
 

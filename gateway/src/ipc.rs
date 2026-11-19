@@ -69,6 +69,9 @@ pub enum Command {
         body: String,
         #[serde(default)]
         notice: bool,
+        /// Sent as an edit of this event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replaces: Option<String>,
     },
     SendVoice {
         request_id: String,

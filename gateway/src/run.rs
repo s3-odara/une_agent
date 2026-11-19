@@ -13,7 +13,7 @@ use matrix_sdk::ruma::events::reaction::{OriginalSyncReactionEvent, ReactionEven
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
 use matrix_sdk::ruma::events::room::message::{
-    AudioMessageEventContent, MessageType, OriginalSyncRoomMessageEvent, Relation, RoomMessageEventContent,
+    AudioMessageEventContent, MessageType, OriginalSyncRoomMessageEvent, Relation, ReplacementMetadata, RoomMessageEventContent,
 };
 use matrix_sdk::ruma::{EventId, OwnedTransactionId, OwnedUserId, RoomId, UInt};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomState};
@@ -269,9 +269,9 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                     shared.emit(Event::Error { request_id: None, message: format!("acking {event_id} failed: {error:#}") });
                 }
             }
-            Command::Send { request_id, room_id, txn_id, body, notice } => {
+            Command::Send { request_id, room_id, txn_id, body, notice, replaces } => {
                 let client = client.clone();
-                respond(&shared, request_id, async move { send(&client, &room_id, txn_id, body, notice).await });
+                respond(&shared, request_id, async move { send(&client, &room_id, txn_id, body, notice, replaces).await });
             }
             Command::SendVoice { request_id, room_id, txn_id, path, duration_ms, waveform } => {
                 let client = client.clone();
@@ -324,9 +324,13 @@ fn joined_room(client: &Client, room_id: &str) -> Result<Room> {
     Ok(room)
 }
 
-async fn send(client: &Client, room_id: &str, txn_id: String, body: String, notice: bool) -> Result<String> {
+async fn send(client: &Client, room_id: &str, txn_id: String, body: String, notice: bool, replaces: Option<String>) -> Result<String> {
     let room = joined_room(client, room_id)?;
-    let content = if notice { RoomMessageEventContent::notice_markdown(body) } else { RoomMessageEventContent::text_markdown(body) };
+    let mut content = if notice { RoomMessageEventContent::notice_markdown(body) } else { RoomMessageEventContent::text_markdown(body) };
+    if let Some(event_id) = replaces {
+        let event_id = <&EventId>::try_from(event_id.as_str()).with_context(|| format!("{event_id} is not an event ID"))?.to_owned();
+        content = content.make_replacement(ReplacementMetadata::new(event_id, None));
+    }
     let result = room.send(content).with_transaction_id(OwnedTransactionId::from(txn_id)).await?;
     Ok(result.response.event_id.to_string())
 }
