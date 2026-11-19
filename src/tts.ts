@@ -63,6 +63,23 @@ export class Voicevox implements Synthesizer {
 	}
 }
 
+export function writeWav(samples: Int16Array, sampleRate: number): Buffer {
+	const header = Buffer.alloc(44);
+	header.write("RIFF", 0, "ascii");
+	header.writeUInt32LE(36 + samples.byteLength, 4);
+	header.write("WAVEfmt ", 8, "ascii");
+	header.writeUInt32LE(16, 16);
+	header.writeUInt16LE(1, 20);
+	header.writeUInt16LE(1, 22);
+	header.writeUInt32LE(sampleRate, 24);
+	header.writeUInt32LE(sampleRate * 2, 28);
+	header.writeUInt16LE(2, 32);
+	header.writeUInt16LE(16, 34);
+	header.write("data", 36, "ascii");
+	header.writeUInt32LE(samples.byteLength, 40);
+	return Buffer.concat([header, Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)]);
+}
+
 export function readWav(wav: Buffer): { samples: Float32Array; sampleRate: number } {
 	if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") throw new Error("not a WAV file");
 	let channels = 1;

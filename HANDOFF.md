@@ -334,6 +334,15 @@ large-v3 の q8_0 は配布されていないので、f16 版から `whisper-qua
   （新しい版の組み合わせはコンパイルできなかった）
 - matrix-rust-rtc は AGPL-3.0（または Element の商用ライセンス）。これを含む gateway も AGPL の条件に従う
 
+### 聞き取りの効果音と、ルームへの文字起こし（2026-11-19）
+
+- 発言を文字にできたら（空でなければ）、通話に短い効果音（2音の上昇音。`src/chime.ts` がコードで作る）を流す。
+  返答の読み上げと同じ `callSpeak` の列に入るので、返答より先に鳴る。ユーザーが話し始めれば一緒に止まる。`voice.call.chime`（既定 true）
+- 文字起こし（`🎤 本文`）と返答の全文を、ルームに notice で書く（通知を鳴らさないため）。読み上げは `maxChars` で切れるが、
+  文字は全文。ユーザーが話し始めて読み上げなかった返答も書く。`voice.call.transcript`（既定 true）。
+  オンのときは、音声を作れなかった通知に返答を繰り返さない
+- 話した人は書いていない（許可ユーザーが1人の前提）
+
 ### 確認したこと
 
 手元に tuwunel 2.0.0、livekit-server 1.13.11、lk-jwt-service 0.10.0 を立て、matrix-rust-rtc の `interop_peer`（state events 形式、

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { Calls, OVERTAKEN } from "../src/call.ts";
 import type { GatewayEvent } from "../src/gateway.ts";
-import { type Synthesizer, sentences, toSpeech } from "../src/tts.ts";
+import { readWav, type Synthesizer, sentences, toSpeech } from "../src/tts.ts";
 import { agentEnv, ME } from "./env.ts";
 import { answer, lastInput, message, type Request } from "./fakes.ts";
 
@@ -24,9 +24,13 @@ class FakeSynthesizer implements Synthesizer {
 	}
 }
 
-async function setup() {
+async function setup(call: { chime?: boolean; transcript?: boolean } = {}) {
 	const env = await agentEnv({
-		config: { personas: { calm: { soul: "soul.md", voice: 8 } }, defaultPersona: "calm", voice: { stt: {}, tts: { speaker: 3 }, call: { vad: { endSilenceMs: 700 } } } },
+		config: {
+			personas: { calm: { soul: "soul.md", voice: 8 } },
+			defaultPersona: "calm",
+			voice: { stt: {}, tts: { speaker: 3 }, call: { chime: false, transcript: false, ...call, vad: { endSilenceMs: 700 } } },
+		},
 	});
 	const bridge = env.bridge();
 	const transcripts = new Map<string, string>();
@@ -42,7 +46,11 @@ async function setup() {
 		log: () => {},
 	});
 	calls.start();
-	env.link.speak = (command) => ({ type: "callSpoken", roomId: command.roomId, id: command.id, playedMs: 900, interrupted: false });
+	const played: Buffer[] = [];
+	env.link.speak = (command) => {
+		played.push(readFileSync(command.path));
+		return { type: "callSpoken", roomId: command.roomId, id: command.id, playedMs: 900, interrupted: false };
+	};
 	let n = 0;
 	const utterance = (text: string): Extract<GatewayEvent, { type: "callUtterance" }> => {
 		const path = join(env.dir, `call-${++n}.wav`);
@@ -58,6 +66,7 @@ async function setup() {
 		env,
 		link: env.link,
 		synthesizer,
+		played,
 		utterance,
 		settle,
 		inCall: () => {
@@ -95,7 +104,7 @@ test("what is said in a call goes to the room's conversation, marked as said in 
 	assert.match(lastInput(requests[0]!), /通話\] 明日の天気は？$/);
 });
 
-test("the answer is spoken a sentence at a time, in the persona's voice, and nothing is written to the room", async () => {
+test("the answer is spoken a sentence at a time, in the persona's voice; with transcripts off nothing is written to the room", async () => {
 	await using t = await setup();
 	const text = "**明日**は晴れです。傘はいりません。";
 	t.env.faux.setResponses([fauxAssistantMessage(text)]);
@@ -219,4 +228,69 @@ test("being put out of a call is told to the room, with why", async () => {
 	t.link.emit({ type: "callLeft", roomId: ROOM, reason: "joining the call: no LiveKit focus" });
 	await t.settle();
 	assert.match(t.link.bodyIn(ROOM), /no LiveKit focus/);
+});
+
+test("once an utterance is recognized, a chime plays in the call before the answer", async () => {
+	await using t = await setup({ chime: true });
+	t.env.faux.setResponses([fauxAssistantMessage("晴れです。")]);
+	t.inCall();
+	await t.say("明日の天気は？");
+
+	const [chime, ...speech] = t.played;
+	assert.equal(readWav(chime!).sampleRate, 48_000);
+	assert.deepEqual(
+		speech.map(String),
+		["RIFF 晴れです。"],
+	);
+});
+
+test("silence plays no chime", async () => {
+	await using t = await setup({ chime: true });
+	t.inCall();
+	await t.say("");
+	assert.deepEqual(t.link.of("callSpeak"), []);
+});
+
+test("what was heard and the answer are written to the room as notices, in that order", async () => {
+	await using t = await setup({ transcript: true });
+	t.env.faux.setResponses([fauxAssistantMessage("**明日**は晴れです。")]);
+	t.inCall();
+	await t.say("明日の天気は？");
+
+	const sends = t.link.of("send");
+	assert.ok(sends.every((send) => send.notice === true));
+	assert.deepEqual(
+		sends.map((send) => [send.body.includes("明日の天気は？"), send.body.includes("**明日**は晴れです。")]),
+		[
+			[true, false],
+			[false, true],
+		],
+	);
+});
+
+test("an answer overtaken by the user speaking again is still written to the room", async () => {
+	await using t = await setup({ transcript: true });
+	t.env.faux.setResponses([
+		() => {
+			t.link.emit({ type: "callSpeech", roomId: ROOM, userId: ME });
+			return fauxAssistantMessage("古い答えです。");
+		},
+	]);
+	t.inCall();
+	await t.say("最初の話");
+
+	assert.deepEqual(t.synthesizer.made, []);
+	assert.match(t.link.bodyIn(ROOM), /古い答えです。/);
+});
+
+test("when speech cannot be made and the answer is already written, the room is told why without the answer again", async () => {
+	await using t = await setup({ transcript: true });
+	t.synthesizer.fail = true;
+	t.env.faux.setResponses([fauxAssistantMessage("答えです。")]);
+	t.inCall();
+	await t.say("聞こえる？");
+
+	const bodies = t.link.of("send").map((send) => send.body);
+	assert.equal(bodies.filter((body) => body.includes("答えです。")).length, 1);
+	assert.ok(bodies.some((body) => body.includes("engine down")));
 });

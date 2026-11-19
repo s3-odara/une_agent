@@ -70,6 +70,8 @@ export type Config = {
 		};
 		readonly call?: {
 			readonly maxChars: number;
+			readonly chime: boolean;
+			readonly transcript: boolean;
 			readonly vad: CallVad;
 		};
 	};
@@ -146,6 +148,12 @@ function limit(value: unknown, fallback: number, name: string): number {
 	return value;
 }
 
+function flag(value: unknown, fallback: boolean, name: string): boolean {
+	if (value === undefined) return fallback;
+	if (typeof value !== "boolean") fail(`${name} must be true or false`);
+	return value;
+}
+
 function clock(value: unknown, fallback: string, name: string): number {
 	const minutes = parseClock(str(value ?? fallback, name));
 	return minutes ?? fail(`${name} must be a time of day such as "06:00"`);
@@ -166,9 +174,8 @@ function profileName(value: unknown, name: string): string {
 function browser(value: unknown): Config["browser"] {
 	if (value === undefined) return undefined;
 	const root = object(value, "browser");
-	if (root.headless !== undefined && typeof root.headless !== "boolean") fail("browser.headless must be true or false");
 	return {
-		headless: root.headless !== false,
+		headless: flag(root.headless, true, "browser.headless"),
 		...(root.executablePath === undefined ? {} : { executablePath: str(root.executablePath, "browser.executablePath") }),
 		idleMinutes: limit(root.idleMinutes, 10, "browser.idleMinutes"),
 	};
@@ -250,6 +257,8 @@ function call(value: unknown, hasTts: boolean): NonNullable<NonNullable<Config["
 	if (typeof threshold !== "number" || !(threshold > 0 && threshold < 1)) fail("voice.call.vad.threshold must be between 0 and 1");
 	return {
 		maxChars: limit(root.maxChars, 300, "voice.call.maxChars"),
+		chime: flag(root.chime, true, "voice.call.chime"),
+		transcript: flag(root.transcript, true, "voice.call.transcript"),
 		vad: {
 			threshold,
 			startMs: limit(vad.startMs, 208, "voice.call.vad.startMs"),
@@ -318,12 +327,9 @@ function personas(value: unknown): Record<string, Persona> {
 		}
 		if (typeof item !== "object" || item === null) fail(`personas.${name} must be a path or an object`);
 		const persona = item as Record<string, unknown>;
-		if (persona.privateMemory !== undefined && typeof persona.privateMemory !== "boolean") {
-			fail(`personas.${name}.privateMemory must be true or false`);
-		}
 		out[name] = {
 			soul: str(persona.soul, `personas.${name}.soul`),
-			privateMemory: persona.privateMemory === true,
+			privateMemory: flag(persona.privateMemory, false, `personas.${name}.privateMemory`),
 			browserProfile: profileName(persona.browserProfile ?? "default", `personas.${name}.browserProfile`),
 			...(persona.voice === undefined ? {} : { voice: nonNegativeInteger(persona.voice, `personas.${name}.voice`) }),
 			...(persona.model === undefined ? {} : { model: modelRef(persona.model, `personas.${name}.model`) }),

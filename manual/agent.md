@@ -53,6 +53,8 @@
 - `rooms`: ルーム ID → 人格の名前
 - ほかに `matrix`、`timezone`、`memory`（記憶の上限と整理の時刻）、`caldav`、`weather`、`browser`、`web`、`mcp`、
   `voice`、`proactive`（朝ブリーフとリマインドの送り先・時刻）がある。分からない項目は変えない
+- `voice.call.chime`: 通話で発言を聞き取れたときに効果音を鳴らすか（既定 `true`）
+- `voice.call.transcript`: 通話の文字起こしと返答をルームに notice で書くか（既定 `true`）
 
 ## よくある変更
 
