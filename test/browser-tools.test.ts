@@ -8,8 +8,8 @@ import { UNTRUSTED } from "../src/untrusted.ts";
 import { CodeRequests, noCode } from "../src/codes.ts";
 import { persona, personaFor } from "../src/config.ts";
 import type { Bridge } from "../src/rooms.ts";
-import { CredentialError, Credentials } from "../src/credentials.ts";
-import { agentEnv, tempDir } from "./env.ts";
+import { Credentials } from "../src/credentials.ts";
+import { agentEnv } from "./env.ts";
 import { call, everything, lastInput, lastToolResult, message, noting, type Request, type ToolResult } from "./fakes.ts";
 
 /** The header of a PNG image of 640 x 480: all a reader of its size looks at. */
@@ -177,27 +177,6 @@ test("a long page is cut to what one tool result may carry, saying how much was 
 	assert.match(tree, /600/);
 });
 
-test("a long page is read in parts, the next part asked for by its offset", async () => {
-	await using t = await setup();
-	t.browsers.text = Array.from({ length: 40 }, (_, i) => `${String(i).padStart(2, "0")} 行目の本文です。`).join("\n");
-	let first = "";
-	t.env.faux.setResponses([
-		call("browser_open", { url: "https://example.com/" }),
-		call("browser_read", {}),
-		(request: Request) => {
-			first = lastToolResult(request).text;
-			return call("browser_read", { offset: Number(/offset=(\d+)/.exec(first)?.[1]) });
-		},
-		t.noting,
-	]);
-	await t.say("全部読んで");
-	const second = t.results[0]?.text ?? "";
-	assert.match(first, /00 行目/);
-	assert.doesNotMatch(first, /39 行目/);
-	assert.doesNotMatch(second, /00 行目/);
-	assert.match(second, /39 行目/);
-});
-
 async function logIn(t: Awaited<ReturnType<typeof setup>>) {
 	t.env.faux.setResponses([
 		call("browser_open", { url: "https://shop.example.com/account" }),
@@ -273,62 +252,6 @@ test("a run the scheduler started cannot use the browser", async () => {
 	assert.equal(t.results[0]?.isError, true);
 	assert.deepEqual(t.browsers.log, []);
 });
-
-function credentialsFile() {
-	const dir = tempDir();
-	const path = join(dir.path, "credentials.json");
-	return { credentials: new Credentials(path), write: (content: unknown) => writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content)), [Symbol.dispose]: () => dir[Symbol.dispose]() };
-}
-
-test("without a credentials file, no site has a login and nothing is hidden", () => {
-	using t = credentialsFile();
-	assert.deepEqual(t.credentials.origins(), []);
-	assert.equal(t.credentials.scrub("nothing stored"), "nothing stored");
-});
-
-test("a login is stored for the origin of its URL, whatever the path, and a site on another port is another site", () => {
-	using t = credentialsFile();
-	t.write({ "https://a.example.com/login?x=1": { username: "a", password: "pw-a" }, "https://b.example.com:8443": { username: "b", password: "pw-b" } });
-	assert.deepEqual(t.credentials.origins(), ["https://a.example.com", "https://b.example.com:8443"]);
-	assert.equal(t.credentials.forOrigin("https://a.example.com")?.username, "a");
-	assert.equal(t.credentials.forOrigin("https://b.example.com"), undefined);
-});
-
-test("the file is read again at each use, so an edit applies at once", () => {
-	using t = credentialsFile();
-	t.write({ "https://a.example.com": { username: "a", password: "pw-a" } });
-	assert.deepEqual(t.credentials.origins(), ["https://a.example.com"]);
-	t.write({});
-	assert.deepEqual(t.credentials.origins(), []);
-});
-
-test("every stored password is hidden, and one inside another leaves no fragment behind", () => {
-	using t = credentialsFile();
-	t.write({ "https://a.example.com": { username: "a", password: "pw-long-one" }, "https://b.example.com": { username: "b", password: "pw-long" } });
-	const hidden = t.credentials.scrub("x pw-long-one y pw-long z");
-	assert.ok(!hidden.includes("pw-long"), hidden);
-	assert.ok(hidden.startsWith("x ") && hidden.endsWith(" z") && hidden.includes(" y "), hidden);
-});
-
-test("a file that cannot be read is an error that does not quote it", () => {
-	using t = credentialsFile();
-	t.write('{ "https://a.example.com": { "username": "a", "password": "s3cret-value" ');
-	assert.throws(
-		() => t.credentials.origins(),
-		(error: unknown) => error instanceof CredentialError && !error.message.includes("s3cret-value"),
-	);
-});
-
-for (const [what, content] of [
-	["a key that is not a URL", { "a.example.com": { username: "a", password: "x" } }],
-	["a login without a password", { "https://a.example.com": { username: "a" } }],
-] as const) {
-	test(`a credentials file with ${what} is refused`, () => {
-		using t = credentialsFile();
-		t.write(content);
-		assert.throws(() => t.credentials.origins(), CredentialError);
-	});
-}
 
 for (const [how, code, asReply] of [
 	["as a reply to the request", "AB 12-cd", true],

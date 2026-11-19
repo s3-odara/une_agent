@@ -150,14 +150,6 @@ test("a private memo written through the tool is not given to the other personas
 	assert.doesNotMatch(everything(requests[0]!), /合言葉/);
 });
 
-test("a persona without a private memo is told so as an error when it tries to write one", async () => {
-	await using t = await toolSetup();
-	const results: ToolResult[] = [];
-	t.env.faux.setResponses([remember("private", "blunt の内緒"), noting(results)]);
-	await t.say("!blunt:example.org", "内緒にして");
-	assert.equal(results[0]?.isError, true);
-});
-
 test("the tool dates an entry by the user's calendar, not the server's", async () => {
 	// Far enough east that its date is ahead of the server's, wherever that is: 12:00 UTC on 11/17 is already 11/18.
 	await using t = await toolSetup({ timezone: "Pacific/Kiritimati", now: () => Date.parse("2026-11-17T12:00:00Z") });

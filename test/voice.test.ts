@@ -10,7 +10,7 @@ import type { VoiceOptions } from "../src/rooms.ts";
 import type { Transcriber } from "../src/stt.ts";
 import { readWav, type Synthesizer, sentences, toSpeech, waveform } from "../src/tts.ts";
 import { agentEnv, ME, tempDir } from "./env.ts";
-import { answer, lastInput, type Request } from "./fakes.ts";
+import { answer, lastInput, type Request, wav } from "./fakes.ts";
 
 for (const [rule, markdown, speech] of [
 	["a heading is read as a sentence", "## 明日の予定", "明日の予定。"],
@@ -35,25 +35,6 @@ test("a long answer is read up to the end of the sentence that fits, and says th
 test("speech is cut into sentences at their ends, whatever the mark", () => {
 	assert.deepEqual(sentences("明日は晴れです。傘はいりません！本当？"), ["明日は晴れです。", "傘はいりません！", "本当？"]);
 });
-
-function wav(samples: number[], rate = 24000): Buffer {
-	const data = Buffer.alloc(samples.length * 2);
-	samples.forEach((sample, i) => data.writeInt16LE(Math.round(sample * 32767), i * 2));
-	const header = Buffer.alloc(44);
-	header.write("RIFF", 0, "ascii");
-	header.writeUInt32LE(36 + data.length, 4);
-	header.write("WAVEfmt ", 8, "ascii");
-	header.writeUInt32LE(16, 16);
-	header.writeUInt16LE(1, 20);
-	header.writeUInt16LE(1, 22);
-	header.writeUInt32LE(rate, 24);
-	header.writeUInt32LE(rate * 2, 28);
-	header.writeUInt16LE(2, 32);
-	header.writeUInt16LE(16, 34);
-	header.write("data", 36, "ascii");
-	header.writeUInt32LE(data.length, 40);
-	return Buffer.concat([header, data]);
-}
 
 test("a WAV file is read as its rate and samples", () => {
 	const pcm = readWav(wav([0, 0.5, -0.5], 4));

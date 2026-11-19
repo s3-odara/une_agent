@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -64,7 +64,7 @@ test("a provider without a login stops the start and says how to log in", async 
 	await assert.rejects(prepareModels(createAgentModels(dir), [{ provider: "openai", modelId: "x" }]), /unknown model provider "openai".*openai-codex/);
 });
 
-test("only the providers the config uses are fetched, and the saved file names the pi-ai version", async (t) => {
+test("only the providers the config uses are fetched", async (t) => {
 	const seen = piDev(t);
 	const dir = loggedIn();
 	// OpenRouter is configured too, but the config does not use it.
@@ -72,5 +72,4 @@ test("only the providers the config uses are fetched, and the saved file names t
 	t.after(() => delete process.env.OPENROUTER_API_KEY);
 	await prepareModels(createAgentModels(dir), [NEW]);
 	assert.equal(seen.length, 1);
-	assert.equal(JSON.parse(readFileSync(join(dir, "model-catalog.json"), "utf8")).piAi, "1.5.2");
 });

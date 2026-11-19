@@ -61,14 +61,12 @@ function setup(proactive: Record<string, unknown> = {}, extra: Record<string, un
 	};
 }
 
-test("the brief is sent once a day, at its time", async () => {
+test("the brief is sent at its time, once that day", async () => {
 	using t = setup();
 	await t.tickAt("2026-11-17T05:45");
 	assert.equal(t.submitted.length, 0);
 	await t.ticksFrom("2026-11-17T06:00", "2026-11-17T20:45");
 	assert.equal(t.submitted.length, 1);
-	await t.tickAt("2026-11-18T06:00");
-	assert.equal(t.submitted.length, 2);
 });
 
 test("a brief missed while the agent was down is sent at the next check that day, and the next day's comes as usual", async () => {

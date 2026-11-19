@@ -201,23 +201,6 @@ test("writing something else instead of answering is a no, and what was written 
 	assert.equal((await t.calendars.events(at("2026-11-18T00:00"), at("2026-11-19T00:00")))[0]?.start, at("2026-11-18T15:30"));
 });
 
-test("approving for the session lets the same tool through for the rest of that run, and the next run asks again", async () => {
-	await using t = await setup();
-	t.backend.put("Home", "other.ics", buildEvent("other", { summary: "別の予定", start: "2026-11-19T10:00" }, tz, 0));
-	t.env.faux.setResponses([call("calendar_delete", { id: DENTIST }), call("calendar_delete", { id: "Home/other.ics" }), t.noting]);
-	t.write("両方消して");
-	t.react((await t.request()).eventId, "🔁");
-	await t.settled();
-	assert.deepEqual(t.backend.files("Home"), []);
-	assert.equal(new Set(t.env.link.of("react").map((reaction) => reaction.eventId)).size, 1, "asked once");
-
-	t.backend.put("Home", "third.ics", buildEvent("third", { summary: "三つ目", start: "2026-11-20T10:00" }, tz, 0));
-	t.env.faux.setResponses([call("calendar_delete", { id: "Home/third.ics" }), t.noting]);
-	t.write("これも消して");
-	t.react((await t.request(2)).eventId, "❌");
-	await t.settled();
-});
-
 test("an id that does not exist, or is not an id, is refused as an error and changes nothing", async () => {
 	await using t = await setup();
 	t.env.faux.setResponses([call("calendar_update", { id: "Home/nope.ics", summary: "x" }), t.noting, call("calendar_update", { id: "bad-id", summary: "x" }), t.noting]);

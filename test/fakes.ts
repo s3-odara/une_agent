@@ -180,3 +180,22 @@ export const answer =
 		requests.push(request);
 		return fauxAssistantMessage(text);
 	};
+
+/** A 16-bit mono WAV file of `samples` between -1 and 1. */
+export function wav(samples: ArrayLike<number>, rate: number): Buffer {
+	const data = Buffer.alloc(samples.length * 2);
+	for (let i = 0; i < samples.length; i++) data.writeInt16LE(Math.round((samples[i] ?? 0) * 32767), i * 2);
+	const header = Buffer.alloc(44);
+	header.write("RIFFxxxxWAVEfmt ", 0, "latin1");
+	header.writeUInt32LE(36 + data.length, 4);
+	header.writeUInt32LE(16, 16);
+	header.writeUInt16LE(1, 20);
+	header.writeUInt16LE(1, 22);
+	header.writeUInt32LE(rate, 24);
+	header.writeUInt32LE(rate * 2, 28);
+	header.writeUInt16LE(2, 32);
+	header.writeUInt16LE(16, 34);
+	header.write("data", 36, "latin1");
+	header.writeUInt32LE(data.length, 40);
+	return Buffer.concat([header, data]);
+}

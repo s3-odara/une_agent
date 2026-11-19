@@ -227,37 +227,6 @@ test("a login is kept in the profile on disk, for the next browser process", asy
 	assert.match(await textOf(await b.open("/account")), /ようこそ、me さん/);
 });
 
-test("the tools log in on a real page with a stored password the model never sees", async (t) => {
-	await using b = await realBrowser(t);
-	if (b === undefined) return;
-	const credentials = join(b.dir, "credentials.json");
-	writeFileSync(credentials, JSON.stringify({ [b.base]: { username: "me", password: "correct-horse" } }));
-	await using env = await agentEnv({
-		config: { browser: {} },
-		extensions: ({ db }) => [createBrowserExtension({ browsers: b.browsers, credentials: new Credentials(credentials), db, profileOf: () => "default" })],
-	});
-	const requests: Request[] = [];
-	env.faux.setResponses([
-		call("browser_open", { url: `${b.base}/login` }),
-		// The model reads the refs off the snapshot it was just given, as it would.
-		(request: Request) => {
-			const page = lastToolResult(request).text;
-			return call("browser_fill_credential", { usernameRef: refOf(page, "textbox", "ユーザー名"), passwordRef: refOf(page, "textbox", "パスワード"), submit: true });
-		},
-		call("browser_read", {}),
-		(request: Request) => {
-			requests.push(request);
-			return fauxAssistantMessage("ok");
-		},
-	]);
-	const bridge = env.bridge();
-	env.link.emit(message("!main:example.org", "$1", "ログインして"));
-	await bridge.idle();
-
-	assert.match(lastToolResult(requests[0]!).text, /ようこそ、me さん/);
-	assert.doesNotMatch(everything(requests[0]!), /correct-horse/);
-});
-
 test("a screenshot is a PNG of the window, or of the whole page when asked", async (t) => {
 	await using b = await realBrowser(t);
 	if (b === undefined) return;

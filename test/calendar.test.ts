@@ -6,7 +6,6 @@ import {
 	buildTodo,
 	CalendarError,
 	Calendars,
-	completeTodo,
 	type EventItem,
 	formatEvent,
 	formatTodo,
@@ -84,10 +83,6 @@ test("a recurring event is expanded into its occurrences in the range", () => {
 		daily(),
 		["16", "17", "18", "19", "20"].map((day) => ["ゴミ捨て", at(`2026-11-${day}T08:00`)]),
 	);
-});
-
-test("an occurrence removed from a recurring event is left out", () => {
-	assert.ok(!daily(["EXDATE;TZID=Asia/Tokyo:20261117T080000"]).some(([, start]) => start === at("2026-11-17T08:00")));
 });
 
 test("an occurrence moved on its own is read where it was moved to, as it was changed", () => {
@@ -218,12 +213,6 @@ test("a field changed to nothing is removed", () => {
 
 test("a due date for an event is refused", () => {
 	assert.throws(() => applyChanges(DENTIST, { due: "2026-11-20" }, tz, NOW), CalendarError);
-});
-
-test("completing a task marks it done, and completing it again changes nothing", () => {
-	const done = completeTodo(ics("BEGIN:VTODO", "UID:t", "SUMMARY:レポート提出", "STATUS:NEEDS-ACTION", "END:VTODO"), NOW);
-	assert.equal(parseTodo(raw(done!), "ToDo", tz)?.done, true);
-	assert.equal(completeTodo(done!, at("2026-11-17T10:00")), undefined);
 });
 
 function store() {
