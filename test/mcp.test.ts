@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import { McpServers, serversFromConfig } from "../src/mcp.ts";
 import { fromServer } from "../src/untrusted.ts";
-import { agentEnv, testConfig, tempDir } from "./env.ts";
+import { agentEnv, listen, testConfig, tempDir } from "./env.ts";
 import { call, message, noting, type ToolResult } from "./fakes.ts";
 
 const ROOM = "!main:example.org";
@@ -68,8 +67,7 @@ class FakeMcpServer {
 	}
 
 	async start(): Promise<string> {
-		await new Promise<void>((resolve) => this.#server.listen(0, "127.0.0.1", () => resolve()));
-		return `http://127.0.0.1:${(this.#server.address() as AddressInfo).port}/mcp`;
+		return `http://127.0.0.1:${await listen(this.#server)}/mcp`;
 	}
 
 	close(): void {

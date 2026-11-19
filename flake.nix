@@ -26,8 +26,10 @@
       sandbox = pkgs.callPackage ./nix/sandbox.nix { inherit craneLib; };
       whisper-server = pkgs.callPackage ./nix/whisper-server.nix { };
       stt-models = pkgs.callPackage ./nix/stt-models.nix { };
+      agent-unwrapped = pkgs.callPackage ./nix/agent-unwrapped.nix { };
       agent = pkgs.callPackage ./nix/agent.nix {
         inherit
+          agent-unwrapped
           gateway
           sandbox
           whisper-server

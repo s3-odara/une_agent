@@ -722,7 +722,10 @@ Nix はビルドと開発環境に使い、常駐は systemd のユーザーサ�
 - `flake.nix` のパッケージ
   - `agent`: TypeScript をそのまま Node 26 で動かすラッパー。gateway、whisper-server、モデル、ffmpeg、Chromium の
     場所を環境変数（`AGENT_GATEWAY_BIN`、`AGENT_WHISPER_SERVER`、`AGENT_STT_MODELS`、`AGENT_CHROMIUM`、`AGENT_SANDBOX_BIN`）で
-    渡す。config に書けばそちらが優先。ソースから動かすときは従来どおりリポジトリ内の場所
+    渡す。config に書けばそちらが優先。ソースから動かすときは従来どおりリポジトリ内の場所。
+    npm のビルドは `agent-unwrapped`（`nix/agent-unwrapped.nix`）に分け、`agent`（`nix/agent.nix`）は起動スクリプトだけを作る
+    （nixpkgs の `chromium` / `chromium-unwrapped` と同じ形）。gateway・ラッパー・Chromium などが変わっても、npm のビルドと
+    `node_modules` のコピーはやり直さない
   - `gateway`: crane でビルド。webrtc-sys はビルド中に libwebrtc をダウンロードするので、`nix/libwebrtc.nix` で
     先に取得して `LK_CUSTOM_WEBRTC` で渡す（タグは Cargo.lock の webrtc-sys-build の `WEBRTC_TAG`。上げるときは一緒に）。
     libwebrtc は Chromium の libc++ 向けなので C++ は clang 21 以上でないとビルドが止まる（開発用シェルも clang の環境）

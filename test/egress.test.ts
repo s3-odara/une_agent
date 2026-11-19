@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createServer, request, type Server } from "node:http";
-import { type AddressInfo, connect } from "node:net";
+import { connect } from "node:net";
 import { test } from "node:test";
 import { EgressProxy, isPublicAddress } from "../src/egress.ts";
+import { listen } from "./env.ts";
 
 for (const address of ["8.8.8.8", "1.1.1.1", "133.242.0.1", "2001:4860:4860::8888", "2400:cb00::1"]) {
 	test(`${address} is public`, () => assert.equal(isPublicAddress(address), true));
@@ -38,8 +39,7 @@ async function local(): Promise<{ server: Server; port: number; hits: string[] }
 		hits.push(req.url ?? "");
 		res.writeHead(200, { "content-type": "text/plain" }).end("hello");
 	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-	return { server, port: (server.address() as AddressInfo).port, hits };
+	return { server, port: await listen(server), hits };
 }
 
 /** As a browser makes it through a proxy: the whole URL on the request line. */
