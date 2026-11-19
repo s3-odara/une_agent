@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { buildEvent, buildTodo, Calendars } from "../src/calendar.ts";
 import { HostDb, type Wake } from "../src/hostdb.ts";
-import { Scheduler } from "../src/scheduler.ts";
+import { NEAR, Scheduler } from "../src/scheduler.ts";
 import { localToEpoch } from "../src/time.ts";
 import { tempDir, testConfig } from "./env.ts";
 import { ics, MemoryCalDav } from "./fakes.ts";
@@ -119,6 +119,15 @@ test("the model is woken for an event once, from two hours before it starts", as
 	await t.tickAt("2026-11-17T13:45");
 	assert.equal(t.submitted.length, 1);
 	assert.match(t.submitted[0]!, /歯医者/);
+});
+
+test("the model woken for an event the brief already named is told that the reminder is news", async () => {
+	using t = setup();
+	t.event("dinner", "夕食", "2026-11-17T19:00");
+	await t.tickAt("2026-11-17T06:00");
+	t.forget();
+	await t.tickAt("2026-11-17T17:00");
+	assert.ok(t.submitted[0]!.includes(NEAR));
 });
 
 test("what falls due when the brief goes out is in the brief and not woken for again", async () => {

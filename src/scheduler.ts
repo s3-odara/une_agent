@@ -74,11 +74,18 @@ const MAX_WAIT_MS = 3_600_000;
 const CHECK_LATENESS_MS = 60 * 60_000;
 
 const ASIDE = [
-	"これはユーザーの発言ではなく、自分から話しかけるかを決めるための確認です。返答はそのまま、ユーザーへのメッセージとしてルームに送られます。",
-	"- 伝えることが無ければ、返答を書かずに stay_silent を呼ぶ。",
-	"- すでに伝えたこと（会話に残っている）は繰り返さない。",
+	"これはユーザーの発言ではなく、自分から話しかけるかを決める確認。返答はそのままユーザーへのメッセージとしてルームに送られ、通知が鳴る。",
+	"- 話しかけるのは、いまユーザーが知ると助かることがあるときと、会話に出た用事のその後を聞くときだけ。話題の補足、雑談、挨拶だけのためには話しかけない。",
+	"- 話しかけないなら、文章を書かずに stay_silent を呼ぶ（「特にありません」とも書かない）。",
+	"- 会話の中ですでに伝えたことは繰り返さない。",
 	"- この確認の間は、書き込むツール（記憶、カレンダー、timer、bash など）は使えない。要るなら話しかけて、ユーザーの返事を待つ。",
 ];
+
+/**
+ * The brief mentions the day's events; without this, the model takes the reminder of one for a repetition and stays
+ * silent.
+ */
+export const NEAR = "「いま近づいていること」は、時刻や期日が近づいたという知らせ。朝のブリーフなどで予定そのものに触れていても、近づいたことはまだ伝えていないので伝える。";
 
 /**
  * When to wake the model is decided here in code, without the model: at the brief, at the check times, when the
@@ -171,7 +178,7 @@ export class Scheduler {
 				`timer_add で ${formatStamp(timer.createdAt, tz)} に登録した時刻（${formatStamp(timer.dueAt, tz)}）が来ました。登録した内容:`,
 				timer.note,
 				"",
-				"これまでの会話を見て、いま伝えるべきなら、その文面を書く。会話ですでに済んでいるなら stay_silent を呼ぶ。",
+				"ユーザーに頼まれた知らせなので、伝える。ただし会話の中ですでに済んでいる（ユーザーがもう済ませた、要らなくなったと言った）なら stay_silent を呼ぶ。",
 			].join("\n");
 			this.#wake(now, { key: `timer:${timer.id}`, roomId: timer.roomId, kind: "timer", content });
 			db.markTimerFired(timer.id);
@@ -256,7 +263,7 @@ export class Scheduler {
 				`[定時チェック ${stamp}]`,
 				...ASIDE,
 				"",
-				"これまでの会話を見て、いまユーザーに伝える価値のあることがあれば、その文面を書く。例: 会話に出ていた用事のその後（「面接はどうだった？」）や、ユーザーが気にしていたことの続き。予定やタスクの知らせは別のルームが受け持つので、ここではしない。",
+				"これまでの会話を見て、会話に出ていた用事のその後（「面接はどうだった？」）や、ユーザーが気にしていたことの続きで、いま聞くとよいことがあれば、その文面を書く。予定やタスクの知らせは別のルームが受け持つので、ここではしない。",
 			].join("\n");
 			this.#wake(now, { key: `check:${today}:${time}:${roomId}`, roomId, kind: "check", content });
 			db.setValue(`checked:${roomId}`, String(seq));
@@ -304,9 +311,10 @@ export class Scheduler {
 			`[定時チェック ${stamp}]`,
 			...ASIDE,
 			"",
-			"これまでの会話と下の材料を見て、いまユーザーに伝える価値のあることがあれば、その文面を書く。例:",
+			"これまでの会話と下の材料を見て、いまユーザーに伝えるとよいことがあれば、その文面を書く。例:",
 			"- 近づいた予定や期日、追加・変更された予定",
 			"- 会話に出ていた用事のその後（「面接はどうだった？」）や、ユーザーが気にしていたことの続き",
+			...(triggers.some((trigger) => trigger.kind === "reminder") ? ["", NEAR] : []),
 			...this.#calendarLines(today, events, todos),
 			...this.#triggerLines(triggers),
 		].join("\n");
@@ -330,7 +338,7 @@ export class Scheduler {
 			...ASIDE,
 			"",
 			"朝のブリーフの時刻です。下の材料とこれまでの会話から、今日の朝のブリーフを書く。",
-			...(calendar ? ["- 今日と明日の予定を時刻順に伝える。無ければ無いと書く。", "- 7日以内に期日が来るタスクと、期日を過ぎたタスクを伝える。"] : []),
+			...(calendar ? ["- 今日と明日の予定を時刻順に伝える。予定の無い日は無いと書く。", "- 7日以内に期日が来るタスクと、期日を過ぎたタスクがあれば伝える（無いことは書かない）。"] : []),
 			...(forecast === undefined ? [] : ["- 天気を一言で伝える。外出を伴いそうな予定があれば、その時間帯の降水確率に触れる。"]),
 			...(triggers.some((trigger) => trigger.kind === "reminder") ? ["- 「いま近づいていること」にある項目は、埋もれないように必ず触れる。"] : []),
 			"- 会話に出ていた用事で、今日気にかけるとよいことがあれば一言添える。",

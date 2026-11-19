@@ -18,14 +18,15 @@ export type TidyOptions = {
 export type TidyChange = { readonly label: string; readonly removed: readonly string[]; readonly added: readonly string[] };
 
 const INSTRUCTIONS = [
-	"あなたは長期記憶の整理係です。入力は、アシスタントが会話中に書きためた箇条書きの記憶です。次の規則で整理した箇条書きだけを返してください。",
+	"あなたは長期記憶の整理係です。入力は今日の日付と、アシスタントが会話中に書きためた箇条書きの記憶です（各項目の末尾の括弧は書いた日）。次の規則で整理した箇条書きだけを返してください。",
 	"",
 	"- 重複や言い換えは1項目にまとめる。",
 	"- 冗長な項目は、意味を変えずに短くする。",
-	"- その場限りの話、既に終わったこと、今後の会話で役に立たないことは消す。",
+	"- その場限りの話（その日の気分や体調など）と、今日より前に終わった出来事は消す。",
+	"- 日時の決まった予定やタスクはカレンダーで管理するので、その部分は消す。ただし、そこに含まれる今後も役に立つ事実（引っ越し先、人の名前など）は、いつのことか分かる形で残す。",
+	"- 習慣、好み、決めたこと、人や物についての事実は、古い日付でも消さない。",
 	"- 問題のない項目は、末尾の日付も含めて一字一句そのまま残す。迷ったら残す。",
 	"- 新しい情報を足さない。推測で補わない。",
-	"- 予定やタスクそのものは記憶ではなくカレンダーで管理するので消す。",
 	"- 各行は「- 」で始める。それ以外の文は書かない。残す項目が無ければ「（なし）」とだけ書く。",
 ].join("\n");
 
@@ -76,7 +77,7 @@ export async function tidyMemory(options: TidyOptions, date: string): Promise<Ti
 				{ ownership: { kind: "ownerless" }, agent: { model: options.model, extensions: [], instructions: INSTRUCTIONS } },
 				context,
 			);
-			const submission = await conversation.submit({ type: "input", content: before.map((entry) => `- ${entry}`).join("\n") }, context);
+			const submission = await conversation.submit({ type: "input", content: [`今日: ${date}`, "", ...before.map((entry) => `- ${entry}`)].join("\n") }, context);
 			const answer = await answerOf(harness, await submission.wait(context), context);
 			if (!answer.ok) {
 				log(`memory tidy of ${target.label}: no answer (${answer.reason})`);

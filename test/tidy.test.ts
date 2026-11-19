@@ -6,6 +6,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStore } from "../src/memory.ts";
 import { memoryFingerprint, tidyMemory } from "../src/tidy.ts";
 import { agentEnv, context } from "./env.ts";
+import { answer, lastInput, type Request } from "./fakes.ts";
 
 const calm = { name: "calm", privateMemory: true };
 const personas = [calm];
@@ -25,6 +26,7 @@ async function setup(answers: { shared: string; private: string }) {
 	const model = env.faux.getModel();
 	return {
 		store,
+		faux: env.faux,
 		dir: join(env.dir, "memory"),
 		tidy: () => tidyMemory({ harness: env.harness, store, personas, model: { provider: model.provider, modelId: model.id }, context, log: () => {} }, "2026-11-17"),
 		[Symbol.asyncDispose]: () => env[Symbol.asyncDispose](),
@@ -38,6 +40,14 @@ test("an answer that is not a list leaves memory as it was", async () => {
 	const before = t.store.entries("shared", calm);
 	assert.deepEqual(await t.tidy(), []);
 	assert.deepEqual(t.store.entries("shared", calm), before);
+});
+
+test("the model tidying memory is told the day, so it can tell what is over", async () => {
+	await using t = await setup({ shared: "", private: "" });
+	const requests: Request[] = [];
+	t.faux.setResponses([answer("- ユーザーは緑茶を好む", requests), answer(KEPT_PRIVATE)]);
+	await t.tidy();
+	assert.match(lastInput(requests[0]!), /2026-11-17/);
 });
 
 test("a list longer than the one it was asked to tidy is not trusted", async () => {

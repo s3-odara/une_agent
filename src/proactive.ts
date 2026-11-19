@@ -141,17 +141,17 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 		sections: [
 			section("proactive", () =>
 				[
-					"自分から話しかけることがある。朝のブリーフ、定時の確認、カレンダーに動きがあったときに、これまでの会話を読み返して、伝えることがあれば話しかける。",
+					"朝のブリーフ、定時の確認、カレンダーの動き、約束の時刻に起こされ、この会話を読み返して、伝えることがあれば自分から話しかける。",
 					"- ユーザーが時刻を決めて頼んだこと（「20時に教えて」「金曜の夜に結果を聞いて」）は timer_add で登録する。",
-					"- 時刻の決まっていない「あとで聞く」は登録しなくてよい。定時の確認で会話から拾う。",
-					"- 予定やタスクとして残すものは、timer ではなくカレンダーに登録する。",
+					"- 時刻の決まっていない「あとで聞く」は登録しない。定時の確認で会話から拾う。",
+					"- 予定やタスクそのものはカレンダーに登録する。予定の前の知らせは、決まった時刻を頼まれたときだけ timer で足す。",
 				].join("\n"),
 			),
 		],
 		tools: [
 			defineTool({
 				name: "stay_silent",
-				description: "自分から話しかけるかを決める確認で、いまは伝えることが無いときに呼ぶ。返答は書かない。確認のとき以外は使わない。",
+				description: "自分から話しかけるかを決める確認で、いまは話しかけないときに呼ぶ。呼ぶときは文章を書かない。確認のとき以外は使えない。",
 				parameters: obj({}),
 				replay: "safe",
 				execute: async (_args, api) => {
@@ -164,7 +164,7 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 				description: "決まった時刻に自分から話しかけるよう登録する。その時刻に、登録した内容とそれまでの会話を読んで、伝えるかと文面を決める。",
 				parameters: obj({
 					at: str({ description: "時刻。ユーザーの現地時刻で YYYY-MM-DDTHH:MM", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$" }),
-					note: str({ description: "その時刻に何をするか（例: 面接の結果を聞く）", minLength: 1 }),
+					note: str({ description: "その時刻に何をするか。会話を読み返さなくても分かるように具体的に（例: 14時の面接の結果を聞く）", minLength: 1 }),
 				}),
 				replay: "safe",
 				execute: async (args, api, context) => {

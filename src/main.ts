@@ -100,6 +100,17 @@ const extensions = [
 	CodingTools,
 	createCompactionExtension({ db }),
 	createImageWindowExtension(),
+	createSelfExtension({
+		configPath: resolve(configPath),
+		workDir: config.baseDir,
+		roomOf: (conversationId) => db.roomOf(conversationId),
+		voice: { messages: config.voice !== undefined, spoken: config.voice?.tts !== undefined, calls: config.voice?.call !== undefined },
+		check: () => openConfig(configPath, models),
+		restart: () => void restartWhenIdle(),
+	}),
+	memory,
+	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
+	...(weather === undefined ? [] : [createWeatherExtension(weather)]),
 	createProactiveExtension({
 		db,
 		tz: config.timezone,
@@ -107,16 +118,6 @@ const extensions = [
 		// `replay: "safe"` is what the config says of a server whose tools only read.
 		reads: (tool) => Object.entries(config.mcp).some(([name, server]) => server.replay === "safe" && tool.startsWith(`mcp__${name}__`)),
 	}),
-	createSelfExtension({
-		configPath: resolve(configPath),
-		workDir: config.baseDir,
-		roomOf: (conversationId) => db.roomOf(conversationId),
-		check: () => openConfig(configPath, models),
-		restart: () => void restartWhenIdle(),
-	}),
-	memory,
-	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
-	...(weather === undefined ? [] : [createWeatherExtension(weather)]),
 	...(browsers === undefined
 		? []
 		: [
