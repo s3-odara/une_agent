@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createSelfExtension } from "../src/self.ts";
@@ -76,4 +76,31 @@ test("the model is told the ID of the room it is talking in", async () => {
 	t.env.faux.setResponses([answer("ok", requests)]);
 	await t.say("このルームの ID は？");
 	assert.ok(instructionsOf(requests[0]!).includes(ROOM));
+});
+
+function writeSkill(dir: string, name: string, text: string): string {
+	mkdirSync(join(dir, "skills", name), { recursive: true });
+	writeFileSync(join(dir, "skills", name, "SKILL.md"), text);
+	return join(dir, "skills", name, "SKILL.md");
+}
+
+test("the model is told of each skill, a person's own included, by its description and where to read it", async () => {
+	await using t = await setup({ config: BASE_CONFIG });
+	const path = writeSkill(t.env.dir, "shopping", "---\nname: shopping\ndescription: 日用品の買い物を頼まれたとき。\n---\n\n# 買い物\n");
+	const requests: Request[] = [];
+	t.env.faux.setResponses([answer("ok", requests)]);
+	await t.say("こんにちは");
+	const instructions = instructionsOf(requests[0]!);
+	assert.match(instructions, /shopping: 日用品の買い物を頼まれたとき。/);
+	assert.ok(instructions.includes(path));
+	assert.ok(!instructions.includes("# 買い物"));
+});
+
+test("a skill without a description is not listed", async () => {
+	await using t = await setup({ config: BASE_CONFIG });
+	writeSkill(t.env.dir, "draft", "# 書きかけ\n");
+	const requests: Request[] = [];
+	t.env.faux.setResponses([answer("ok", requests)]);
+	await t.say("こんにちは");
+	assert.ok(!instructionsOf(requests[0]!).includes("draft"));
 });

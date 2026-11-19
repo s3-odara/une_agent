@@ -1,3 +1,8 @@
+/** A tool's result that is text alone. */
+export function textOutput(text: string) {
+	return { output: [{ type: "text" as const, text }] };
+}
+
 export function oneLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }

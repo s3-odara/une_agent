@@ -75,6 +75,12 @@ const ConfigSchema = obj({
 			tidyEveryDays: count(1),
 		}),
 	),
+	compaction: section(
+		obj({
+			// The share of the model's context window at which older messages start to be summarized.
+			at: num({ exclusiveMinimum: 0, exclusiveMaximum: 1, default: 0.5 }),
+		}),
+	),
 	timezone: text({ default: Intl.DateTimeFormat().resolvedOptions().timeZone }),
 	caldav: opt(
 		obj({
@@ -134,6 +140,8 @@ const ConfigSchema = obj({
 		obj({
 			roomId: text(),
 			briefTime: clock("06:00"),
+			// Each one reads the whole conversation, so each costs about as much as a message.
+			checkTimes: arr(clock("12:00"), { default: ["12:00", "18:00"] }),
 			windowStart: clock("06:00"),
 			windowEnd: clock("21:00"),
 			tickMinutes: count(15),
@@ -156,7 +164,7 @@ function fail(message: string): never {
 
 type SchemaNode = { readonly [keyword: string]: unknown };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

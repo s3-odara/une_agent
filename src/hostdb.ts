@@ -8,8 +8,24 @@ export type Delivery = {
 	readonly voice?: boolean;
 };
 
-/** Event IDs of deliveries the scheduler asked for start with this; Matrix event IDs start with `$`. */
-export const SCHEDULED_PREFIX = "sched:";
+export type Wake = {
+	readonly key: string;
+	readonly roomId: string;
+	readonly kind: "brief" | "check" | "timer";
+	readonly content: string;
+	readonly createdAt: number;
+	/** Set once the conversation it is weighed in has been made. */
+	readonly aside?: Aside;
+};
+
+/** A conversation made from a room's at one point, to weigh something in without touching the room's own. */
+export type Aside = {
+	readonly conversationId: number;
+	/** The room's conversation it was made from, and its newest entry then (0 for none). */
+	readonly from: { readonly conversationId: number; readonly entryId: number };
+};
+
+export type Timer = { readonly id: string; readonly roomId: string; readonly dueAt: number; readonly note: string; readonly createdAt: number };
 
 export type Decision = "approve" | "approve_session" | "approve_always" | "reject";
 
@@ -78,6 +94,38 @@ export class HostDb {
 				tool TEXT PRIMARY KEY,
 				created_at INTEGER NOT NULL
 			);
+			CREATE TABLE IF NOT EXISTS conversation_rooms (
+				conversation_id INTEGER PRIMARY KEY,
+				room_id TEXT NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS wakes (
+				key TEXT PRIMARY KEY,
+				room_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				content TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				aside_id INTEGER,
+				from_id INTEGER,
+				from_entry INTEGER,
+				outcome TEXT
+			);
+			CREATE TABLE IF NOT EXISTS timers (
+				id TEXT PRIMARY KEY,
+				room_id TEXT NOT NULL,
+				due_at INTEGER NOT NULL,
+				note TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				fired INTEGER NOT NULL DEFAULT 0
+			);
+			CREATE TABLE IF NOT EXISTS room_activity (
+				room_id TEXT PRIMARY KEY,
+				seq INTEGER NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS native_compactions (
+				id TEXT PRIMARY KEY,
+				model TEXT NOT NULL,
+				item TEXT NOT NULL
+			);
 			CREATE TABLE IF NOT EXISTS kv (
 				key TEXT PRIMARY KEY,
 				value TEXT NOT NULL
@@ -86,6 +134,8 @@ export class HostDb {
 		// Ledgers made before voice messages lack the column.
 		const columns = this.#db.prepare("PRAGMA table_info(deliveries)").all().map((row) => String(row.name));
 		if (!columns.includes("voice")) this.#db.exec("ALTER TABLE deliveries ADD COLUMN voice INTEGER NOT NULL DEFAULT 0");
+		// Ledgers made before conversations were mapped to rooms on their own.
+		this.#db.exec("INSERT OR IGNORE INTO conversation_rooms (conversation_id, room_id) SELECT conversation_id, room_id FROM rooms");
 		// Every browser tool call asks whether its run was started by the user.
 		this.#db.exec("CREATE INDEX IF NOT EXISTS deliveries_submission ON deliveries(submission_id)");
 	}
@@ -95,15 +145,98 @@ export class HostDb {
 		return row === undefined ? undefined : Number(row.conversation_id);
 	}
 
+	/** Also for a conversation the room has moved on from, or one made aside from it. */
 	roomOf(conversationId: number): string | undefined {
-		const row = this.#db.prepare("SELECT room_id FROM rooms WHERE conversation_id = ?").get(conversationId);
+		const row = this.#db.prepare("SELECT room_id FROM conversation_rooms WHERE conversation_id = ?").get(conversationId);
 		return row === undefined ? undefined : String(row.room_id);
 	}
 
+	/** For a tool, whose error the model reads. */
+	requireRoom(conversationId: number): string {
+		const roomId = this.roomOf(conversationId);
+		if (roomId === undefined) throw new Error("この会話のルームが分かりません。");
+		return roomId;
+	}
+
 	setConversation(roomId: string, conversationId: number): void {
+		this.addConversationRoom(conversationId, roomId);
 		this.#db
 			.prepare("INSERT INTO rooms (room_id, conversation_id) VALUES (?, ?) ON CONFLICT (room_id) DO UPDATE SET conversation_id = excluded.conversation_id")
 			.run(roomId, conversationId);
+	}
+
+	addConversationRoom(conversationId: number, roomId: string): void {
+		this.#db.prepare("INSERT OR IGNORE INTO conversation_rooms (conversation_id, room_id) VALUES (?, ?)").run(conversationId, roomId);
+	}
+
+	/** A wake of a key already asked for is left as it is. */
+	addWake(wake: Omit<Wake, "aside">): void {
+		this.#db.prepare("DELETE FROM wakes WHERE outcome IS NOT NULL AND created_at < ?").run(wake.createdAt - 30 * 86_400_000);
+		this.#db
+			.prepare("INSERT OR IGNORE INTO wakes (key, room_id, kind, content, created_at) VALUES (?, ?, ?, ?, ?)")
+			.run(wake.key, wake.roomId, wake.kind, wake.content, wake.createdAt);
+	}
+
+	/** Oldest first. */
+	openWakes(): Wake[] {
+		return this.#db.prepare("SELECT * FROM wakes WHERE outcome IS NULL ORDER BY created_at, rowid").all().map(wakeRow);
+	}
+
+	setAside(key: string, aside: Aside | undefined): void {
+		this.#db
+			.prepare("UPDATE wakes SET aside_id = ?, from_id = ?, from_entry = ? WHERE key = ?")
+			.run(aside?.conversationId ?? null, aside?.from.conversationId ?? null, aside?.from.entryId ?? null, key);
+	}
+
+	endWake(key: string, outcome: "sent" | "silent" | "expired"): void {
+		this.#db.prepare("UPDATE wakes SET outcome = ? WHERE key = ?").run(outcome, key);
+	}
+
+	/** Whether the conversation is one made aside to weigh a wake in, and the wake is not settled. */
+	isWeighing(conversationId: number): boolean {
+		return this.#db.prepare("SELECT 1 FROM wakes WHERE aside_id = ? AND outcome IS NULL").get(conversationId) !== undefined;
+	}
+
+	/** Counts what people said in the room, so a check can tell whether anything was said since the last. */
+	noteActivity(roomId: string): void {
+		this.#db.prepare("INSERT INTO room_activity (room_id, seq) VALUES (?, 1) ON CONFLICT (room_id) DO UPDATE SET seq = seq + 1").run(roomId);
+	}
+
+	activity(): Map<string, number> {
+		return new Map(this.#db.prepare("SELECT room_id, seq FROM room_activity").all().map((row) => [String(row.room_id), Number(row.seq)]));
+	}
+
+	/** An opaque item a model's server compacted a conversation into, for that model, by a hash of the summary it stands for. */
+	addNativeCompaction(id: string, model: string, item: unknown): void {
+		this.#db.prepare("INSERT OR REPLACE INTO native_compactions (id, model, item) VALUES (?, ?, ?)").run(id, model, JSON.stringify(item));
+	}
+
+	nativeCompaction(id: string): { readonly model: string; readonly item: unknown } | undefined {
+		const row = this.#db.prepare("SELECT model, item FROM native_compactions WHERE id = ?").get(id);
+		return row === undefined ? undefined : { model: String(row.model), item: JSON.parse(String(row.item)) };
+	}
+
+	addTimer(timer: Timer): void {
+		this.#db
+			.prepare("INSERT OR IGNORE INTO timers (id, room_id, due_at, note, created_at) VALUES (?, ?, ?, ?, ?)")
+			.run(timer.id, timer.roomId, timer.dueAt, timer.note, timer.createdAt);
+	}
+
+	/** Those not yet due or not yet fired, soonest first. */
+	timers(roomId?: string): Timer[] {
+		const rows =
+			roomId === undefined
+				? this.#db.prepare("SELECT * FROM timers WHERE fired = 0 ORDER BY due_at, rowid").all()
+				: this.#db.prepare("SELECT * FROM timers WHERE fired = 0 AND room_id = ? ORDER BY due_at, rowid").all(roomId);
+		return rows.map(timerRow);
+	}
+
+	removeTimer(id: string, roomId: string): boolean {
+		return this.#db.prepare("DELETE FROM timers WHERE id = ? AND room_id = ? AND fired = 0").run(id, roomId).changes > 0;
+	}
+
+	markTimerFired(id: string): void {
+		this.#db.prepare("UPDATE timers SET fired = 1 WHERE id = ?").run(id);
 	}
 
 	addDelivery(delivery: Delivery): void {
@@ -145,9 +278,9 @@ export class HostDb {
 		}));
 	}
 
+	/** Only what people send is in the ledger: what the bot weighs of its own accord, and calls, are not. */
 	isUserSubmission(submissionId: number): boolean {
-		const row = this.#db.prepare("SELECT event_id FROM deliveries WHERE submission_id = ?").get(submissionId);
-		return row !== undefined && !String(row.event_id).startsWith(SCHEDULED_PREFIX);
+		return this.#db.prepare("SELECT 1 FROM deliveries WHERE submission_id = ?").get(submissionId) !== undefined;
 	}
 
 	wasNotified(key: string): boolean {
@@ -237,6 +370,25 @@ export class HostDb {
 	close(): void {
 		this.#db.close();
 	}
+}
+
+function wakeRow(row: Record<string, unknown>): Wake {
+	return {
+		key: String(row.key),
+		roomId: String(row.room_id),
+		kind: String(row.kind) as Wake["kind"],
+		content: String(row.content),
+		createdAt: Number(row.created_at),
+		...(row.aside_id === null
+			? {}
+			: {
+					aside: { conversationId: Number(row.aside_id), from: { conversationId: Number(row.from_id), entryId: Number(row.from_entry) } },
+				}),
+	};
+}
+
+function timerRow(row: Record<string, unknown>): Timer {
+	return { id: String(row.id), roomId: String(row.room_id), dueAt: Number(row.due_at), note: String(row.note), createdAt: Number(row.created_at) };
 }
 
 function approvalRow(row: Record<string, unknown>): ApprovalRow {

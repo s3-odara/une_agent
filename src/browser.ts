@@ -15,24 +15,45 @@ export type FieldInfo = {
 
 export type PageSnapshot = { readonly url: string; readonly title: string; readonly tree: string };
 
+/**
+ * The size of the page and of a screenshot of it, in CSS pixels. Small enough that no model provider shrinks the image
+ * (OpenAI scales the short side down to 768, Anthropic the long side to 1568), so a point on the image is the same point
+ * on the page.
+ */
+export const VIEWPORT = { width: 1024, height: 768 } as const;
+
+export type ScreenshotOptions = {
+	readonly fullPage?: boolean;
+	readonly format: "png" | "jpeg";
+	/** A point to circle, so the model can see where a click landed. */
+	readonly mark?: { readonly x: number; readonly y: number };
+};
+
 /** Elements are named by the `ref` the latest snapshot gave them, so every action is followed by a new snapshot. */
 export interface BrowserPage {
 	goto(url: string): Promise<void>;
 	back(): Promise<void>;
 	snapshot(): Promise<PageSnapshot>;
+	/** Where the page is, without reading it. */
+	location(): Promise<{ readonly url: string; readonly title: string }>;
 	/** `whole` reads the whole page instead of what looks like its main text. */
 	read(whole: boolean): Promise<ReadPage>;
 	click(ref: string): Promise<void>;
+	/** At a point of the viewport, in CSS pixels: for what has no ref, such as an image puzzle or a canvas. */
+	clickAt(x: number, y: number): Promise<void>;
 	fill(ref: string, text: string): Promise<void>;
 	press(key: string, ref?: string): Promise<void>;
 	field(ref: string): Promise<FieldInfo>;
 	/** Password fields are blacked out. */
-	screenshot(fullPage: boolean): Promise<Buffer>;
+	screenshot(options: ScreenshotOptions): Promise<Buffer>;
 }
 
 export interface Browsers {
-	/** Conversations sharing a profile share its cookies. */
-	page(profile: string, conversationId: number): Promise<BrowserPage>;
+	/**
+	 * Rooms sharing a profile share its cookies. A tab belongs to a room rather than to a conversation, so it survives
+	 * the room moving on to another conversation.
+	 */
+	page(profile: string, roomId: string): Promise<BrowserPage>;
 	close(): Promise<void>;
 }
 
@@ -45,7 +66,7 @@ export type BrowserOptions = {
 	readonly idleMs: number;
 };
 
-type Profile = { readonly chromium: IdleChromium<BrowserContext>; readonly pages: Map<number, Page> };
+type Profile = { readonly chromium: IdleChromium<BrowserContext>; readonly pages: Map<string, Page> };
 
 const VALUED_TEXTBOX = /^(\s*- textbox\b.*\[ref=(\w+)\](?: \[[^\]]*\])*): .+$/;
 
@@ -77,6 +98,19 @@ async function hidePasswords(page: Page, tree: string): Promise<string> {
 	return lines.join("\n");
 }
 
+/** Runs in the page. It does not take clicks, so it cannot change what the next click hits. */
+function addMark(point: { x: number; y: number }): void {
+	const doc = (globalThis as unknown as { document: { createElement(tag: string): { id: string; style: { cssText: string } }; documentElement: { append(node: unknown): void } } }).document;
+	const mark = doc.createElement("div");
+	mark.id = "__agent_click_mark";
+	mark.style.cssText = `position:fixed;left:${point.x - 10}px;top:${point.y - 10}px;width:20px;height:20px;border:3px solid #ff0040;border-radius:50%;box-sizing:border-box;pointer-events:none;z-index:2147483647`;
+	doc.documentElement.append(mark);
+}
+
+function removeMark(): void {
+	(globalThis as unknown as { document: { getElementById(id: string): { remove(): void } | null } }).document.getElementById("__agent_click_mark")?.remove();
+}
+
 export class PlaywrightBrowsers implements Browsers {
 	readonly #options: BrowserOptions;
 	readonly #profiles = new Map<string, Profile>();
@@ -94,7 +128,7 @@ export class PlaywrightBrowsers implements Browsers {
 				const context = await launchPersistentSandboxed(
 					join(dir, name),
 					{ proxy: egress.url, executablePath },
-					{ viewport: { width: 1280, height: 800 }, locale: "ja-JP", timezoneId: timezone },
+					{ viewport: VIEWPORT, locale: "ja-JP", timezoneId: timezone },
 					onClosed,
 				);
 				context.setDefaultTimeout(15_000);
@@ -107,14 +141,14 @@ export class PlaywrightBrowsers implements Browsers {
 		return profile;
 	}
 
-	async page(profileName: string, conversationId: number): Promise<BrowserPage> {
+	async page(profileName: string, roomId: string): Promise<BrowserPage> {
 		const profile = this.#profile(profileName);
 		const current = async (): Promise<Page> => {
 			const context = await profile.chromium.get();
-			let page = profile.pages.get(conversationId);
+			let page = profile.pages.get(roomId);
 			if (page === undefined || page.isClosed()) {
 				page = await context.newPage();
-				this.#follow(profile, conversationId, page);
+				this.#follow(profile, roomId, page);
 			}
 			return page;
 		};
@@ -130,6 +164,10 @@ export class PlaywrightBrowsers implements Browsers {
 				await page.goBack({ waitUntil: "domcontentloaded" });
 				await settle(page);
 			},
+			location: async () => {
+				const page = await current();
+				return { url: page.url(), title: await page.title() };
+			},
 			snapshot: async () => {
 				const page = await current();
 				return { url: page.url(), title: await page.title(), tree: await hidePasswords(page, await page.ariaSnapshot({ mode: "ai" })) };
@@ -143,28 +181,45 @@ export class PlaywrightBrowsers implements Browsers {
 				const page = await current();
 				await page.getByRef(ref).click();
 				// A click may open a new tab, which then becomes the conversation's page.
-				await settle(profile.pages.get(conversationId) ?? page);
+				await settle(profile.pages.get(roomId) ?? page);
+			},
+			clickAt: async (x, y) => {
+				const page = await current();
+				await page.mouse.click(x, y);
+				await settle(profile.pages.get(roomId) ?? page);
 			},
 			fill: async (ref, text) => (await current()).getByRef(ref).fill(text),
 			press: async (key, ref) => {
 				const page = await current();
 				if (ref === undefined) await page.keyboard.press(key);
 				else await page.getByRef(ref).press(key);
-				await settle(profile.pages.get(conversationId) ?? page);
+				await settle(profile.pages.get(roomId) ?? page);
 			},
 			field: async (ref) =>
 				(await current()).getByRef(ref).evaluate(describeField),
-			screenshot: async (fullPage) => {
+			screenshot: async ({ fullPage = false, format, mark }) => {
 				const page = await current();
-				// A field whose password is shown in clear (a "show password" button) is covered too: it keeps its name.
-				return page.screenshot({ type: "png", fullPage, animations: "disabled", mask: [page.locator('input[type="password"], input[name*="pass" i]')] });
+				if (mark !== undefined) await page.evaluate(addMark, mark).catch(() => {});
+				try {
+					// A field whose password is shown in clear (a "show password" button) is covered too: it keeps its name.
+					return await page.screenshot({
+						type: format,
+						...(format === "jpeg" ? { quality: 80 } : {}),
+						fullPage,
+						scale: "css",
+						animations: "disabled",
+						mask: [page.locator('input[type="password"], input[name*="pass" i]')],
+					});
+				} finally {
+					if (mark !== undefined) await page.evaluate(removeMark).catch(() => {});
+				}
 			},
 		};
 	}
 
-	#follow(profile: Profile, conversationId: number, page: Page): void {
-		profile.pages.set(conversationId, page);
-		page.on("popup", (popup) => this.#follow(profile, conversationId, popup));
+	#follow(profile: Profile, roomId: string, page: Page): void {
+		profile.pages.set(roomId, page);
+		page.on("popup", (popup) => this.#follow(profile, roomId, popup));
 	}
 
 	async close(): Promise<void> {

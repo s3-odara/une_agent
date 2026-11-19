@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type TestContext, test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { type BrowserPage, PlaywrightBrowsers } from "../src/browser.ts";
+import { type BrowserPage, PlaywrightBrowsers, VIEWPORT } from "../src/browser.ts";
 import { createBrowserExtension, pngSize } from "../src/browser-tools.ts";
 import { Credentials } from "../src/credentials.ts";
 import { beacon, egressTo, noChromium, rendererRoots } from "./chromium.ts";
@@ -50,6 +50,9 @@ function site(beacon: string): Server {
 			response.writeHead(303, { location: "/account", ...(ok ? { "set-cookie": "session=ok; Max-Age=3600; Path=/" } : {}) }).end();
 		} else if (url.pathname === "/login") {
 			html('<form method="post" action="/login"><input name="username" aria-label="ユーザー名"><input type="password" name="password" aria-label="パスワード"><button>ログイン</button></form>');
+		} else if (url.pathname === "/canvas") {
+			// Drawn, not built of elements: nothing in it has a ref.
+			html('<canvas width="1024" height="768" style="position:fixed;left:0;top:0"></canvas><p id="hit">まだ</p><script>document.querySelector("canvas").addEventListener("click", (e) => { document.getElementById("hit").textContent = "押された位置 " + e.clientX + "," + e.clientY; });</script>');
 		} else if (url.pathname === "/account") {
 			html((request.headers.cookie ?? "").includes("session=ok") ? "<p>ようこそ、me さん</p>" : "<p>ログインしていません</p>");
 		} else {
@@ -95,8 +98,8 @@ async function realBrowser(t: TestContext) {
 		get browsers() {
 			return browsers;
 		},
-		open: async (path: string, profile = "default", conversation = 1) => {
-			const tab = await browsers.page(profile, conversation);
+		open: async (path: string, profile = "default", room = "!a:example.org") => {
+			const tab = await browsers.page(profile, room);
 			await tab.goto(`${base}${path}`);
 			return tab;
 		},
@@ -133,7 +136,7 @@ test("the browser cannot open the user's files, though a page asks it to", async
 	using files = tempDir();
 	const userFile = join(files.path, "secret.txt");
 	writeFileSync(userFile, "ユーザーの秘密");
-	const tab = await b.browsers.page("default", 1);
+	const tab = await b.browsers.page("default", "!a:example.org");
 	await tab.goto(pathToFileURL(userFile).href).catch(() => {});
 	assert.doesNotMatch(await textOf(tab), /ユーザーの秘密/);
 });
@@ -206,17 +209,17 @@ async function logIn(tab: BrowserPage) {
 	await tab.press("Enter", refOf(tree, "textbox", "パスワード"));
 }
 
-test("conversations of one profile have tabs of their own and share its login; another profile does not", async (t) => {
+test("rooms of one profile have tabs of their own and share its login; another profile does not", async (t) => {
 	await using b = await realBrowser(t);
 	if (b === undefined) return;
-	const tab = await b.open("/login", "default", 1);
+	const tab = await b.open("/login", "default", "!a:example.org");
 	await logIn(tab);
 	assert.match(await textOf(tab), /ようこそ、me さん/);
 
-	const other = await b.open("/account", "default", 2);
+	const other = await b.open("/account", "default", "!b:example.org");
 	assert.match(await textOf(other), /ようこそ/);
 	assert.equal((await tab.snapshot()).url, `${b.base}/account`, "the first tab stays where it was");
-	assert.match(await textOf(await b.open("/account", "stranger", 1)), /ログインしていません/);
+	assert.match(await textOf(await b.open("/account", "stranger", "!a:example.org")), /ログインしていません/);
 });
 
 test("a login is kept in the profile on disk, for the next browser process", async (t) => {
@@ -227,12 +230,20 @@ test("a login is kept in the profile on disk, for the next browser process", asy
 	assert.match(await textOf(await b.open("/account")), /ようこそ、me さん/);
 });
 
-test("a screenshot is a PNG of the window, or of the whole page when asked", async (t) => {
+test("a screenshot is of the window at the size of its CSS pixels, or of the whole page when asked", async (t) => {
 	await using b = await realBrowser(t);
 	if (b === undefined) return;
 	const tab = await b.open("/login");
-	const shot = await tab.screenshot(false);
-	assert.equal(shot.subarray(1, 4).toString(), "PNG");
-	assert.deepEqual(pngSize(shot), { width: 1280, height: 800 });
-	assert.ok(pngSize(await tab.screenshot(true)).height >= 1);
+	const shot = await tab.screenshot({ format: "png" });
+	assert.deepEqual(pngSize(shot), VIEWPORT);
+	assert.ok(pngSize(await tab.screenshot({ format: "png", fullPage: true })).height >= 1);
+});
+
+test("a click at a point of the window reaches what is drawn there, though it has no ref", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/canvas");
+	await tab.screenshot({ format: "jpeg", mark: { x: 300, y: 200 } });
+	await tab.clickAt(300, 200);
+	assert.match(await textOf(tab), /押された位置 300,200/);
 });

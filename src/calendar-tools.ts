@@ -5,6 +5,7 @@ import { obj, opt, str } from "@earendil-works/pi-schema";
 import type { Approvals } from "./approval.ts";
 import { CalendarError, type Calendars, type EventFields, formatEvent, formatTodo, type ItemChanges, splitId, type TodoFields } from "./calendar.ts";
 import type { HostDb } from "./hostdb.ts";
+import { textOutput } from "./text.ts";
 import { addDays, dateOf, startOfDay } from "./time.ts";
 
 export type CalendarToolsOptions = {
@@ -35,7 +36,6 @@ function describeChanges(changes: ItemChanges): string {
 export function createCalendarExtension(options: CalendarToolsOptions) {
 	const { calendars, db, approvals } = options;
 	const tz = calendars.tz;
-	const done = (text: string) => ({ output: [{ type: "text" as const, text }] });
 	const names = Object.keys(calendars.calendars);
 
 	/** After the agent's own write: the watcher must not report it back to the user as news. */
@@ -56,7 +56,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 				if (!DATE.test(from) || !DATE.test(to) || to < from) throw new CalendarError("from / to は YYYY-MM-DD で、to は from 以降にしてください。");
 				const [events, todos] = await Promise.all([calendars.events(startOfDay(from, tz), startOfDay(addDays(to, 1), tz)), calendars.todos()]);
 				const open = todos.filter((todo) => !todo.done);
-				return done(
+				return textOutput(
 					[
 						`予定（${from}〜${to}）`,
 						...(events.length === 0 ? ["- なし"] : events.map((event) => `- ${formatEvent(event, tz)} [${event.id}]`)),
@@ -69,7 +69,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 		}),
 		defineTool({
 			name: "calendar_create",
-			description: "予定またはタスクを1件登録する。ユーザーが実行する意思を明示し、内容が具体的なときだけ使う。",
+			description: "予定またはタスクを1件登録する。ユーザーが実行する意思を明示し、内容が具体的なときだけ使う。繰り返す予定は登録できない（頼まれたら、できないと伝える）。",
 			parameters: obj({
 				calendar: str({ description: `登録先: ${names.join(" / ")}` }),
 				summary: str({ description: "件名", minLength: 1 }),
@@ -95,7 +95,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 				const uid = await api.memo("uid", randomUUID(), context);
 				const id = await calendars.create(args.calendar, uid, fields, api.now());
 				await noteOwnWrite(id);
-				return done(`登録しました: ${await calendars.describe(id)} [${id}]`);
+				return textOutput(`登録しました: ${await calendars.describe(id)} [${id}]`);
 			},
 		}),
 		defineTool({
@@ -117,10 +117,10 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 				splitId(id);
 				if (!Object.values(changes).some((value) => value !== undefined)) throw new CalendarError("変更内容がありません。");
 				const no = await approvals.forCall("calendar_update", `予定・タスクを変更: ${await calendars.describe(id)}（${describeChanges(changes)}）`, api, context);
-				if (no !== undefined) return done(no);
+				if (no !== undefined) return textOutput(no);
 				await calendars.update(id, changes, api.now());
 				await noteOwnWrite(id);
-				return done(`変更しました: ${await calendars.describe(id)}`);
+				return textOutput(`変更しました: ${await calendars.describe(id)}`);
 			},
 		}),
 		defineTool({
@@ -133,10 +133,10 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 				splitId(args.id);
 				const target = await calendars.describe(args.id);
 				const no = await approvals.forCall("calendar_delete", `予定・タスクを削除: ${target}`, api, context);
-				if (no !== undefined) return done(no);
+				if (no !== undefined) return textOutput(no);
 				await calendars.remove(args.id);
 				db.setSeenItem(args.id, undefined);
-				return done(`削除しました: ${target}`);
+				return textOutput(`削除しました: ${target}`);
 			},
 		}),
 		defineTool({
@@ -147,7 +147,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 			execute: async (args, api) => {
 				await calendars.complete(args.id, api.now());
 				await noteOwnWrite(args.id);
-				return done("完了にしました。");
+				return textOutput("完了にしました。");
 			},
 		}),
 	];
@@ -166,7 +166,6 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 					"- 既存の項目の変更と削除は、ツールがユーザーに承認を求めて決定を待つ。会話で事前に確認し直す必要はない。拒否されたら実行せず、そう伝える。",
 					"- ユーザーが終えたと言ったタスクは calendar_complete で完了にする。",
 					"- 日時は各発言の先頭にある時刻を基準に、ユーザーの現地時刻で解釈する。",
-					"- 繰り返す予定の新規作成はできない。頼まれたら、できないと伝える。",
 				].join("\n"),
 			),
 		],

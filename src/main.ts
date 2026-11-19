@@ -8,11 +8,12 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { PlaywrightBrowsers } from "./browser.ts";
 import { createBrowserExtension } from "./browser-tools.ts";
 import { connectCalDav } from "./caldav.ts";
+import { createCompactionExtension } from "./compaction.ts";
 import { Calendars } from "./calendar.ts";
 import { createCalendarExtension } from "./calendar-tools.ts";
 import { Calls } from "./call.ts";
 import { Approvals } from "./approval.ts";
-import { loadConfig, modelRef, persona, personaFor } from "./config.ts";
+import { loadConfig, modelRef, persona, personaFor, usedModels } from "./config.ts";
 import { CodeRequests } from "./codes.ts";
 import { CredentialCommands } from "./credential-commands.ts";
 import { Credentials } from "./credentials.ts";
@@ -20,10 +21,12 @@ import { EgressProxy } from "./egress.ts";
 import { errorMessage, fail } from "./errors.ts";
 import { PlaywrightReader } from "./extract.ts";
 import { spawnGateway } from "./gateway.ts";
-import { createAgentModels, openAgentHarness, openConfig } from "./harness.ts";
+import { compactionSettings, createAgentModels, openAgentHarness, openConfig } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
+import { createImageWindowExtension } from "./images.ts";
 import { McpServers, serversFromConfig } from "./mcp.ts";
 import { createMemoryExtension, MemoryStore } from "./memory.ts";
+import { createProactiveExtension, Proactive } from "./proactive.ts";
 import { Bridge } from "./rooms.ts";
 import { Scheduler } from "./scheduler.ts";
 import { createSelfExtension } from "./self.ts";
@@ -32,6 +35,7 @@ import { memoryFingerprint, tidyMemory } from "./tidy.ts";
 import { Voicevox } from "./tts.ts";
 import { jmaForecast } from "./weather.ts";
 import { createWeatherExtension } from "./weather-tools.ts";
+import { createOutsideExtension } from "./untrusted.ts";
 import { createWebExtension } from "./web-tools.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -90,8 +94,19 @@ const approvals = new Approvals({
 // Taken before the model sees anything: `!cred` commands, which may hold a password, and one-time codes.
 const credentials = new Credentials(join(config.dataDir, "credentials.json"));
 const codes = new CodeRequests({ notice: (roomId, txnId, body) => viaBridge().post(roomId, txnId, body) });
+// The scheduler is made last; timers reach it once it exists.
+let scheduler: Scheduler | undefined;
 const extensions = [
 	CodingTools,
+	createCompactionExtension({ db }),
+	createImageWindowExtension(),
+	createProactiveExtension({
+		db,
+		tz: config.timezone,
+		onTimers: () => scheduler?.timersChanged(),
+		// `replay: "safe"` is what the config says of a server whose tools only read.
+		reads: (tool) => Object.entries(config.mcp).some(([name, server]) => server.replay === "safe" && tool.startsWith(`mcp__${name}__`)),
+	}),
 	createSelfExtension({
 		configPath: resolve(configPath),
 		workDir: config.baseDir,
@@ -115,6 +130,7 @@ const extensions = [
 				}),
 			]),
 	...(web === undefined ? [] : [web.extension]),
+	...(browsers === undefined && web === undefined && Object.keys(config.mcp).length === 0 ? [] : [createOutsideExtension({ extract: web !== undefined, browser: browsers !== undefined })]),
 ];
 
 const registry = createRegistry();
@@ -122,6 +138,7 @@ const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.d
 	extensions,
 	registry,
 	env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? config.baseDir }),
+	compaction: compactionSettings(models, usedModels(config), config.compaction.at),
 });
 // Their tools are installed when each server answers; the agent does not wait for them.
 const mcp = new McpServers({
@@ -157,12 +174,15 @@ if (config.voice?.call !== undefined && transcriber !== undefined && synthesizer
 	}).start();
 }
 
-const scheduler = new Scheduler({
+// Wakes left open by the last process are weighed again at the first tick, once the gateway can send.
+const proactive = new Proactive({ harness, db, rooms: bridge, context });
+scheduler = new Scheduler({
 	config,
 	db,
 	calendars,
 	weather,
-	submit: (roomId, key, content) => bridge.submitScheduled(roomId, key, content),
+	// Weighing takes a model request or more for each wake; the tick does not wait for it.
+	weigh: () => void proactive.run(),
 	notice: (roomId, key, body) => bridge.notice(roomId, key, body),
 	tidy: {
 		fingerprint: () => memoryFingerprint(store, personas),
@@ -175,7 +195,7 @@ let stopping = false;
 async function shutdown(exitCode: number): Promise<void> {
 	if (stopping) return;
 	stopping = true;
-	scheduler.stop();
+	scheduler?.stop();
 	gateway.stop();
 	transcriber?.close();
 	await browsers?.close();

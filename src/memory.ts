@@ -4,7 +4,7 @@ import { defineExtension, defineTool, section } from "@earendil-works/pi-durable
 import { obj, oneOf, str } from "@earendil-works/pi-schema";
 import { dateOf } from "./time.ts";
 import { writeFileAtomic } from "./files.ts";
-import { oneLine } from "./text.ts";
+import { oneLine, textOutput } from "./text.ts";
 
 export type MemoryScope = "shared" | "private";
 
@@ -181,7 +181,6 @@ export function createMemoryExtension(options: MemoryExtensionOptions) {
 		if (found === undefined) throw new MemoryError("この会話には記憶がありません。");
 		return found;
 	};
-	const done = (text: string) => ({ output: [{ type: "text" as const, text }] });
 
 	return defineExtension({
 		name: "memory",
@@ -197,7 +196,7 @@ export function createMemoryExtension(options: MemoryExtensionOptions) {
 				description: "長期記憶に1項目追加する。今後の会話でも役に立つことだけを、中立な1文で書く。",
 				parameters: obj({ scope, text: str({ description: "記憶する内容。1文。", minLength: 1 }) }),
 				replay: "safe",
-				execute: async (args, api) => done(store.add(args.scope, persona(api.conversationId), args.text, dateOf(api.now(), tz))),
+				execute: async (args, api) => textOutput(store.add(args.scope, persona(api.conversationId), args.text, dateOf(api.now(), tz))),
 			}),
 			defineTool({
 				name: "memory_replace",
@@ -209,7 +208,7 @@ export function createMemoryExtension(options: MemoryExtensionOptions) {
 				}),
 				replay: "safe",
 				execute: async (args, api) =>
-					done(store.replace(args.scope, persona(api.conversationId), args.match, args.text, dateOf(api.now(), tz))),
+					textOutput(store.replace(args.scope, persona(api.conversationId), args.match, args.text, dateOf(api.now(), tz))),
 			}),
 			defineTool({
 				name: "memory_remove",
@@ -219,7 +218,7 @@ export function createMemoryExtension(options: MemoryExtensionOptions) {
 					match: str({ description: "消す項目に含まれる文言。1項目だけに当てはまること。", minLength: 1 }),
 				}),
 				replay: "safe",
-				execute: async (args, api) => done(store.remove(args.scope, persona(api.conversationId), args.match)),
+				execute: async (args, api) => textOutput(store.remove(args.scope, persona(api.conversationId), args.match)),
 			}),
 		],
 	});

@@ -8,7 +8,7 @@ import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, type Extension, type Harness, type Registry } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type Config, parseConfig } from "../src/config.ts";
-import { openAgentHarness } from "../src/harness.ts";
+import { compactionSettings, openAgentHarness } from "../src/harness.ts";
 import { HostDb } from "../src/hostdb.ts";
 import { Bridge, type BridgeOptions } from "../src/rooms.ts";
 import { FakeLink } from "./fakes.ts";
@@ -47,12 +47,21 @@ export type EnvOptions = {
 	/** Built again at each (re)start, with that start's database. */
 	readonly extensions?: (env: { readonly config: Config; readonly db: HostDb; readonly models: Models }) => Extension[];
 	readonly now?: () => number;
+	/** The API the fake model speaks, for code that acts only on some providers' APIs. */
+	readonly api?: string;
+	/** The fake model's context window. */
+	readonly contextWindow?: number;
+	/** The share of the window at which compaction starts (`compaction.at`); none gives pi-durable's defaults. */
+	readonly compactAt?: number;
 };
 
 export async function agentEnv(options: EnvOptions = {}) {
 	const dir = tempDir();
 	for (const [name, soul] of Object.entries({ "soul.md": "SOUL", ...options.souls })) writeFileSync(join(dir.path, name), soul);
-	const faux = fauxProvider();
+	const faux = fauxProvider({
+		...(options.api === undefined ? {} : { api: options.api }),
+		...(options.contextWindow === undefined ? {} : { models: [{ id: "faux-1", contextWindow: options.contextWindow }] }),
+	});
 	const model = faux.getModel();
 	const config = testConfig(dir.path, { model: `${model.provider}/${model.id}`, ...options.config });
 	mkdirSync(config.dataDir, { recursive: true });
@@ -70,6 +79,7 @@ export async function agentEnv(options: EnvOptions = {}) {
 			extensions: options.extensions?.({ config, db, models }) ?? [],
 			now: options.now,
 			registry,
+			...(options.compactAt === undefined ? {} : { compaction: compactionSettings(models, [{ provider: model.provider, modelId: model.id }], options.compactAt) }),
 		});
 		link = new FakeLink();
 	};

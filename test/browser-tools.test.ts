@@ -2,20 +2,25 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { BrowserPage, Browsers, FieldInfo } from "../src/browser.ts";
+import { type BrowserPage, type Browsers, type FieldInfo, VIEWPORT } from "../src/browser.ts";
 import { createBrowserExtension, pngSize } from "../src/browser-tools.ts";
 import { UNTRUSTED } from "../src/untrusted.ts";
 import { CodeRequests, noCode } from "../src/codes.ts";
 import { persona, personaFor } from "../src/config.ts";
 import type { Bridge } from "../src/rooms.ts";
 import { Credentials } from "../src/credentials.ts";
-import { agentEnv } from "./env.ts";
-import { call, everything, lastInput, lastToolResult, message, noting, type Request, type ToolResult } from "./fakes.ts";
+import { Proactive } from "../src/proactive.ts";
+import { agentEnv, context } from "./env.ts";
+import { call, everything, imagesIn, lastInput, lastToolResult, message, noting, type Request, type ToolResult } from "./fakes.ts";
 
 /** The header of a PNG image of 640 x 480: all a reader of its size looks at. */
 const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 2, 128, 0, 0, 1, 224])]);
 
+/** Only its first bytes: what the model is given is not looked into. */
+const JPEG = Buffer.from("ffd8ffe000104a464946", "hex");
+
 const ROOM = "!main:example.org";
+
 const SECRET = "correct-horse-battery";
 
 /** Its one page shows whatever was typed into it, as a real page may. */
@@ -28,7 +33,7 @@ class FakeBrowsers implements Browsers {
 	tree: string | undefined;
 	text: string | undefined;
 
-	async page(profile: string, conversationId: number): Promise<BrowserPage> {
+	async page(profile: string, _roomId: string): Promise<BrowserPage> {
 		const fields: Record<string, string> = { user: "text", pass: "password", search: "text" };
 		return {
 			goto: async (url) => {
@@ -36,6 +41,7 @@ class FakeBrowsers implements Browsers {
 				this.url = url;
 			},
 			back: async () => void this.log.push("back"),
+			location: async () => ({ url: this.url, title: "テストページ" }),
 			snapshot: async () => ({
 				url: this.url,
 				title: "テストページ",
@@ -43,14 +49,15 @@ class FakeBrowsers implements Browsers {
 			}),
 			read: async (whole) => ({ url: this.url, title: "テストページ", markdown: this.text ?? `本文 ${[...this.values.values()].join(" ")}`, scope: whole ? "page" : "article" }),
 			click: async (ref) => void this.log.push(`click ${ref}`),
+			clickAt: async (x, y) => void this.log.push(`click at ${x},${y}`),
 			fill: async (ref, text) => {
 				this.log.push(`fill ${ref}`);
 				this.values.set(ref, text);
 			},
 			press: async (key, ref) => void this.log.push(`press ${key} ${ref ?? ""}`.trim()),
-			screenshot: async (fullPage) => {
-				this.log.push(`screenshot${fullPage ? " full" : ""}`);
-				return PNG;
+			screenshot: async ({ fullPage, format, mark }) => {
+				this.log.push(`screenshot ${format}${fullPage === true ? " full" : ""}${mark === undefined ? "" : ` marked ${mark.x},${mark.y}`}`);
+				return format === "png" ? PNG : JPEG;
 			},
 			field: async (ref): Promise<FieldInfo> => {
 				const kind = fields[ref];
@@ -244,11 +251,12 @@ test("filling a login that names no field is refused", async () => {
 	assert.equal(t.results[0]?.isError, true);
 });
 
-test("a run the scheduler started cannot use the browser", async () => {
+test("a check the bot makes of its own accord cannot use the browser", async () => {
 	await using t = await setup();
 	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), t.noting]);
-	await t.bridge.submitScheduled(ROOM, "check:1", "[定時チェック] ...");
-	await t.bridge.idle();
+	const proactive = new Proactive({ harness: t.env.harness, db: t.env.db, rooms: t.bridge, context, log: () => {} });
+	t.env.db.addWake({ key: "check:1", roomId: ROOM, kind: "check", content: "[定時チェック] ...", createdAt: Date.now() });
+	await proactive.run();
 	assert.equal(t.results[0]?.isError, true);
 	assert.deepEqual(t.browsers.log, []);
 });
@@ -277,13 +285,38 @@ test("a message that is not a code ends the request, and reaches the model as sa
 	assert.ok(lastInput(t.requests.at(-1) as Request).includes("やっぱりやめて"));
 });
 
-test("a screenshot of the page goes to the room of the conversation, as an image of its size", async () => {
+test("a screenshot is shown to the model as an image of the window, with the size its points are given in", async () => {
 	await using t = await setup();
-	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), call("browser_screenshot", { fullPage: true }), t.noting]);
+	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), call("browser_screenshot", {}), t.noting]);
+	await t.say("画面を見て");
+	assert.deepEqual(imagesIn(t.requests[0]!), [{ type: "image", data: JPEG.toString("base64"), mimeType: "image/jpeg" }]);
+	assert.match(t.results[0]?.text ?? "", new RegExp(`${VIEWPORT.width}×${VIEWPORT.height}`));
+	assert.deepEqual(t.env.link.of("sendImage"), []);
+});
+
+test("a screenshot shared with the user goes to the room of the conversation as an image of its size, and the model sees it too", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), call("browser_screenshot", { share: true, fullPage: true }), t.noting]);
 	await t.say("画面を見せて");
-	assert.ok(t.browsers.log.includes("screenshot full"));
+	assert.ok(t.browsers.log.includes("screenshot png full"));
 	const [sent] = t.env.link.of("sendImage");
 	assert.equal(sent?.roomId, ROOM);
 	assert.deepEqual({ width: sent?.width, height: sent?.height }, pngSize(PNG));
-	assert.equal(t.results[0]?.isError, false);
+	assert.equal(imagesIn(t.requests[0]!).length, 1);
+});
+
+test("a click at a point clicks there, and the model sees the window after it with the point marked", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), call("browser_click_at", { x: 300, y: 200 }), t.noting]);
+	await t.say("画像認証を解いて");
+	assert.deepEqual(t.browsers.log.slice(1), ["click at 300,200", "screenshot jpeg marked 300,200"]);
+	assert.equal(imagesIn(t.requests[0]!).length, 1);
+});
+
+test("a click outside the window is refused without clicking", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), call("browser_click_at", { x: VIEWPORT.width, y: 10 }), t.noting]);
+	await t.say("押して");
+	assert.equal(t.results[0]?.isError, true);
+	assert.ok(!t.browsers.log.some((line) => line.startsWith("click")));
 });

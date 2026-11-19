@@ -13,6 +13,7 @@
 	"defaultPersona": "default",
 	"rooms": {},
 	"timezone": "Asia/Tokyo",
+	"compaction": { "at": 0.5 },
 	"memory": { "sharedLimit": 2000, "privateLimit": 1000, "tidyTime": "02:00", "tidyEveryDays": 1 },
 	"caldav": {
 		"url": "https://dav.example.org",
@@ -47,6 +48,7 @@
 	"proactive": {
 		"roomId": "!roomid:example.org",
 		"briefTime": "06:00",
+		"checkTimes": ["12:00", "18:00"],
 		"windowStart": "06:00",
 		"windowEnd": "21:00",
 		"tickMinutes": 15,

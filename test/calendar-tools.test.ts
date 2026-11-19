@@ -120,19 +120,19 @@ test("a create the model got wrong is refused as an error, and nothing is stored
 
 test("what the agent itself wrote is not reported back to the user as news, while a change from elsewhere is", async () => {
 	await using t = await setup();
-	const submitted: string[] = [];
+
 	const scheduler = new Scheduler({
 		config: t.env.config,
 		db: t.env.db,
 		calendars: t.calendars,
-		submit: async (_room, _key, content) => void submitted.push(content),
 		notice: async () => {},
 		now: t.now,
 		log: () => {},
 	});
 	t.setClock("2026-11-17T10:00");
 	await scheduler.tick();
-	submitted.length = 0;
+	const before = t.env.db.openWakes().length;
+	const submitted = () => t.env.db.openWakes().slice(before).map((wake) => wake.content);
 
 	t.setClock("2026-11-17T10:05");
 	t.env.faux.setResponses([call("calendar_create", { calendar: "Home", summary: "自分で登録した予定", start: "2026-11-21T09:00" }), t.noting]);
@@ -142,9 +142,9 @@ test("what the agent itself wrote is not reported back to the user as news, whil
 	t.setClock("2026-11-17T10:15");
 	await scheduler.tick();
 
-	assert.equal(submitted.length, 1);
-	assert.match(submitted[0]!, /スマホで入れた予定/);
-	assert.doesNotMatch(submitted[0]!, /自分で登録した予定/);
+	assert.equal(submitted().length, 1);
+	assert.match(submitted()[0]!, /スマホで入れた予定/);
+	assert.doesNotMatch(submitted()[0]!, /自分で登録した予定/);
 });
 
 test("a change is made only once the user approves it, and the request shows the item and the change", async () => {

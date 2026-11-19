@@ -305,23 +305,3 @@ test("a run that a later message joined and that then failed is told once", asyn
 
 	assert.equal(env.link.of("send").filter((send) => send.body.includes("the model is down")).length, 1);
 });
-
-test("a brief that comes while the agent works waits for that work and is answered on its own", async () => {
-	const gate = gated();
-	await using env = await agentEnv({ extensions: () => [gate.extension] });
-	const requests: Request[] = [];
-	env.faux.setResponses([call("gate", {}), answer("ユーザーへの答え", requests), answer("ブリーフ", requests)]);
-	const bridge = env.bridge();
-
-	env.link.emit(message(ROOM, "$1", "first"));
-	await gate.running;
-	await bridge.submitScheduled(ROOM, "brief:1", "[朝のブリーフ]");
-	gate.release();
-	await bridge.idle();
-
-	assert.doesNotMatch(lastInput(requests[0]!), /朝のブリーフ/);
-	assert.deepEqual(
-		env.link.of("send").filter((send) => !send.notice).map((send) => send.body),
-		["ユーザーへの答え", "ブリーフ"],
-	);
-});

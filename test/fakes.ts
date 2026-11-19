@@ -165,6 +165,12 @@ export function lastToolResult(request: Request): { readonly text: string; reado
 	return { text: textOf(result?.content), isError: result?.isError === true };
 }
 
+/** The images of the newest tool result in a request. */
+export function imagesIn(request: Request): { readonly data: string; readonly mimeType: string }[] {
+	const result = request.messages.findLast((item) => item.role === "toolResult");
+	return Array.isArray(result?.content) ? result.content.filter((block: { type: string }) => block.type === "image") : [];
+}
+
 export const call = (name: string, args: Record<string, string | boolean | number>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
 export type ToolResult = ReturnType<typeof lastToolResult>;
 export const noting =

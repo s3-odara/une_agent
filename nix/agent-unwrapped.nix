@@ -15,7 +15,7 @@ buildNpmPackage {
       ../package.json
       ../package-lock.json
       ../src
-      ../manual
+      ../skills
     ];
   };
   nodejs = nodejs_26;
@@ -25,7 +25,7 @@ buildNpmPackage {
     runHook preInstall
     npm prune --omit=dev --no-save
     mkdir -p $out/lib/agent
-    cp -r package.json src manual node_modules $out/lib/agent/
+    cp -r package.json src skills node_modules $out/lib/agent/
     # Not from npm: nixpkgs' own, so that it is always the Playwright of the nixpkgs the rest comes from.
     ln -s ${playwright-driver} $out/lib/agent/node_modules/playwright-core
     runHook postInstall

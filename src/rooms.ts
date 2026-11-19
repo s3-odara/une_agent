@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
-import { type Conversation, type Harness, LiveDoc } from "@earendil-works/pi-durable";
+import { type Conversation, type Harness, LiveDoc, ProviderDoc } from "@earendil-works/pi-durable";
 import { type Answer, answerOf, type Settled, type Submission } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
 import { type Config, modelFor, persona, personaFor, readSoul, thinkingFor } from "./config.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
-import { type Delivery, type HostDb, SCHEDULED_PREFIX } from "./hostdb.ts";
+import type { Aside, Delivery, HostDb } from "./hostdb.ts";
 import { ProgressReport } from "./progress.ts";
 import type { Transcriber } from "./stt.ts";
 import { formatStamp } from "./time.ts";
@@ -178,23 +178,82 @@ export class Bridge {
 		await this.#submit(message.roomId, message.eventId, `[${time === undefined ? "" : `${time} `}音声] ${text}`, true);
 	}
 
+	/** What a person said, into the room's conversation; counted, so a check knows something was said in the room. */
+	async #submitToRoom(roomId: string, key: string, content: string) {
+		const submission = await (await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key, whenBusy: "steer" }, this.#options.context);
+		this.#options.db.noteActivity(roomId);
+		return submission;
+	}
+
 	async #submit(roomId: string, key: string, content: string, voice = false): Promise<void> {
-		const { db, context } = this.#options;
-		const conversation = await this.#conversationFor(roomId);
-		// A brief or a reminder waits for the work in progress instead of steering it.
-		const whenBusy = key.startsWith(SCHEDULED_PREFIX) ? "followUp" : "steer";
-		const submission = await conversation.submit({ type: "input", content, requestId: key, whenBusy }, context);
+		const { db } = this.#options;
+		const submission = await this.#submitToRoom(roomId, key, content);
 		const delivery: Delivery = { eventId: key, roomId, submissionId: Number(submission.id), voice };
 		db.addDelivery(delivery);
 		this.#startDelivery(delivery);
 	}
 
-	/** The same key again asks for nothing new. */
-	submitScheduled(roomId: string, key: string, content: string): Promise<void> {
-		const eventId = `${SCHEDULED_PREFIX}${key}`;
+	/**
+	 * A conversation that starts as the room's is now, for something to be weighed in without the room's conversation
+	 * holding it; `adopt()` makes it the room's. Undefined while the room's conversation is at work: what it is doing
+	 * would be cut in half. The provider's session identity is carried over, so the prompt cache built by the room's
+	 * conversation serves this one.
+	 */
+	startAside(roomId: string): Promise<Aside | undefined> {
 		return this.#serial(roomId, async () => {
-			if (!this.#options.db.isDelivered(eventId)) await this.#submit(roomId, eventId, content);
+			const { harness, context, db } = this.#options;
+			const main = await this.#conversationFor(roomId);
+			const { busy, latest } = await this.#head(main);
+			if (busy) return undefined;
+			let aside: Conversation;
+			if (latest === undefined) {
+				aside = await this.#createConversation(roomId);
+			} else {
+				const session = (await harness.snapshot(ProviderDoc, main.id, context))?.sessionId;
+				aside = await main.fork(
+					latest.id,
+					{
+						ownership: { kind: "ownerless" },
+						...(session === undefined ? {} : { init: async (tx, id) => void ((await tx.doc(ProviderDoc, id)).sessionId = session) }),
+					},
+					context,
+				);
+			}
+			db.addConversationRoom(Number(aside.id), roomId);
+			return { conversationId: Number(aside.id), from: { conversationId: Number(main.id), entryId: latest === undefined ? 0 : Number(latest.id) } };
 		});
+	}
+
+	/**
+	 * Makes the aside the room's conversation, unless the room's has moved on since the aside was made (a message came,
+	 * or `!new`): the aside would not know of it. Repeating it after it succeeded succeeds again.
+	 */
+	adopt(roomId: string, aside: Aside): Promise<boolean> {
+		return this.#serial(roomId, async () => {
+			const { harness, context, db } = this.#options;
+			const current = db.conversationOf(roomId);
+			if (current === aside.conversationId) return true;
+			if (current !== aside.from.conversationId) return false;
+			const main = await harness.conversation(idFromNumber<ConversationId>(current), context);
+			if (main === undefined) return false;
+			const { busy, latest } = await this.#head(main);
+			if (busy || (latest === undefined ? 0 : Number(latest.id)) !== aside.from.entryId) return false;
+			db.setConversation(roomId, aside.conversationId);
+			return true;
+		});
+	}
+
+	/** Whether the conversation is at work, and its newest entry: what an aside starts from and is checked against. */
+	async #head(conversation: Conversation) {
+		const { harness, context } = this.#options;
+		const busy = (await harness.snapshot(LiveDoc, conversation.id, context))?.run !== undefined;
+		const [latest] = (await conversation.entries({}, 1, undefined, context)).items;
+		return { busy, latest };
+	}
+
+	/** A message of the bot's own accord, which notifies as an answer does. The same ID again sends nothing new. */
+	say(roomId: string, txnId: string, body: string): Promise<string> {
+		return this.#retrying(`the message ${txnId}`, () => this.#send(roomId, txnId, body, false));
 	}
 
 	/**
@@ -203,9 +262,7 @@ export class Bridge {
 	 */
 	async ask(roomId: string, key: string, content: string): Promise<Answer> {
 		const { harness, context } = this.#options;
-		const submission = await this.#serial(roomId, async () =>
-			(await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key, whenBusy: "steer" }, context),
-		);
+		const submission = await this.#serial(roomId, () => this.#submitToRoom(roomId, key, content));
 		return answerOf(harness, await submission.wait(context), context);
 	}
 
@@ -279,7 +336,7 @@ export class Bridge {
 	}
 
 	async #conversationFor(roomId: string): Promise<Conversation> {
-		const { harness, config, context, db } = this.#options;
+		const { config, context, db } = this.#options;
 		const name = personaFor(config, roomId);
 		const model = modelFor(config, name);
 		const thinkingLevel = thinkingFor(config, name);
@@ -299,9 +356,16 @@ export class Bridge {
 			}
 			return existing;
 		}
-		const created = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, thinkingLevel, instructions } }, context);
+		const created = await this.#createConversation(roomId);
 		db.setConversation(roomId, Number(created.id));
 		return created;
+	}
+
+	#createConversation(roomId: string): Promise<Conversation> {
+		const { harness, config, context } = this.#options;
+		const name = personaFor(config, roomId);
+		const agent = { model: modelFor(config, name), thinkingLevel: thinkingFor(config, name), instructions: readSoul(config, name) };
+		return harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
 	}
 
 	#startDelivery(delivery: Delivery): void {
@@ -388,7 +452,7 @@ export class Bridge {
 		const [answer] = await Promise.all([answerOf(harness, settled, context), report?.finish(settled)]);
 		if ((!answer.ok && answer.stopped) || !(await this.#answers(delivery, settled))) return undefined;
 		if (answer.ok) return { body: answer.text, notice: false };
-		if (answer.reason === "empty answer") return { body: "（空の応答でした）", notice: true };
+		if (answer.empty) return { body: "（空の応答でした）", notice: true };
 		return { body: `応答できませんでした（${answer.reason}）`, notice: true };
 	}
 
@@ -403,7 +467,6 @@ export class Bridge {
 		return !inputs.includes(delivery.submissionId) || inputs[0] === delivery.submissionId;
 	}
 
-	/** Scheduled runs write a brief or a reminder, whose steps the user did not ask to watch. */
 	async #progress(delivery: Delivery, submission: Submission): Promise<ProgressReport | undefined> {
 		if (!this.#options.db.isUserSubmission(delivery.submissionId)) return undefined;
 		const conversation = await this.#existingConversation(delivery.roomId);

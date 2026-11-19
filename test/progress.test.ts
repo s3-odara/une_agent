@@ -125,17 +125,3 @@ test("an answer with nothing to show before it comes without a notice", async ()
 		[["こんにちは", false]],
 	);
 });
-
-test("a run the scheduler started shows no progress", async () => {
-	await using env = await progressEnv();
-	env.faux.setResponses([call("lookup", { city: "Kyoto" }), fauxAssistantMessage("おはようございます")]);
-	const bridge = env.bridge({ progressIntervalMs: 0 });
-
-	await bridge.submitScheduled(ROOM, "brief:1", "[朝のブリーフ]");
-	await bridge.idle();
-
-	assert.deepEqual(
-		env.link.of("send").map((send) => send.body),
-		["おはようございます"],
-	);
-});
