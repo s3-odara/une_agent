@@ -6,10 +6,11 @@
 //!   also written. Paths that do not exist are left out. The profile Chromium is given (`--user-data-dir=`) is
 //!   written too: Playwright makes it in its own temporary directory under a name of its choosing, and the rest of that
 //!   directory is the agent's
-//! - `AGENT_SANDBOX_TCP`: the TCP ports (one per line) that may be connected to, and no other. TCP ports are never bound,
-//!   and UDP is never used
-//! - `AGENT_SANDBOX_UNIX`: the UNIX sockets made outside (one per line) that may be connected to, such as a display's.
-//!   No other: the user's D-Bus would let the program start anything outside the sandbox through systemd
+//! - `AGENT_SANDBOX_TCP`: the TCP ports (one per line) that may be connected to, on any address, and no other. TCP ports
+//!   are never bound, and UDP is never used
+//!
+//! UNIX sockets made outside are never connected to: the user's D-Bus would let the program start anything outside the
+//! sandbox through systemd.
 //!
 //! Landlock ABI 10 is required: ABI 9 controls connecting to UNIX sockets by their path, and ABI 10 controls UDP. On an
 //! older kernel the program is not run at all, rather than run less confined.
@@ -31,7 +32,6 @@ const EXEC: &str = "AGENT_SANDBOX_EXEC";
 const READ: &str = "AGENT_SANDBOX_READ";
 const WRITE: &str = "AGENT_SANDBOX_WRITE";
 const TCP: &str = "AGENT_SANDBOX_TCP";
-const UNIX: &str = "AGENT_SANDBOX_UNIX";
 
 mod landlock {
 	pub const CREATE_RULESET_VERSION: u32 = 1 << 0;
@@ -84,7 +84,6 @@ struct Policy {
 	read: Vec<OsString>,
 	write: Vec<OsString>,
 	tcp: Vec<u16>,
-	unix: Vec<OsString>,
 }
 
 impl Policy {
@@ -103,7 +102,6 @@ impl Policy {
 			read: lines(READ),
 			write: lines(WRITE).into_iter().chain(env::args_os().filter_map(|arg| arg.as_bytes().strip_prefix(b"--user-data-dir=").map(|dir| OsStr::from_bytes(dir).to_owned()))).collect(),
 			tcp,
-			unix: lines(UNIX),
 		})
 	}
 }
@@ -163,9 +161,6 @@ fn restrict(policy: &Policy) -> Result<(), String> {
 		// writable directory from outside (the temporary directory is shared) would be too.
 		add_path(&ruleset, path, landlock::FS_ALL & !landlock::FS_RESOLVE_UNIX)?;
 	}
-	for path in &policy.unix {
-		add_path(&ruleset, path, landlock::FS_RESOLVE_UNIX)?;
-	}
 	for &port in &policy.tcp {
 		let attr = landlock::NetPortAttr { allowed_access: landlock::NET_CONNECT_TCP, port: port.into() };
 		if unsafe { libc::syscall(libc::SYS_landlock_add_rule, ruleset.as_raw_fd(), landlock::RULE_NET_PORT, &attr, 0u32) } < 0 {
@@ -211,7 +206,7 @@ fn run() -> Result<Infallible, String> {
 	let policy = Policy::from_env()?;
 	restrict(&policy)?;
 	refuse_unused_syscalls()?;
-	let error = Command::new(&policy.program).args(env::args_os().skip(1)).env_remove(EXEC).env_remove(READ).env_remove(WRITE).env_remove(TCP).env_remove(UNIX).exec();
+	let error = Command::new(&policy.program).args(env::args_os().skip(1)).env_remove(EXEC).env_remove(READ).env_remove(WRITE).env_remove(TCP).exec();
 	Err(format!("{:?}: {error}", policy.program))
 }
 

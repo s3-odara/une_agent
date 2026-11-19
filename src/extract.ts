@@ -110,7 +110,7 @@ export class PlaywrightReader implements PageReader {
 
 	#launch(): Promise<Browser> {
 		if (this.#browser === undefined) {
-			const launching = launchSandboxed({ headless: true, proxy: this.#options.egress.url, executablePath: this.#options.executablePath });
+			const launching = launchSandboxed({ proxy: this.#options.egress.url, executablePath: this.#options.executablePath });
 			this.#browser = launching;
 			const forget = () => {
 				if (this.#browser === launching) this.#browser = undefined;

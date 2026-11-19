@@ -40,7 +40,6 @@ export type Config = {
 		readonly areaIndex: number;
 	};
 	readonly browser?: {
-		readonly headless: boolean;
 		readonly executablePath?: string;
 		readonly idleMinutes: number;
 	};
@@ -175,7 +174,6 @@ function browser(value: unknown): Config["browser"] {
 	if (value === undefined) return undefined;
 	const root = object(value, "browser");
 	return {
-		headless: flag(root.headless, true, "browser.headless"),
 		...(root.executablePath === undefined ? {} : { executablePath: str(root.executablePath, "browser.executablePath") }),
 		idleMinutes: limit(root.idleMinutes, 10, "browser.idleMinutes"),
 	};

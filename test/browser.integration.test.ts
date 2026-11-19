@@ -72,7 +72,7 @@ async function realBrowser(t: TestContext) {
 	const port = await listen(server);
 	const base = `http://127.0.0.1:${port}`;
 	const egress = await egressTo(port);
-	const options = { dir: join(dir.path, "browser"), egress, headless: true, timezone: "Asia/Tokyo", idleMs: 600_000 };
+	const options = { dir: join(dir.path, "browser"), egress, timezone: "Asia/Tokyo", idleMs: 600_000 };
 	let browsers = new PlaywrightBrowsers(options);
 	const dispose = async () => {
 		await browsers.close();

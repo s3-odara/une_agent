@@ -20,7 +20,7 @@ import { listen, tempDir } from "./env.ts";
  */
 async function asBrowser(sandbox: Partial<ChromiumSandbox>, body: string, args: readonly string[] = []): Promise<"allowed" | "refused"> {
 	using home = tempDir();
-	const { executablePath, env } = sandboxedChromium({ headless: true, proxy: "http://127.0.0.1:1", ...sandbox, home: home.path, executablePath: process.execPath });
+	const { executablePath, env } = sandboxedChromium({ proxy: "http://127.0.0.1:1", ...sandbox, home: home.path, executablePath: process.execPath });
 	const code = `(async () => { try { ${body}; console.log("allowed"); } catch { console.log("refused"); } })();`;
 	return await new Promise((resolve, reject) =>
 		execFile(executablePath, ["-e", code, "--", ...args], { env }, (error, stdout, stderr) => (error ? reject(new Error(stderr || String(error))) : resolve(stdout.trim() as "allowed" | "refused"))),
@@ -90,30 +90,11 @@ test("the browser sends no UDP", async (t) => {
 	assert.equal(await asBrowser({}, send), "refused");
 });
 
-test("a headless browser cannot reach a UNIX socket outside, such as the user's D-Bus", async (t) => {
+test("the browser cannot reach a UNIX socket outside, such as the user's D-Bus", async (t) => {
 	using temp = tempDir();
 	const path = join(temp.path, "bus");
 	const server = createServer();
 	t.after(() => server.close());
 	await listen(server, path);
 	assert.equal(await asBrowser({}, connect(path)), "refused");
-});
-
-test("a browser with a window reaches its display's socket, and no other UNIX socket outside", async (t) => {
-	using temp = tempDir();
-	const display = join(temp.path, "wayland-0");
-	const bus = join(temp.path, "bus");
-	const displayServer = createServer();
-	const busServer = createServer();
-	const previous = process.env.WAYLAND_DISPLAY;
-	process.env.WAYLAND_DISPLAY = display;
-	t.after(() => {
-		displayServer.close();
-		busServer.close();
-		if (previous === undefined) delete process.env.WAYLAND_DISPLAY;
-		else process.env.WAYLAND_DISPLAY = previous;
-	});
-	await Promise.all([listen(displayServer, display), listen(busServer, bus)]);
-	const reach = (path: string) => asBrowser({ headless: false }, connect(path));
-	assert.deepEqual(await Promise.all([reach(display), reach(bus)]), ["allowed", "refused"]);
 });

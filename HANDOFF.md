@@ -232,9 +232,9 @@ Web ブラウザ。`config.json` に `browser` があれば有効になる。`sr
 1. Chromium は nixpkgs の `chromium` を使う。開発用シェルとパッケージがどちらも `AGENT_CHROMIUM` をそこに向けるので、
    取得もシステムライブラリも要らない。
    Playwright（`playwright-core`）も npm ではなく nixpkgs の `playwright-driver` を使う（「Chromium のサンドボックス」）
-2. 二段階認証などエージェントにできないログインは、画面のある環境で
-   `just browser-login https://example.com`（常駐中のものは `just deployed-browser-login https://example.com`、
-   エージェントを止めて開き、閉じたら起動し直す）で手で済ませる
+2. ブラウザは常にヘッドレス。画面を開いて手でログインする `just browser-login`・`just deployed-browser-login` と
+   `browser.headless` は 2026-11-19 に廃止した（使っておらず、表示のソケットや X の認証のために囲いを広げていた）。
+   二段階認証は `browser_request_code` で、画像認証などはスクリーンショットを送って止まる
 
 ### 検証の範囲
 
@@ -242,7 +242,7 @@ Web ブラウザ。`config.json` に `browser` があれば有効になる。`sr
 別会話は別タブで cookie は共有、別プロファイルは別、プロファイルの永続化、パスワード欄の伏せ字、
 ツール経由で保存済みパスワードを使ったログイン。Chromium を起動できない環境では自動でスキップする。
 
-未確認: 実在のサイト（重いページ、ボット対策、二段階認証）、画面つきで動かす `browser-login`、
+未確認: 実在のサイト（重いページ、ボット対策、二段階認証）、
 実際のモデルがツリーを読んで操作できるか。
 
 ## 手順5の実装（2026-11-17）
@@ -552,7 +552,7 @@ Playwright は `chromiumSandbox: true` を渡さない限り Chromium を `--no-
 Chromium 自身のサンドボックスが閉じ込めるのはレンダラーだけ。そこを抜けられたときのために、Chromium 全体を
 小さなラッパー `agent-sandbox`（Rust、依存は libc だけ）の中で起動する。Playwright はブラウザに実行ファイルと環境変数しか
 渡せないので、`executablePath` をラッパーにし、方針を環境変数（`AGENT_SANDBOX_*`）で渡す。ラッパーは制限をかけてから
-Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser-login` の3つすべて。
+Chromium を exec する。対象は `browser_*` と `web_extract` の両方。
 
 - **Landlock ABI 10 以上が必須**（2026-11-19 決定。VM は Ubuntu 26.10（カーネル 7.3）にする）。満たさないカーネルでは
   ブラウザは起動しない（囲いを弱めて動かすことはしない）。このマシン（7.3）は ABI 11。26.04 の 7.0 は ABI 9 の
@@ -572,9 +572,9 @@ Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser
     共有すると並列で起動した Chromium が互いを待った。深い場所に置くと、Chromium が `TMPDIR` に作る1プロセス制限の
     UNIX ソケットのパスが上限（107バイト）を超えて起動しなかった
   - 以前は常駐時の `TMPDIR` を `~/.cache/agent/tmp` にして一時ディレクトリごと書けるようにしていたが、上のとおり要らなくなったので戻した
-- 環境変数: 決めたものだけを渡す（`PATH`、`LANG`、`LC_*`、`TZ`、証明書とフォントの場所。画面つきなら表示用のもの）。
+- 環境変数: 決めたものだけを渡す（`PATH`、`LANG`、`LC_*`、`TZ`、証明書とフォントの場所）。
   それまではエージェントの環境変数（API キー、CalDAV のパスワード）がそのまま Chromium に渡っていた
-- ネットワーク: **3つとも通信は `src/egress.ts` のプロキシだけ**（2026-11-19 決定。LAN の中のサイトは見ない）。
+- ネットワーク: **両方とも通信は `src/egress.ts` のプロキシだけ**（2026-11-19 決定。LAN の中のサイトは見ない）。
   Landlock で TCP の接続先をプロキシのポートだけにし、TCP の待ち受けと UDP（ABI 10）は全部禁止。以前の `browser_*` は
   制限がなく、ページの JavaScript から `127.0.0.1` や LAN（認証の無い VOICEVOX、ルーターなど）に届いた
 - UNIX ソケット: 外で作られたものにはつながらない（ABI 9 の `RESOLVE_UNIX`。囲いの中で作ったものには許可なしで届く）。
@@ -582,15 +582,11 @@ Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser
   systemd に頼んで囲いの外でプロセスを起動できる）。実際の Chromium のログにも、D-Bus への接続が `Permission denied` で
   断られているのが出る
   - 書ける場所にも `RESOLVE_UNIX` は与えない。外から置かれたソケットに届いてしまう
-- 画面つき（`browser.headless: false`、`just browser-login`）は、表示のソケット（X の `/tmp/.X11-unix/X<n>`、Wayland の
-  `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`）にだけ `RESOLVE_UNIX` を与える。ほかの制限は同じ。X のライブラリ（libxcb）は
-  抽象ソケットを先に試し、囲いに断られるとパスのソケットを試さずにあきらめるので、Chromium に渡す `DISPLAY` を
-  ソケットのパスに書き換える
 - seccomp: io_uring と x86_64 以外のシステムコール（`int 0x80`、x32）を断る。Chromium はどれも使わず、カーネルの脆弱性が
   多く見つかってきた場所。Chromium 自身の seccomp はレンダラーにしかかからない。以前は ABI 9 が無いカーネルに備えて
   `socket(AF_UNIX)` も断っていたが、通常の Chromium は1プロセス制限（ProcessSingleton）の UNIX ソケットを作れないと
   落ちるのと、ABI 10 を必須にしたので外した
-- ラッパーは `just sandbox`（`just test`・`just run`・`just browser-login` が先に作る）、パッケージでは `nix/sandbox.nix`
+- ラッパーは `just sandbox`（`just test`・`just run` が先に作る）、パッケージでは `nix/sandbox.nix`
   （`AGENT_SANDBOX_BIN`）
 
 選ばなかったもの:
@@ -616,6 +612,9 @@ Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser
   9か月で更新が終わるので、次のリリースへの更新と、自動更新のあとの再起動を運用に入れる
 - ブラウザ本体を乗っ取られると、プロファイルにあるログイン済みのセッションは使われる。どの囲いでも防げないので、
   エージェントのブラウザでログインしておくサイトを必要なものに絞る
+- Landlock の TCP の規則はポート番号だけで、宛先のアドレスを見ない（ABI 10 でも同じ。seccomp もアドレスはポインタの先
+  なので見られない）。ブラウザ本体を乗っ取った相手は、プロキシと同じ番号のポートならどのホストにもつなげ、プロキシを
+  通さずに外へ送れる。塞ぐにはネットワーク名前空間を分けてプロキシへの中継だけを置く必要があり、まだやっていない
 
 モデルには `bash` を制限なしで渡しているので、モデルが誘導されて秘密を読む経路はどれでも残る。守れるのは
 「ページを開いただけで乗っ取られる」経路だけ。
@@ -628,18 +627,17 @@ Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser
   `agent-chromium` のラベルが付くこと（このマシンには Ubuntu の制限が無いので、制限下で起動できることは未確認）
 - `test/sandbox.test.ts`: Node を同じ方針で動かし、ユーザーのファイルを読めない、決めた場所にだけ書ける、エージェントの一時ディレクトリを読み書きできない、環境変数と
   エージェントの `environ` が見えない、シグナルを送れない、プロキシにだけつながる、UDP を送れない、外の UNIX ソケットに
-  届かない、画面つきでは表示のソケットにだけ届くこと
-- 実 Chromium のテストはすべてラッパーの中で通る。ブラウザに `file://` でリポジトリのファイルを開かせても読めない
+  届かないこと
+- 実 Chromium のテストはすべてラッパーの中で通る。ブラウザに `file://` で一時ディレクトリに置いたファイルを開かせても読めない
   （ラッパーを外すと読めてテストが落ちる）。`browser_*` のページの画像も、ブラウザで直接開いても、このホストの別のサーバーに届かない。
   Nix でビルドしたパッケージでもページを読める
-- 画面つき: Xvfb（`xvfb-run`）の上で、ラッパーの中の Chromium が窓を開いてスクリーンショットを撮れること。Wayland は未確認
 - 実 Chromium のテストは、Chromium が無いときだけスキップし、起動しなければ失敗する（以前は黙ってスキップしていた）
 - このマシンの Claude Code のセッションは systemd の scope にプロセス数の上限（コンテナ全体の 15%、当時 307）があり、
   通常の Chromium を2つ同時に開くテストで超えて、セッションごと落ちた。`systemd-run --user --scope -p TasksMax=400` の中で
   回して全件通過。本番の VM では上限がずっと大きいので問題にならないはず
 
 未確認: Ubuntu 26.10 の VM での `just apparmor`、制限下でのサンドボックスの起動、その上でブラウザが動くこと。
-Wayland の画面つき。nixpkgs の Chromium の版が上がる `nix flake update` を実際に回すこと
+nixpkgs の Chromium の版が上がる `nix flake update` を実際に回すこと
 
 ## 返答の途中経過（2026-11-19）
 

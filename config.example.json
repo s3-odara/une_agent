@@ -24,7 +24,7 @@
 		}
 	},
 	"weather": { "jmaOfficeCode": "130000", "areaIndex": 0 },
-	"browser": { "headless": true, "idleMinutes": 10 },
+	"browser": { "idleMinutes": 10 },
 	"web": { "maxChars": 15000 },
 	"mcp": {
 		"keenable": {

@@ -37,7 +37,6 @@ export type BrowserOptions = {
 	readonly dir: string;
 	/** Pages reach only public addresses, as the pages `web_extract` reads do. */
 	readonly egress: EgressProxy;
-	readonly headless: boolean;
 	readonly executablePath?: string;
 	readonly timezone: string;
 	readonly idleMs: number;
@@ -99,7 +98,7 @@ export class PlaywrightBrowsers implements Browsers {
 		mkdirSync(dir, { recursive: true });
 		const context = await launchPersistentSandboxed(
 			dir,
-			{ headless: this.#options.headless, proxy: this.#options.egress.url, executablePath: this.#options.executablePath },
+			{ proxy: this.#options.egress.url, executablePath: this.#options.executablePath },
 			{ viewport: { width: 1280, height: 800 }, locale: "ja-JP", timezoneId: this.#options.timezone },
 		);
 		context.setDefaultTimeout(15_000);

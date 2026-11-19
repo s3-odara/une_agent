@@ -65,10 +65,6 @@ run: gateway sandbox
 login *args: gateway
     gateway/target/release/matrix-gateway login --config {{ config }} {{ args }}
 
-# Open a browser window on the agent's profile to log in by hand (needs a display; stop the agent first).
-browser-login url profile="default": sandbox
-    AGENT_CONFIG={{ config }} node --env-file-if-exists=.env src/browser-login.ts {{ quote(url) }} {{ quote(profile) }}
-
 # Log in to a subscription model provider (OpenAI Codex by default) and store it in the data directory's auth.json.
 model-login provider="openai-codex":
     AGENT_CONFIG={{ config }} node src/model-login.ts {{ quote(provider) }}
@@ -111,12 +107,6 @@ deployed-login *args:
 # Log the deployed agent in to a subscription model provider (OpenAI Codex by default) through a browser.
 deployed-model-login provider="openai-codex":
     AGENT_CONFIG={{ deployed }}/config.json {{ current }}/bin/agent-model-login {{ quote(provider) }}
-
-# Open a browser window on the deployed agent's profile to log in by hand (needs a display; stops the agent meanwhile).
-deployed-browser-login url profile="default":
-    systemctl --user stop agent.service
-    AGENT_CONFIG={{ deployed }}/config.json {{ current }}/bin/agent-browser-login {{ quote(url) }} {{ quote(profile) }}
-    systemctl --user start agent.service
 
 # Build the checked-out commit and (re)start it as the deployed agent. Run again to update.
 install:

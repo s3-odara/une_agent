@@ -74,7 +74,6 @@ const browsers =
 		: new PlaywrightBrowsers({
 				dir: join(config.dataDir, "browser"),
 				egress,
-				headless: config.browser.headless,
 				executablePath: config.browser.executablePath,
 				timezone: config.timezone,
 				idleMs: config.browser.idleMinutes * 60_000,
