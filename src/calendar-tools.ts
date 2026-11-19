@@ -69,7 +69,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 		}),
 		defineTool({
 			name: "calendar_create",
-			description: "予定またはタスクを1件登録する。ユーザーが実行する意思を明示し、内容が具体的なときだけ使う。繰り返す予定は登録できない（頼まれたら、できないと伝える）。",
+			description: "予定またはタスクを1件登録する。登録を頼まれ、日時と内容が具体的ならその場で登録する。曖昧なら登録せずに尋ねる。登録の前に、同じものが既に無いか calendar_list で確かめる。繰り返す予定は登録できない（頼まれたら、できないと伝える）。",
 			parameters: obj({
 				calendar: str({ description: `登録先: ${names.join(" / ")}` }),
 				summary: str({ description: "件名", minLength: 1 }),
@@ -161,11 +161,8 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 					"予定とタスクの正はカレンダー（CalDAV）にある。記憶や会話の内容より、calendar_list の結果を信じる。",
 					...calendarLines,
 					"",
-					"- 登録を頼まれた予定・タスクは、日時や内容が具体的ならその場で calendar_create で登録する。曖昧なら登録せずに尋ねる。",
 					"- 頼まれていなくても、ユーザーがこれからの自分の予定を日時つきで話したら（「今日14時から面接なんだよね」）、calendar_list で確かめ、無ければ登録するか短く尋ねる。",
-					"- 登録の前に、同じものが既に無いか calendar_list で確かめる。",
-					"- 既存の項目の変更と削除は、ツールがユーザーに承認を求めて決定を待つ。会話で事前に確認し直す必要はない。拒否されたら実行せず、そう伝える。",
-					"- ユーザーが終えたと言ったタスクは calendar_complete で完了にする。",
+					"- 日時の決まった予定とタスクは記憶に書かない。そこに含まれる今後も役に立つ事実（引っ越し先、人の名前など）は記憶に書いてよい。",
 				].join("\n"),
 			),
 		],

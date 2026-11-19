@@ -293,7 +293,7 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 					"browser_* でログインしたままの Web ブラウザを操作できる。",
 					"",
 					"- 購入、支払い、送信、投稿、削除、設定変更など取り返しのつかない操作の前には、内容を示してユーザーに確認する。",
-					"- ログインは browser_fill_credential で行う。パスワードをユーザーに尋ねたり、会話や記憶に書いたりしない。",
+					"- ログインは browser_fill_credential で行う。パスワードをユーザーに尋ねない。",
 					"- 認証情報が登録されているサイトでは、ページを開いたときの結果にそう書かれる。ログイン画面を開く前に、未登録だと判断しない。",
 					codes === undefined
 						? "- 二段階認証のコードを求められたら、そこで止めてユーザーに伝える。"
