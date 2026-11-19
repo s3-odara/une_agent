@@ -77,17 +77,6 @@ model-login provider="openai-codex":
 vulkan:
     nix run .#vulkan-check
 
-# Take the newest nixpkgs and the npm Playwright of its version: Chromium is Playwright's build, new with a new Playwright.
-update:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    nix flake update nixpkgs
-    version=$(nix eval --raw --inputs-from . nixpkgs#playwright-driver.version)
-    npm install --save-exact "playwright-core@$version"
-    hash=$(nix run --inputs-from . nixpkgs#prefetch-npm-deps -- package-lock.json)
-    sed -i "s|npmDepsHash = \".*\";|npmDepsHash = \"$hash\";|" nix/agent.nix
-    echo "playwright-core $version: run just check, commit, and just install"
-
 # Let Chromium from the Nix store make its sandbox where Ubuntu restricts user namespaces (asks for sudo).
 apparmor:
     #!/usr/bin/env bash

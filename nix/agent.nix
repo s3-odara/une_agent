@@ -5,6 +5,7 @@
   nodejs_26,
   makeWrapper,
   ffmpeg-headless,
+  playwright-driver,
   playwright-browsers,
   gateway,
   sandbox,
@@ -24,7 +25,7 @@ buildNpmPackage {
     ];
   };
   nodejs = nodejs_26;
-  npmDepsHash = "sha256-iRMxu/K2OO121IU1f2dACcFhiRGdk9ry5HfDZE4Z2bY=";
+  npmDepsHash = "sha256-bvwqrl+sxX0ctC5wTawKbZ9aY5KaKWODuamqDEAVRmA=";
   dontNpmBuild = true;
   nativeBuildInputs = [ makeWrapper ];
   installPhase = ''
@@ -32,6 +33,8 @@ buildNpmPackage {
     npm prune --omit=dev --no-save
     mkdir -p $out/lib/agent $out/bin
     cp -r package.json src manual node_modules $out/lib/agent/
+    # Not from npm: nixpkgs' own, so that it is always the Playwright its Chromium was built for.
+    ln -s ${playwright-driver} $out/lib/agent/node_modules/playwright-core
     for entry in agent:main.ts agent-browser-login:browser-login.ts agent-model-login:model-login.ts; do
       makeWrapper ${lib.getExe nodejs_26} $out/bin/''${entry%%:*} \
         --add-flags $out/lib/agent/src/''${entry#*:} \

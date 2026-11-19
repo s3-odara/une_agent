@@ -228,8 +228,9 @@ Web ブラウザ。`config.json` に `browser` があれば有効になる。`sr
 
 ### 準備
 
-1. Chromium は nixpkgs の `playwright-driver.browsers` から Chromium だけを取り出したもの（Playwright 1.64.1 に対応）を使う。開発用シェルと
-   パッケージがどちらも `PLAYWRIGHT_BROWSERS_PATH` をそこに向けるので、取得もシステムライブラリも要らない
+1. Chromium は nixpkgs の `playwright-driver.browsers` から Chromium だけを取り出したものを使う。開発用シェルと
+   パッケージがどちらも `PLAYWRIGHT_BROWSERS_PATH` をそこに向けるので、取得もシステムライブラリも要らない。
+   Playwright（`playwright-core`）も npm ではなく nixpkgs の `playwright-driver` を使う（「Chromium のサンドボックス」）
 2. 二段階認証などエージェントにできないログインは、画面のある環境で
    `just browser-login https://example.com`（常駐中のものは `just deployed-browser-login https://example.com`、
    エージェントを止めて開き、閉じたら起動し直す）で手で済ませる
@@ -530,10 +531,12 @@ Playwright は `chromiumSandbox: true` を渡さない限り Chromium を `--no-
 - Chromium は nixpkgs がビルドしたものではなく、Playwright の版ごとに決まったビルド済みのもの（nixpkgs の
   `pkgs/development/web/playwright/` が `browsers.json` の版を取ってくる）。Chromium の修正が来るのは、Playwright の
   新しい版が nixpkgs に入ったときだけで、Playwright のリリース（おおむね月1回）より早くはならない
-- **`just update` で定期的に更新する**。nixpkgs を上げ、npm の `playwright-core` を nixpkgs の `playwright-driver` と
-  同じ版にし、`package-lock.json` が変わるので `npmDepsHash` を直す。`nix flake update` だけでは、`playwright-driver` の
-  版が上がったときに npm の版とずれ、Playwright が自分の版向けの Chromium を探して起動しない（ずれていれば flake の評価で
-  止まる）。そのあと `just check`、コミット、`just install`
+- Playwright は自分の版向けの Chromium しか探さないので、Playwright の版は nixpkgs だけで決める。`playwright-core` は
+  npm の依存に入れず、nixpkgs の `playwright-driver`（中身は npm の `playwright-core` パッケージそのもの）を
+  `node_modules/playwright-core` にリンクする。パッケージは `nix/agent.nix` が、開発用シェルは入るときに張る
+  （`npm install` するとリンクが消えるので、シェルに入り直す）。以前は npm と nixpkgs の両方が版を決めていて、
+  揃えるための `just update` があった（2026-11-19 に廃止）
+- **定期的に `nix flake update` する**。そのあと `just check`、コミット、`just install`
 
 ### 外側の囲い（Landlock、`sandbox/` と `src/sandbox.ts`）
 
@@ -561,7 +564,7 @@ Chromium を exec する。
 - 画面つき（`browser.headless: false`、`just browser-login`）は表示に UNIX ソケットが要るので、UNIX ソケットの制限だけを外す
   （ファイルの制限は残す）。人が見ている手作業のログイン用という扱い
 - ヘッドレスでは Playwright と同じくヘッドレスシェルを起動する（ラッパーを挟むと Playwright が区別しなくなるので、
-  `playwright-core/lib/coreBundle` の registry で同じものを選ぶ。公開 API ではないので、`just update` 後のテストで確かめる）。
+  `playwright-core/lib/coreBundle` の registry で同じものを選ぶ。公開 API ではないので、`nix flake update` 後のテストで確かめる）。
   通常の Chromium はプロファイルを1プロセスに限るための UNIX ソケットを作り、seccomp で落ちる
 - Landlock が無い、または ABI 6 より古いカーネルではブラウザが起動しない（囲わずに動かすことはしない）
 - ラッパーは `just sandbox`（`just test`・`just run` が先に作る）、パッケージでは `nix/sandbox.nix`（`AGENT_SANDBOX_BIN`）
@@ -593,7 +596,7 @@ Chromium を exec する。
 
 未確認: Ubuntu 26.04 の VM での `just apparmor`、制限下でのサンドボックスの起動、7.0 の Landlock の ABI と、その上で
 ブラウザが動くこと。画面つき（`just browser-login`）をラッパーの中で動かすこと（このマシンで画面を使って試していない）。
-`just update` を実際に回すこと
+Playwright の版が変わる `nix flake update` を実際に回すこと
 
 ## 返答の途中経過（2026-11-19）
 
@@ -700,7 +703,7 @@ Nix はビルドと開発環境に使い、常駐は systemd のユーザーサ�
   3. `just deployed-login`。Codex のモデルを使うなら `just deployed-model-login` も
   4. `just vulkan` で GPU が見えるか確かめる（`AMD …（RADV …）` が出ればよい。llvmpipe だけなら CPU で動く）
   5. `just install`。更新は `git pull` してもう一度 `just install`。ログは `just logs`
-  6. 定期的に `just update` で nixpkgs と Playwright（と一緒に Chromium）を上げる。`just check` とコミットのあと `just install`
+  6. 定期的に `nix flake update` で nixpkgs（Playwright と Chromium を含む）を上げる。`just check` とコミットのあと `just install`
   - `just install` はチェックアウトしているコミットをビルドし、`~/.local/state/agent/current` にリンクする。
     未コミットの変更があれば止まる（何が動いているかを `just status` でコミットとして見せるため）。
     `deployed-*` のレシピは `current` のコマンドを使う。以前はチェックアウトしている版をその場で動かしていたので、

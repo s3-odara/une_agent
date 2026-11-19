@@ -27,19 +27,10 @@
       whisper-server = pkgs.callPackage ./nix/whisper-server.nix { };
       stt-models = pkgs.callPackage ./nix/stt-models.nix { };
       # The headless shell stays: Playwright launches it for headless Chromium.
-      # Each Playwright looks for the Chromium build it was made for, so the npm one must be nixpkgs' (`just update`).
-      playwright-browsers =
-        let
-          npm = (pkgs.lib.importJSON ./package.json).dependencies.playwright-core;
-        in
-        pkgs.lib.throwIfNot (npm == pkgs.playwright-driver.version)
-          "playwright-core is ${npm} in package.json but ${pkgs.playwright-driver.version} in nixpkgs: run just update"
-          (
-            pkgs.playwright-driver.browsers.override {
-              withFirefox = false;
-              withWebkit = false;
-            }
-          );
+      playwright-browsers = pkgs.playwright-driver.browsers.override {
+        withFirefox = false;
+        withWebkit = false;
+      };
       agent = pkgs.callPackage ./nix/agent.nix {
         inherit
           gateway
@@ -99,6 +90,12 @@
         ];
         LK_CUSTOM_WEBRTC = libwebrtc;
         PLAYWRIGHT_BROWSERS_PATH = playwright-browsers;
+        # playwright-core is nixpkgs', not npm's (see nix/agent.nix); `npm install` takes the link away, entering the
+        # shell again puts it back.
+        shellHook = ''
+          mkdir -p node_modules
+          ln -sfn ${pkgs.playwright-driver} node_modules/playwright-core
+        '';
       };
 
       formatter.${system} = pkgs.nixfmt;
