@@ -165,7 +165,9 @@ fn restrict(policy: &Policy) -> Result<(), String> {
 		add_path(&ruleset, path, landlock::FS_EXECUTE | landlock::FS_READ_FILE | landlock::FS_READ_DIR)?;
 	}
 	for path in &policy.write {
-		add_path(&ruleset, path, fs)?;
+		// Not RESOLVE_UNIX: a socket the program made itself is reachable without it, and with it any socket put in a
+		// writable directory from outside (the temporary directory is shared) would be too.
+		add_path(&ruleset, path, fs & !landlock::FS_RESOLVE_UNIX)?;
 	}
 	for &port in policy.tcp.iter().flatten() {
 		let attr = landlock::NetPortAttr { allowed_access: landlock::NET_CONNECT_TCP, port: port.into() };
