@@ -5,7 +5,7 @@
   nodejs_26,
   makeWrapper,
   ffmpeg-headless,
-  playwright-driver,
+  playwright-browsers,
   gateway,
   whisper-server,
   stt-models,
@@ -37,7 +37,7 @@ buildNpmPackage {
         --set-default AGENT_GATEWAY_BIN ${lib.getExe gateway} \
         --set-default AGENT_WHISPER_SERVER ${lib.getExe whisper-server} \
         --set-default AGENT_STT_MODELS ${stt-models} \
-        --set-default PLAYWRIGHT_BROWSERS_PATH ${playwright-driver.browsers} \
+        --set-default PLAYWRIGHT_BROWSERS_PATH ${playwright-browsers} \
         --prefix PATH : ${lib.makeBinPath [ ffmpeg-headless ]}
     done
     runHook postInstall

@@ -7,7 +7,12 @@
   };
 
   outputs =
-    { nixpkgs, crane, ... }:
+    {
+      self,
+      nixpkgs,
+      crane,
+      ...
+    }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
@@ -20,8 +25,25 @@
       gateway = pkgs.callPackage ./nix/gateway.nix { inherit craneLib libwebrtc; };
       whisper-server = pkgs.callPackage ./nix/whisper-server.nix { };
       stt-models = pkgs.callPackage ./nix/stt-models.nix { };
-      agent = pkgs.callPackage ./nix/agent.nix { inherit gateway whisper-server stt-models; };
-      units = pkgs.callPackage ./nix/units.nix { inherit agent; };
+      # The headless shell stays: Playwright launches it for headless Chromium.
+      playwright-browsers = pkgs.playwright-driver.browsers.override {
+        withFirefox = false;
+        withWebkit = false;
+      };
+      agent = pkgs.callPackage ./nix/agent.nix {
+        inherit
+          gateway
+          whisper-server
+          stt-models
+          playwright-browsers
+          ;
+      };
+      deployment = pkgs.callPackage ./nix/deployment.nix {
+        inherit agent gateway;
+        rev =
+          self.rev
+            or (throw "commit or stash the changes first, so that the installed build is a known commit");
+      };
       # The GPUs as the speech recognizer sees them: through the same Vulkan driver (see nix/whisper-server.nix).
       vulkan-check = pkgs.writeShellApplication {
         name = "vulkan-check";
@@ -40,7 +62,7 @@
           gateway
           whisper-server
           stt-models
-          units
+          deployment
           vulkan-check
           ;
         inherit (pkgs) voicevox-engine;
@@ -64,7 +86,7 @@
           vulkan-tools
         ];
         LK_CUSTOM_WEBRTC = libwebrtc;
-        PLAYWRIGHT_BROWSERS_PATH = pkgs.playwright-driver.browsers;
+        PLAYWRIGHT_BROWSERS_PATH = playwright-browsers;
       };
 
       formatter.${system} = pkgs.nixfmt;

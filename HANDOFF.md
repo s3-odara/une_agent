@@ -225,7 +225,7 @@ Web ブラウザ。`config.json` に `browser` があれば有効になる。`sr
 
 ### 準備
 
-1. Chromium は nixpkgs の `playwright-driver.browsers`（Playwright 1.64.1 に対応）を使う。開発用シェルと
+1. Chromium は nixpkgs の `playwright-driver.browsers` から Chromium だけを取り出したもの（Playwright 1.64.1 に対応）を使う。開発用シェルと
    パッケージがどちらも `PLAYWRIGHT_BROWSERS_PATH` をそこに向けるので、取得もシステムライブラリも要らない
 2. 二段階認証などエージェントにできないログインは、画面のある環境で
    `just browser-login https://example.com`（常駐中のものは `just deployed-browser-login https://example.com`、
@@ -598,7 +598,7 @@ Nix はビルドと開発環境に使い、常駐は systemd のユーザーサ�
   - `whisper-server`: 測定したコミットの whisper.cpp を Vulkan つきで。CPU 向けコードは世代別に作って起動時に選ぶ
     （ビルドしたマシンに依存しない）。GPU は nixpkgs の Mesa（`-Damdgpu-virtio=true` でビルドされ、AMD の native
     context に対応）を使い、ホストの Ubuntu のドライバーと暗黙レイヤーは読まない
-  - `stt-models`、`voicevox-engine`（nixpkgs の 0.25.2。音声を測ったのは 0.26.2）、`units`（systemd ユニット）、
+  - `stt-models`、`voicevox-engine`（nixpkgs の 0.25.2。音声を測ったのは 0.26.2）、`deployment`（systemd ユニットと、agent・gateway のコマンド、ビルドしたコミット）、
     `vulkan-check`
 - VOICEVOX が使う onnxruntime は nixpkgs では unfree 扱い（VOICEVOX 独自の利用規約）。flake は名前が `voicevox` で
   始まるものだけ許可している
@@ -613,6 +613,11 @@ Nix はビルドと開発環境に使い、常駐は systemd のユーザーサ�
   3. `just deployed-login`。Codex のモデルを使うなら `just deployed-model-login` も
   4. `just vulkan` で GPU が見えるか確かめる（`AMD …（RADV …）` が出ればよい。llvmpipe だけなら CPU で動く）
   5. `just install`。更新は `git pull` してもう一度 `just install`。ログは `just logs`
+  - `just install` はチェックアウトしているコミットをビルドし、`~/.local/state/agent/current` にリンクする。
+    未コミットの変更があれば止まる（何が動いているかを `just status` でコミットとして見せるため）。
+    `deployed-*` のレシピは `current` のコマンドを使う。以前はチェックアウトしている版をその場で動かしていたので、
+    pull して install する前に使うと、常駐中と違う版がブラウザのプロファイルや暗号ストアを触っていた（2026-11-19）
+  - 前の版に戻す仕組みは作っていない（必要なら Nix の操作で行う）
 - 確認済み（Gentoo のこのマシン）
   - 全パッケージのビルド。whisper-server を使った STT の統合テスト（録音3本と台本で4件とも通過）
   - Nix の Mesa 経由で Radeon 780M（RADV）が見えること（GPU を直接持つマシンで。VM ではない）

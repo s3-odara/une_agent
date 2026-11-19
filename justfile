@@ -7,6 +7,7 @@ config := "config.json"
 deployed := env("HOME") / ".config/agent"
 state := env("XDG_STATE_HOME", env("HOME") / ".local/state") / "agent"
 units := env("HOME") / ".config/systemd/user"
+current := state / "current"
 
 [private]
 default:
@@ -90,28 +91,29 @@ setup:
 
 # Log the deployed gateway in (the password is asked for, or taken from MATRIX_PASSWORD).
 deployed-login *args:
-    cd {{ deployed }} && nix run {{ justfile_directory() }}#gateway -- login --config config.json {{ args }}
+    cd {{ deployed }} && {{ current }}/bin/matrix-gateway login --config config.json {{ args }}
 
 # Log the deployed agent in to a subscription model provider (OpenAI Codex by default) through a browser.
 deployed-model-login provider="openai-codex":
-    AGENT_CONFIG={{ deployed }}/config.json nix shell .#agent -c agent-model-login {{ quote(provider) }}
+    AGENT_CONFIG={{ deployed }}/config.json {{ current }}/bin/agent-model-login {{ quote(provider) }}
 
 # Open a browser window on the deployed agent's profile to log in by hand (needs a display; stops the agent meanwhile).
 deployed-browser-login url profile="default":
     systemctl --user stop agent.service
-    AGENT_CONFIG={{ deployed }}/config.json nix shell .#agent -c agent-browser-login {{ quote(url) }} {{ quote(profile) }}
+    AGENT_CONFIG={{ deployed }}/config.json {{ current }}/bin/agent-browser-login {{ quote(url) }} {{ quote(profile) }}
     systemctl --user start agent.service
 
-# Build what is checked out and (re)start it as the deployed agent. Run again to update.
+# Build the checked-out commit and (re)start it as the deployed agent. Run again to update.
 install:
-    nix build .#units -o {{ state }}/units
+    nix build .#deployment -o {{ current }}
     mkdir -p {{ units }}
-    install -m 644 {{ state }}/units/*.service {{ units }}/
+    install -m 644 {{ current }}/share/systemd/user/*.service {{ units }}/
     systemctl --user daemon-reload
     systemctl --user enable agent.service
     systemctl --user restart agent.service
 
 status:
+    @echo "installed: $(cat {{ current }}/rev)"
     systemctl --user status agent.service voicevox.service
 
 # Follow the logs of the agent (its gateway's included) and of VOICEVOX.
@@ -125,4 +127,4 @@ uninstall: stop
     systemctl --user disable agent.service
     rm -f {{ units }}/agent.service {{ units }}/voicevox.service
     systemctl --user daemon-reload
-    rm -f {{ state }}/units
+    rm -f {{ current }}
