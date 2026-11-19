@@ -19,9 +19,6 @@ let
     [Service]
     WorkingDirectory=%h/.config/agent
     EnvironmentFile=-%h/.config/agent/env
-    # The browser's sandbox lets it write in the temporary directory: this one rather than all of /tmp.
-    CacheDirectory=agent/tmp
-    Environment=TMPDIR=%C/agent/tmp
     ExecStart=${lib.getExe agent} %h/.config/agent/config.json
     # The agent stops when its gateway does; both start again together.
     Restart=on-failure

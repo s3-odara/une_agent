@@ -1,12 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { type Browser, chromium } from "playwright-core";
 import { settle } from "./browser.ts";
 import { EgressError, type EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
-import { sandboxedChromium } from "./sandbox.ts";
+import { chromiumHome, sandboxedChromium } from "./sandbox.ts";
 import { httpUrl } from "./urls.ts";
 
 export type ReadPage = {
@@ -112,7 +110,7 @@ export class PlaywrightReader implements PageReader {
 
 	#launch(): Promise<Browser> {
 		if (this.#browser === undefined) {
-			const home = mkdtempSync(join(tmpdir(), "agent-chromium-home-"));
+			const home = chromiumHome();
 			const launching = chromium.launch({
 				headless: true,
 				...sandboxedChromium({ headless: true, home, proxy: this.#options.egress.url, executablePath: this.#options.executablePath }),

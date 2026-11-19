@@ -3,7 +3,9 @@
 //!
 //! - `AGENT_SANDBOX_EXEC`: the program, run with this program's arguments
 //! - `AGENT_SANDBOX_READ`, `AGENT_SANDBOX_WRITE`: the paths (one per line) whose trees may be read and executed, or
-//!   also written. Paths that do not exist are left out
+//!   also written. Paths that do not exist are left out. The profile Chromium is given (`--user-data-dir=`) is
+//!   written too: Playwright makes it in its own temporary directory under a name of its choosing, and the rest of that
+//!   directory is the agent's
 //! - `AGENT_SANDBOX_TCP`: the TCP ports (one per line) that may be connected to; unset, any. TCP ports are never bound,
 //!   and UDP is never used
 //! - `AGENT_SANDBOX_UNIX`: the UNIX sockets made outside (one per line) that may be connected to, such as a display's.
@@ -104,7 +106,7 @@ impl Policy {
 		Ok(Self {
 			program: env::var_os(EXEC).ok_or_else(|| format!("{EXEC} is not set"))?,
 			read: lines(READ),
-			write: lines(WRITE),
+			write: lines(WRITE).into_iter().chain(env::args_os().filter_map(|arg| arg.as_bytes().strip_prefix(b"--user-data-dir=").map(|dir| OsStr::from_bytes(dir).to_owned()))).collect(),
 			tcp,
 			unix: lines(UNIX),
 		})

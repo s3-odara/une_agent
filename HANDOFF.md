@@ -558,15 +558,20 @@ Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser
   ブラウザは起動しない（囲いを弱めて動かすことはしない）。このマシン（7.3）は ABI 11。26.04 の 7.0 は ABI 9 の
   `RESOLVE_UNIX` も持っていないと思われる（パッチは 2026年3〜4月にまだレビュー中だった）
 - ファイル: 読めるのは `/nix/store`、`/etc`、`/usr`、`/sys`、フォントのキャッシュ、`/run/systemd/resolve` と Chromium の
-  ディレクトリ。書けるのは一時ディレクトリ（`TMPDIR`）、Chromium 用の `HOME`、`/proc`、`/dev` のいくつか、`browser_*` では
-  プロファイル。ホームディレクトリ（`credentials.json`、`auth.json`、`env`、暗号ストア、リポジトリ）は読めない
+  ディレクトリ。書けるのは Chromium 用の `HOME`（その中に Chromium の `TMPDIR`）、プロファイル、`/proc`、`/dev` のいくつか。
+  ホームディレクトリ（`credentials.json`、`auth.json`、`env`、暗号ストア、リポジトリ）も、エージェントの一時ディレクトリも
+  読み書きできない
   - `/proc` に書けないと Chromium のサンドボックスが uid_map を書けず起動しない。外のプロセスの `/proc`（`environ` など）は
     Landlock が ptrace と同じく止める
-  - 常駐時は `TMPDIR` を `~/.cache/agent/tmp`（systemd の `CacheDirectory`）にして、`/tmp` 全体を書けないようにする。
-    Playwright は `launch()` のプロファイルを必ず一時ディレクトリに作るので、一時ディレクトリは外せない。
-    エージェント（モデルの `bash` を含む）と共有しているのは残っている穴
-  - `HOME` は起動ごとに別にする（`browser_*` はプロファイルの中の `.home`、`web_extract` は起動ごとに作って消す）。
-    共有すると並列で起動した Chromium が互いを待った
+  - プロファイル: Playwright は `launch()`（`web_extract`）のプロファイルをエージェントの一時ディレクトリに、自分で
+    決めた名前で作る。ラッパーが Chromium の引数の `--user-data-dir=` を見て、そのディレクトリにだけ書く権限を与える。
+    エージェントの一時ディレクトリそのものは、SQLite が会話の一時ファイルを置き、モデルの `bash` も使うので与えない
+    （エージェントの `TMPDIR` をブラウザ用に替える案は、SQLite などプロセスの中で一時ファイルを使うものを洗い出せないのでやめた）。
+    Playwright のダウンロード用のディレクトリにも書けないので、ダウンロードはできない（もともと対応していない）
+  - `HOME` は起動ごとにエージェントの一時ディレクトリの直下に作り（`chromiumHome()`、`chromium-XXXXXX`）、閉じたら消す。
+    共有すると並列で起動した Chromium が互いを待った。深い場所に置くと、Chromium が `TMPDIR` に作る1プロセス制限の
+    UNIX ソケットのパスが上限（107バイト）を超えて起動しなかった
+  - 以前は常駐時の `TMPDIR` を `~/.cache/agent/tmp` にして一時ディレクトリごと書けるようにしていたが、上のとおり要らなくなったので戻した
 - 環境変数: 決めたものだけを渡す（`PATH`、`LANG`、`LC_*`、`TZ`、証明書とフォントの場所。画面つきなら表示用のもの）。
   それまではエージェントの環境変数（API キー、CalDAV のパスワード）がそのまま Chromium に渡っていた
 - ネットワーク: **3つとも通信は `src/egress.ts` のプロキシだけ**（2026-11-19 決定。LAN の中のサイトは見ない）。
@@ -576,7 +581,7 @@ Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser
   抽象 UNIX ソケットとシグナルも同じ囲いの中だけ（ABI 6）。止めたいのはユーザーの D-Bus（`/run/user/<uid>/bus`。
   systemd に頼んで囲いの外でプロセスを起動できる）。実際の Chromium のログにも、D-Bus への接続が `Permission denied` で
   断られているのが出る
-  - 書ける場所にも `RESOLVE_UNIX` は与えない。一時ディレクトリは外と共有するので、そこに外から置かれたソケットに届いてしまう
+  - 書ける場所にも `RESOLVE_UNIX` は与えない。外から置かれたソケットに届いてしまう
 - 画面つき（`browser.headless: false`、`just browser-login`）は、表示のソケット（X の `/tmp/.X11-unix/X<n>`、Wayland の
   `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`）にだけ `RESOLVE_UNIX` を与える。ほかの制限は同じ。X のライブラリ（libxcb）は
   抽象ソケットを先に試し、囲いに断られるとパスのソケットを試さずにあきらめるので、Chromium に渡す `DISPLAY` を
@@ -597,7 +602,7 @@ Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser
   開かせられる
 - ヘッドレスで `--disable-gpu`。GPU プロセスはソフトウェア描画で残り、スレッドも減らなかった
 - まだやっていないもの: 実行できるプログラムを Chromium とその動的ローダーだけに絞る、seccomp にカーネルの攻撃に
-  使われやすいシステムコール（`bpf`、`userfaultfd`、`keyctl` 系、`perf_event_open`）を足す、一時ディレクトリをエージェントと分ける
+  使われやすいシステムコール（`bpf`、`userfaultfd`、`keyctl` 系、`perf_event_open`）を足す
 
 モデルには `bash` を制限なしで渡しているので、モデルが誘導されて秘密を読む経路はどれでも残る。守れるのは
 「ページを開いただけで乗っ取られる」経路だけ。
@@ -608,7 +613,7 @@ Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser
   サンドボックスを切ると `/` になり、テストが落ちること
 - `apparmor/agent-chromium` を読み込むと、nixpkgs の Chromium をラッパー（no_new_privs を立てる）から起動しても
   `agent-chromium` のラベルが付くこと（このマシンには Ubuntu の制限が無いので、制限下で起動できることは未確認）
-- `test/sandbox.test.ts`: Node を同じ方針で動かし、ユーザーのファイルを読めない、決めた場所にだけ書ける、環境変数と
+- `test/sandbox.test.ts`: Node を同じ方針で動かし、ユーザーのファイルを読めない、決めた場所にだけ書ける、エージェントの一時ディレクトリを読み書きできない、環境変数と
   エージェントの `environ` が見えない、シグナルを送れない、プロキシにだけつながる、UDP を送れない、外の UNIX ソケットに
   届かない、画面つきでは表示のソケットにだけ届くこと
 - 実 Chromium のテストはすべてラッパーの中で通る。ブラウザに `file://` でリポジトリのファイルを開かせても読めない

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createSocket } from "node:dgram";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,13 +16,16 @@ import { type ChromiumSandbox, sandboxedChromium } from "../src/sandbox.ts";
 
 type Sandbox = Partial<Omit<ChromiumSandbox, "executablePath" | "home">>;
 
-/** Runs `body` (which may await) as the browser would be run, and tells whether it got through. */
-function asBrowser(sandbox: Sandbox, body: string): Promise<"allowed" | "refused"> {
+/**
+ * Runs `body` (which may await) as the browser would be run, and tells whether it got through. `args` are the
+ * browser's, as Playwright would give them.
+ */
+function asBrowser(sandbox: Sandbox, body: string, args: readonly string[] = []): Promise<"allowed" | "refused"> {
 	const home = mkdtempSync(join(tmpdir(), "agent-sandbox-home-"));
 	const { executablePath, env } = sandboxedChromium({ headless: true, proxy: "http://127.0.0.1:1", ...sandbox, home, executablePath: process.execPath });
 	const code = `(async () => { try { ${body}; console.log("allowed"); } catch { console.log("refused"); } })();`;
 	return new Promise<"allowed" | "refused">((resolve, reject) =>
-		execFile(executablePath, ["-e", code], { env }, (error, stdout, stderr) => (error ? reject(new Error(stderr || String(error))) : resolve(stdout.trim() as "allowed" | "refused"))),
+		execFile(executablePath, ["-e", code, "--", ...args], { env }, (error, stdout, stderr) => (error ? reject(new Error(stderr || String(error))) : resolve(stdout.trim() as "allowed" | "refused"))),
 	).finally(() => rmSync(home, { recursive: true, force: true }));
 }
 
@@ -45,19 +48,29 @@ test("the browser cannot read the user's files", async () => {
 	assert.equal(await asBrowser({}, `require("node:fs").readFileSync(${JSON.stringify(userFile)})`), "refused");
 });
 
-test("the browser writes in its temporary directory and the directories it is given, and nowhere else", async (t) => {
+const writeIn = (dir: string) => `require("node:fs").writeFileSync(require("node:path").join(${dir}, "f"), "x")`;
+
+test("the browser writes in its own temporary directory, its profile and the directories it is given, and nowhere else", async () => {
 	using temp = withTemp();
-	const own = join(temp.path, "tmp");
-	const given = join(temp.path, "profile");
+	const profile = join(temp.path, "profile");
+	const given = join(temp.path, "given");
 	const other = join(temp.path, "other");
-	for (const dir of [own, given, other]) mkdirSync(dir);
+	for (const dir of [profile, given, other]) mkdirSync(dir);
+	const write = (dir: string) => asBrowser({ write: [given] }, writeIn(dir), [`--user-data-dir=${profile}`]);
+	assert.equal(await write("process.env.TMPDIR"), "allowed");
+	assert.equal(await write(JSON.stringify(profile)), "allowed");
+	assert.equal(await write(JSON.stringify(given)), "allowed");
+	assert.equal(await write(JSON.stringify(other)), "refused");
+});
+
+test("the browser can neither read nor write the agent's temporary directory", async (t) => {
+	using temp = withTemp();
+	writeFileSync(join(temp.path, "agent-file"), "the agent's");
 	const previous = process.env.TMPDIR;
-	process.env.TMPDIR = own;
+	process.env.TMPDIR = temp.path;
 	t.after(() => (previous === undefined ? delete process.env.TMPDIR : (process.env.TMPDIR = previous)));
-	const write = (dir: string) => asBrowser({ write: [given] }, `require("node:fs").writeFileSync(${JSON.stringify(join(dir, "f"))}, "x")`);
-	assert.equal(await write(own), "allowed");
-	assert.equal(await write(given), "allowed");
-	assert.equal(await write(other), "refused");
+	assert.equal(await asBrowser({}, `require("node:fs").readFileSync(${JSON.stringify(join(temp.path, "agent-file"))})`), "refused");
+	assert.equal(await asBrowser({}, writeIn(JSON.stringify(temp.path))), "refused");
 });
 
 test("the browser does not get the agent's environment, nor read it from the agent's process", async (t) => {

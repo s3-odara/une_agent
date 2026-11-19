@@ -1,17 +1,20 @@
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type ChromiumSandbox = {
 	readonly headless: boolean;
-	/** Chromium's home directory, its own: Chromiums sharing one wait on each other's locks in it. */
+	/**
+	 * Chromium's home directory, its own: Chromiums sharing one wait on each other's locks in it. Its temporary
+	 * directory is in here too, rather than the agent's, where SQLite keeps the conversations' temporary files.
+	 */
 	readonly home: string;
 	/** The egress proxy (`EgressProxy.url`): every connection goes through it, and none elsewhere. */
 	readonly proxy: string;
 	/** Chromium itself; nixpkgs' when not given. */
 	readonly executablePath?: string;
-	/** Directories Chromium may write to, besides the temporary directory (where Playwright puts its own). */
+	/** Directories Chromium may write to, besides its home and the profile Playwright gives it. */
 	readonly write?: readonly string[];
 };
 
@@ -60,8 +63,8 @@ function displaySockets(): string[] {
  */
 export function sandboxedChromium(sandbox: ChromiumSandbox): ChromiumLaunch {
 	const program = sandbox.executablePath ?? process.env.AGENT_CHROMIUM ?? fail("AGENT_CHROMIUM is not set (the dev shell and the package set it)");
-	const temp = tmpdir();
-	mkdirSync(sandbox.home, { recursive: true, mode: 0o700 });
+	const temp = join(sandbox.home, "tmp");
+	mkdirSync(temp, { recursive: true, mode: 0o700 });
 	const env: Record<string, string> = { HOME: sandbox.home, TMPDIR: temp };
 	for (const name of [...PASSED, ...(sandbox.headless ? [] : DISPLAY)]) {
 		const value = process.env[name];
@@ -69,7 +72,7 @@ export function sandboxedChromium(sandbox: ChromiumSandbox): ChromiumLaunch {
 	}
 	for (const [name, value] of Object.entries(process.env)) if (name.startsWith("LC_") && value !== undefined) env[name] = value;
 	const read = [...READ, dirname(realpathSync(program))];
-	const write = [temp, sandbox.home, ...WRITE, ...(sandbox.write ?? [])];
+	const write = [sandbox.home, ...WRITE, ...(sandbox.write ?? [])];
 	if (!sandbox.headless) {
 		read.push(process.env.XAUTHORITY ?? join(process.env.HOME ?? "/", ".Xauthority"));
 		write.push("/dev/dri");
@@ -98,6 +101,15 @@ export function sandboxedChromium(sandbox: ChromiumSandbox): ChromiumLaunch {
 		// agent's files.
 		chromiumSandbox: true,
 	};
+}
+
+/**
+ * A new home for one Chromium, for `ChromiumSandbox.home`; the caller removes it once the browser is closed. Short and
+ * near the root: Chromium puts a UNIX socket in its temporary directory, inside the home, and such a path may be
+ * at most 107 bytes long.
+ */
+export function chromiumHome(): string {
+	return mkdtempSync(join(tmpdir(), "chromium-"));
 }
 
 function fail(message: string): never {
