@@ -8,42 +8,27 @@ export type GatewayEvent =
 			readonly type: "message";
 			readonly roomId: string;
 			readonly eventId: string;
-			readonly sender: string;
 			/** For audio, the file name or description the sender's client gave it. */
 			readonly body: string;
 			readonly ts: number;
 			/** Downloaded and decrypted. Delete it once done. */
-			readonly audio?: { readonly path: string; readonly mimetype?: string; readonly voice: boolean };
+			readonly audio?: { readonly path: string; readonly voice: boolean };
 			readonly replyTo?: string;
 	  }
-	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string; readonly sender: string }
+	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string }
 	| { readonly type: "sent"; readonly requestId: string; readonly eventId: string }
 	| { readonly type: "error"; readonly requestId?: string; readonly message: string }
 	/** Not stored by the gateway: one missed while it was down is not offered again. */
-	| {
-			readonly type: "reaction";
-			readonly roomId: string;
-			readonly eventId: string;
-			readonly relatesTo: string;
-			readonly key: string;
-			readonly sender: string;
-	  }
+	| { readonly type: "reaction"; readonly roomId: string; readonly eventId: string; readonly relatesTo: string; readonly key: string }
 	/** The allowed users (not the bot) now in the room's call; empty once they have all left. */
 	| { readonly type: "callMembers"; readonly roomId: string; readonly userIds: readonly string[] }
 	| { readonly type: "callJoined"; readonly roomId: string }
 	/** Out of the call: `reason` is empty when it left as asked or because everyone else did. */
 	| { readonly type: "callLeft"; readonly roomId: string; readonly reason: string }
 	/** Somebody started speaking; the gateway has already stopped whatever the bot was saying. */
-	| { readonly type: "callSpeech"; readonly roomId: string; readonly userId: string }
+	| { readonly type: "callSpeech"; readonly roomId: string }
 	/** One utterance as a 16 kHz mono WAV file. Delete it once done. */
-	| {
-			readonly type: "callUtterance";
-			readonly roomId: string;
-			readonly userId: string;
-			readonly path: string;
-			readonly startedAt: number;
-			readonly durationMs: number;
-	  }
+	| { readonly type: "callUtterance"; readonly roomId: string; readonly path: string; readonly startedAt: number }
 	| { readonly type: "callSpoken"; readonly roomId: string; readonly id: string; readonly playedMs: number; readonly interrupted: boolean };
 
 /** Keep in step with `VadConfig` in `gateway/src/audio.rs`. */

@@ -56,7 +56,7 @@ async function setup(call: { chime?: boolean; transcript?: boolean } = {}) {
 		const path = join(env.dir, `call-${++n}.wav`);
 		writeFileSync(path, "RIFF");
 		transcripts.set(path, text);
-		return { type: "callUtterance", roomId: ROOM, userId: ME, path, startedAt: Date.UTC(2026, 10, 18, 3, 0), durationMs: 1200 };
+		return { type: "callUtterance", roomId: ROOM, path, startedAt: Date.UTC(2026, 10, 18, 3, 0) };
 	};
 	const settle = async () => {
 		await calls.idle();
@@ -162,7 +162,7 @@ test("an answer overtaken by the user speaking again is not spoken, and the pers
 	t.env.faux.setResponses([
 		() => {
 			// The user starts speaking again while the model writes.
-			t.link.emit({ type: "callSpeech", roomId: ROOM, userId: ME });
+			t.link.emit({ type: "callSpeech", roomId: ROOM });
 			return fauxAssistantMessage("古い答えです。");
 		},
 		answer("新しい答えです。", requests),
@@ -272,7 +272,7 @@ test("an answer overtaken by the user speaking again is still written to the roo
 	await using t = await setup({ transcript: true });
 	t.env.faux.setResponses([
 		() => {
-			t.link.emit({ type: "callSpeech", roomId: ROOM, userId: ME });
+			t.link.emit({ type: "callSpeech", roomId: ROOM });
 			return fauxAssistantMessage("古い答えです。");
 		},
 	]);

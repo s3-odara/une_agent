@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseImageInfo};
@@ -15,13 +15,13 @@ use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
 use matrix_sdk::ruma::events::room::message::{
     AudioMessageEventContent, MessageType, OriginalSyncRoomMessageEvent, Relation, ReplacementMetadata, RoomMessageEventContent,
 };
-use matrix_sdk::ruma::{EventId, OwnedTransactionId, OwnedUserId, RoomId, UInt};
+use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedTransactionId, OwnedUserId, RoomId, UInt};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomState};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::call::{Calls, Control, watch_memberships};
+use crate::call::{Calls, Control, now_ms, watch_memberships};
 use crate::config::Config;
 use crate::ipc::{Audio, Command, Event, Message, Outbox, spawn_writer};
 use crate::session;
@@ -53,10 +53,6 @@ impl Shared {
             && self.is_allowed(sender)
             && !self.state.lock().unwrap().predates_join(room.room_id().as_str(), ts)
     }
-}
-
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 pub async fn run(config: &Config) -> Result<()> {
@@ -153,13 +149,13 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
             Ok(audio) => (content.body.clone(), Some(audio)),
             Err(error) => {
                 warn!("downloading the audio of {event_id} failed: {error:#}");
-                shared.emit(Event::Undecryptable { room_id, event_id, sender: event.sender.to_string() });
+                shared.emit(Event::Undecryptable { room_id, event_id });
                 return;
             }
         },
         _ => return,
     };
-    let message = Message { room_id, event_id, sender: event.sender.to_string(), body, ts, audio, reply_to };
+    let message = Message { room_id, event_id, body, ts, audio, reply_to };
 
     let added = shared.state.lock().unwrap().add(&message);
     match added {
@@ -176,27 +172,14 @@ async fn download_audio(client: &Client, dir: &Path, event_id: &str, content: &A
     }
     let data = client.media().get_file(content, false).await?.context("the message has no file")?;
     anyhow::ensure!(data.len() as u64 <= MAX_AUDIO_BYTES, "the recording is {} bytes, more than {MAX_AUDIO_BYTES}", data.len());
-    let mimetype = info.and_then(|info| info.mimetype.clone());
-    let path = dir.join(format!("{}.{}", file_stem(event_id), extension(mimetype.as_deref())));
+    let path = dir.join(format!("{}.audio", file_stem(event_id)));
     tokio::fs::create_dir_all(dir).await.with_context(|| format!("creating {}", dir.display()))?;
     tokio::fs::write(&path, data).await.with_context(|| format!("writing {}", path.display()))?;
-    Ok(Audio { path: path.to_string_lossy().into_owned(), mimetype, voice: content.voice.is_some() })
+    Ok(Audio { path: path.to_string_lossy().into_owned(), voice: content.voice.is_some() })
 }
 
 fn file_stem(event_id: &str) -> String {
     event_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
-}
-
-/// Only a hint for whoever looks at the directory; the agent's decoder reads the container itself.
-fn extension(mimetype: Option<&str>) -> &'static str {
-    match mimetype.map(|m| m.split(';').next().unwrap_or("").trim()) {
-        Some("audio/ogg" | "audio/opus") => "ogg",
-        Some("audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac") => "m4a",
-        Some("audio/mpeg" | "audio/mp3") => "mp3",
-        Some("audio/webm") => "webm",
-        Some("audio/wav" | "audio/x-wav") => "wav",
-        _ => "audio",
-    }
 }
 
 /// An `m.room.encrypted` event reaches a handler only when it could not be decrypted.
@@ -206,7 +189,7 @@ async fn on_undecryptable(event: OriginalSyncRoomEncryptedEvent, room: Room, cli
     }
     let room_id = room.room_id().to_string();
     warn!("could not decrypt {} in {room_id}", event.event_id);
-    shared.emit(Event::Undecryptable { room_id, event_id: event.event_id.to_string(), sender: event.sender.to_string() });
+    shared.emit(Event::Undecryptable { room_id, event_id: event.event_id.to_string() });
 }
 
 /// The agent answers approval requests with them.
@@ -220,7 +203,6 @@ async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Clien
         event_id: event.event_id.to_string(),
         relates_to: event.content.relates_to.event_id.to_string(),
         key: event.content.relates_to.key,
-        sender: event.sender.to_string(),
     });
 }
 
@@ -317,6 +299,10 @@ fn respond(shared: &Shared, request_id: String, request: impl Future<Output = Re
     });
 }
 
+fn parse_event_id(id: &str) -> Result<OwnedEventId> {
+    Ok(<&EventId>::try_from(id).with_context(|| format!("{id} is not an event ID"))?.to_owned())
+}
+
 fn joined_room(client: &Client, room_id: &str) -> Result<Room> {
     let id = <&RoomId>::try_from(room_id).with_context(|| format!("{room_id} is not a room ID"))?;
     let room = client.get_room(id).with_context(|| format!("not in room {room_id}"))?;
@@ -328,8 +314,7 @@ async fn send(client: &Client, room_id: &str, txn_id: String, body: String, noti
     let room = joined_room(client, room_id)?;
     let mut content = if notice { RoomMessageEventContent::notice_markdown(body) } else { RoomMessageEventContent::text_markdown(body) };
     if let Some(event_id) = replaces {
-        let event_id = <&EventId>::try_from(event_id.as_str()).with_context(|| format!("{event_id} is not an event ID"))?.to_owned();
-        content = content.make_replacement(ReplacementMetadata::new(event_id, None));
+        content = content.make_replacement(ReplacementMetadata::new(parse_event_id(&event_id)?, None));
     }
     let result = room.send(content).with_transaction_id(OwnedTransactionId::from(txn_id)).await?;
     Ok(result.response.event_id.to_string())
@@ -337,8 +322,7 @@ async fn send(client: &Client, room_id: &str, txn_id: String, body: String, noti
 
 async fn react(client: &Client, room_id: &str, txn_id: String, event_id: &str, key: String) -> Result<String> {
     let room = joined_room(client, room_id)?;
-    let event_id = <&EventId>::try_from(event_id).with_context(|| format!("{event_id} is not an event ID"))?.to_owned();
-    let content = ReactionEventContent::new(Annotation::new(event_id, key));
+    let content = ReactionEventContent::new(Annotation::new(parse_event_id(event_id)?, key));
     let result = room.send(content).with_transaction_id(OwnedTransactionId::from(txn_id)).await?;
     Ok(result.response.event_id.to_string())
 }

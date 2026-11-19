@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
@@ -33,6 +33,10 @@ const DEFAULT_EXPIRES_MS: u64 = 4 * 60 * 60 * 1000;
 /// Playback is pushed in 10 ms frames, paced by a timer, so stopping it takes effect at once instead of after the
 /// second of audio the source would otherwise queue.
 const PLAY_FRAME: usize = (SAMPLE_RATE / 100) as usize;
+
+pub fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
 
 #[derive(Debug)]
 pub enum Control {
@@ -164,7 +168,6 @@ impl Calls {
         let mut detector = earshot::Detector::default();
         let mut segmenter = Utterances {
             room_id: room_id.to_owned(),
-            user_id: participant.user_id.clone(),
             cutter: Cutter::new(vad, Box::new(move |frame: &[i16]| detector.predict_i16(frame) >= vad.threshold)),
             player: player.clone(),
             out: self.out.clone(),
@@ -198,7 +201,6 @@ static UTTERANCES: AtomicU64 = AtomicU64::new(0);
 /// The VAD needs well under a millisecond per frame, so it runs inline.
 struct Utterances {
     room_id: String,
-    user_id: String,
     cutter: Cutter<Box<dyn FnMut(&[i16]) -> bool + Send>>,
     player: Player,
     out: Outbox,
@@ -212,7 +214,7 @@ impl Utterances {
                 Cut::SpeechStarted => {
                     // Talking over the bot stops it.
                     self.player.hush();
-                    let _ = self.out.send(Event::CallSpeech { room_id: self.room_id.clone(), user_id: self.user_id.clone() });
+                    let _ = self.out.send(Event::CallSpeech { room_id: self.room_id.clone() });
                 }
                 Cut::Utterance(samples) => self.pass_on(&samples),
             }
@@ -221,19 +223,13 @@ impl Utterances {
 
     fn pass_on(&self, samples: &[i16]) {
         let duration_ms = samples.len() as u64 * 1000 / u64::from(VAD_RATE);
-        let now = crate::run::now_ms();
+        let now = now_ms();
         let path = self.dir.join(format!("call-{now}-{}.wav", UTTERANCES.fetch_add(1, Ordering::Relaxed)));
         if let Err(error) = write_wav(&path, samples, VAD_RATE) {
             warn!("writing an utterance failed: {error:#}");
             return;
         }
-        let _ = self.out.send(Event::CallUtterance {
-            room_id: self.room_id.clone(),
-            user_id: self.user_id.clone(),
-            path: path.to_string_lossy().into_owned(),
-            started_at: now.saturating_sub(duration_ms),
-            duration_ms,
-        });
+        let _ = self.out.send(Event::CallUtterance { room_id: self.room_id.clone(), path: path.to_string_lossy().into_owned(), started_at: now.saturating_sub(duration_ms) });
     }
 }
 
@@ -353,7 +349,7 @@ async fn members_in_call(client: &Client, room: &Room, allowed: &[OwnedUserId]) 
         }
     };
     let own = client.user_id().map(|user| user.to_string());
-    let now = crate::run::now_ms();
+    let now = now_ms();
     let mut members = HashSet::new();
     for event in events {
         let RawAnySyncOrStrippedState::Sync(raw) = event else { continue };

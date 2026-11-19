@@ -9,7 +9,7 @@ import { HostDb } from "../src/hostdb.ts";
 import type { VoiceOptions } from "../src/rooms.ts";
 import type { Transcriber } from "../src/stt.ts";
 import { readWav, type Synthesizer, sentences, toSpeech, waveform } from "../src/tts.ts";
-import { agentEnv, ME, tempDir } from "./env.ts";
+import { agentEnv, tempDir } from "./env.ts";
 import { answer, lastInput, type Request, wav } from "./fakes.ts";
 
 for (const [rule, markdown, speech] of [
@@ -101,7 +101,7 @@ async function setup(options: { tts?: boolean; voice?: boolean; transcript?: (pa
 			return path;
 		},
 		send: async (path: string, roomId = "!a:example.org", eventId = `$v${++n}`) => {
-			const event: GatewayEvent = { type: "message", roomId, eventId, sender: ME, body: "Voice message.ogg", ts: 0, audio: { path, voice: true } };
+			const event: GatewayEvent = { type: "message", roomId, eventId, body: "Voice message.ogg", ts: 0, audio: { path, voice: true } };
 			env.link.emit(event);
 			await bridge.idle();
 		},

@@ -53,7 +53,7 @@ export class FakeLink implements GatewayLink {
 }
 
 export function message(roomId: string, eventId: string, body: string, ts = 0, replyTo?: string): GatewayEvent {
-	return { type: "message", roomId, eventId, sender: "@me:example.org", body, ts, ...(replyTo === undefined ? {} : { replyTo }) };
+	return { type: "message", roomId, eventId, body, ts, ...(replyTo === undefined ? {} : { replyTo }) };
 }
 
 /**

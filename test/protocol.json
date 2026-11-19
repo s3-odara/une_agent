@@ -9,7 +9,6 @@
 			"type": "message",
 			"roomId": "!r:example.org",
 			"eventId": "$text",
-			"sender": "@me:example.org",
 			"body": "hi",
 			"ts": 5
 		},
@@ -17,12 +16,10 @@
 			"type": "message",
 			"roomId": "!r:example.org",
 			"eventId": "$voice",
-			"sender": "@me:example.org",
 			"body": "Voice message.ogg",
 			"ts": 6,
 			"audio": {
 				"path": "/d/v.ogg",
-				"mimetype": "audio/ogg",
 				"voice": true
 			}
 		},
@@ -30,7 +27,6 @@
 			"type": "message",
 			"roomId": "!r:example.org",
 			"eventId": "$file",
-			"sender": "@me:example.org",
 			"body": "song.mp3",
 			"ts": 7,
 			"audio": {
@@ -42,7 +38,6 @@
 			"type": "message",
 			"roomId": "!r:example.org",
 			"eventId": "$reply",
-			"sender": "@me:example.org",
 			"body": "AB12CD",
 			"ts": 8,
 			"replyTo": "$p"
@@ -50,8 +45,7 @@
 		{
 			"type": "undecryptable",
 			"roomId": "!r:example.org",
-			"eventId": "$e",
-			"sender": "@me:example.org"
+			"eventId": "$e"
 		},
 		{
 			"type": "sent",
@@ -72,8 +66,7 @@
 			"roomId": "!r:example.org",
 			"eventId": "$x",
 			"relatesTo": "$p",
-			"key": "✅",
-			"sender": "@me:example.org"
+			"key": "✅"
 		},
 		{
 			"type": "callMembers",
@@ -93,16 +86,13 @@
 		},
 		{
 			"type": "callSpeech",
-			"roomId": "!r:example.org",
-			"userId": "@me:example.org"
+			"roomId": "!r:example.org"
 		},
 		{
 			"type": "callUtterance",
 			"roomId": "!r:example.org",
-			"userId": "@me:example.org",
 			"path": "/d/u.wav",
-			"startedAt": 5,
-			"durationMs": 1200
+			"startedAt": 5
 		},
 		{
 			"type": "callSpoken",

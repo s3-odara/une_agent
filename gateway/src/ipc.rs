@@ -11,7 +11,7 @@ use crate::audio::VadConfig;
 pub enum Event {
     Ready { user_id: String, device_id: String },
     Message(Message),
-    Undecryptable { room_id: String, event_id: String, sender: String },
+    Undecryptable { room_id: String, event_id: String },
     Sent { request_id: String, event_id: String },
     Error {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -19,13 +19,13 @@ pub enum Event {
         message: String,
     },
     /// Not stored: one missed while the gateway was down is not offered again.
-    Reaction { room_id: String, event_id: String, relates_to: String, key: String, sender: String },
+    Reaction { room_id: String, event_id: String, relates_to: String, key: String },
     CallMembers { room_id: String, user_ids: Vec<String> },
     CallJoined { room_id: String },
     CallLeft { room_id: String, reason: String },
-    CallSpeech { room_id: String, user_id: String },
+    CallSpeech { room_id: String },
     /// The agent deletes the file once done.
-    CallUtterance { room_id: String, user_id: String, path: String, started_at: u64, duration_ms: u64 },
+    CallUtterance { room_id: String, path: String, started_at: u64 },
     CallSpoken { room_id: String, id: String, played_ms: u64, interrupted: bool },
 }
 
@@ -34,7 +34,6 @@ pub enum Event {
 pub struct Message {
     pub room_id: String,
     pub event_id: String,
-    pub sender: String,
     /// For audio, the file name or description the sender's client gave it.
     pub body: String,
     pub ts: u64,
@@ -49,8 +48,6 @@ pub struct Message {
 pub struct Audio {
     /// The agent deletes it once it no longer needs it.
     pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mimetype: Option<String>,
     pub voice: bool,
 }
 

@@ -6,7 +6,7 @@ import { createCalendarExtension } from "../src/calendar-tools.ts";
 import type { Bridge } from "../src/rooms.ts";
 import { Scheduler } from "../src/scheduler.ts";
 import { localToEpoch } from "../src/time.ts";
-import { agentEnv, ME } from "./env.ts";
+import { agentEnv } from "./env.ts";
 import { answer, call, instructionsOf, lastInput, MemoryCalDav, message, noting, type Request, type ToolResult } from "./fakes.ts";
 
 const tz = "Asia/Tokyo";
@@ -60,7 +60,7 @@ async function setup() {
 			});
 			return { eventId: reaction.eventId, body: env.link.of("send").find((send) => `$sent-${send.txnId}` === reaction.eventId)?.body ?? "" };
 		},
-		react: (eventId: string, key: string) => env.link.emit({ type: "reaction", roomId: ROOM, eventId: `$r${++n}`, relatesTo: eventId, key, sender: ME }),
+		react: (eventId: string, key: string) => env.link.emit({ type: "reaction", roomId: ROOM, eventId: `$r${++n}`, relatesTo: eventId, key }),
 		settled: () => bridge!.idle(),
 		async [Symbol.asyncDispose]() {
 			await env[Symbol.asyncDispose]();
