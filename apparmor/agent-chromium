@@ -4,7 +4,7 @@
 abi <abi/4.0>,
 include <tunables/global>
 
-profile agent-chromium /nix/store/*-playwright-chromium{,-headless-shell}/chrome-*/chrome{,-headless-shell} flags=(unconfined) {
+profile agent-chromium /nix/store/*-chromium{,-unwrapped}-[0-9]*/{bin,libexec/chromium}/chromium flags=(unconfined) {
   userns,
 
   include if exists <local/agent-chromium>

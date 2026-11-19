@@ -9,7 +9,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { type BrowserPage, PlaywrightBrowsers } from "../src/browser.ts";
 import { createBrowserExtension, pngSize } from "../src/browser-tools.ts";
 import { Credentials } from "../src/credentials.ts";
-import { errorMessage } from "../src/errors.ts";
+import { EgressProxy } from "../src/egress.ts";
 import { noChromium, rendererRoots } from "./chromium.ts";
 import { agentEnv, tempDir } from "./env.ts";
 import { call, everything, lastToolResult, message, type Request } from "./fakes.ts";
@@ -29,12 +29,14 @@ function body(request: IncomingMessage): Promise<string> {
 	});
 }
 
-function site(): Promise<Server> {
+function site(beacon: string): Promise<Server> {
 	const server = createServer(async (request, response) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
 		const html = (text: string) => response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page(text));
 		if (url.pathname === "/") {
 			html('<h1>トップ</h1><a href="/article">記事へ</a><form action="/search"><input name="q" aria-label="検索"><button>検索する</button></form>');
+		} else if (url.pathname === "/leak") {
+			html(`<p>表の本文</p><img src="${beacon}/img">`);
 		} else if (url.pathname === "/article") {
 			html("<h1>記事</h1><p>緑茶は発酵させない茶である。</p>");
 		} else if (url.pathname === "/search") {
@@ -67,18 +69,32 @@ async function realBrowser(t: TestContext) {
 		return undefined;
 	}
 	const dir = tempDir();
-	const server = await site();
-	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-	const options = { dir: join(dir.path, "browser"), headless: true, timezone: "Asia/Tokyo", idleMs: 600_000 };
+	const hits: string[] = [];
+	const inside = createServer((request, response) => {
+		hits.push(request.url ?? "");
+		response.end("inside");
+	});
+	await new Promise<void>((resolve) => inside.listen(0, "127.0.0.1", resolve));
+	const beacon = `http://127.0.0.1:${(inside.address() as AddressInfo).port}`;
+	const server = await site(beacon);
+	const port = (server.address() as AddressInfo).port;
+	const base = `http://127.0.0.1:${port}`;
+	// As the agent's proxy lets the browser reach only public addresses, this one lets it reach only the test's site.
+	const egress = await EgressProxy.start({ allow: (address, to) => to === port && (address === "127.0.0.1" || address === "::1") });
+	const options = { dir: join(dir.path, "browser"), egress, headless: true, timezone: "Asia/Tokyo", idleMs: 600_000 };
 	let browsers = new PlaywrightBrowsers(options);
 	const dispose = async () => {
 		await browsers.close();
+		await egress.close();
 		await new Promise((resolve) => server.close(resolve));
+		await new Promise((resolve) => inside.close(resolve));
 		dir[Symbol.dispose]();
 	};
 	return {
 		dir: dir.path,
 		base,
+		beacon,
+		hits,
 		get browsers() {
 			return browsers;
 		},
@@ -121,6 +137,15 @@ test("the browser cannot open the user's files, though a page asks it to", async
 	const userFile = fileURLToPath(new URL("../package.json", import.meta.url));
 	await tab.goto(pathToFileURL(userFile).href).catch(() => {});
 	assert.doesNotMatch(await tab.text(), /playwright-core/);
+});
+
+test("neither a page nor the browser itself reaches another server on this host", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/leak");
+	assert.match(await tab.text(), /表の本文/);
+	await tab.goto(`${b.beacon}/open`).catch(() => {});
+	assert.deepEqual(b.hits, []);
 });
 
 test("going back returns to the page before", async (t) => {

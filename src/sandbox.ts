@@ -1,19 +1,26 @@
 import { mkdirSync, realpathSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type ChromiumSandbox = {
 	readonly headless: boolean;
 	/** Chromium's home directory, its own: Chromiums sharing one wait on each other's locks in it. */
 	readonly home: string;
-	/** Chromium itself; when not given, the build Playwright would launch. */
+	/** The egress proxy (`EgressProxy.url`): every connection goes through it, and none elsewhere. */
+	readonly proxy: string;
+	/** Chromium itself; nixpkgs' when not given. */
 	readonly executablePath?: string;
 	/** Directories Chromium may write to, besides the temporary directory (where Playwright puts its own). */
 	readonly write?: readonly string[];
-	/** The only TCP ports Chromium may connect to; any when not given. */
-	readonly tcpPorts?: readonly number[];
+};
+
+export type ChromiumLaunch = {
+	readonly executablePath: string;
+	readonly env: Record<string, string>;
+	readonly proxy: { readonly server: string };
+	readonly args: string[];
+	readonly chromiumSandbox: true;
 };
 
 const SANDBOX_BIN = process.env.AGENT_SANDBOX_BIN ?? fileURLToPath(new URL("../sandbox/target/release/agent-sandbox", import.meta.url));
@@ -26,32 +33,33 @@ const WRITE = ["/proc", "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom",
 const PASSED = ["PATH", "LANG", "LANGUAGE", "TZ", "SSL_CERT_FILE", "NIX_SSL_CERT_FILE", "FONTCONFIG_FILE"];
 const DISPLAY = ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE"];
 
-type Registry = { findExecutable(name: string): { executablePath(): string | undefined } | undefined };
-
-/**
- * As Playwright chooses when given no executable: given one, it no longer tells the headless shell from Chromium.
- * The headless shell matters beyond its size: Chromium makes a UNIX socket to keep to one process per profile, which
- * the sandbox refuses a headless browser.
- */
-function playwrightChromium(headless: boolean): string {
-	const { registry } = createRequire(import.meta.url)("playwright-core/lib/coreBundle").registry as { registry: Registry };
-	const name = headless ? "chromium-headless-shell" : "chromium";
-	return registry.findExecutable(name)?.executablePath() ?? fail(`Playwright has no ${name}`);
+/** X's socket for `DISPLAY=:n`. */
+function xSocket(): string | undefined {
+	const x = /^:(\d+)/.exec(process.env.DISPLAY ?? "")?.[1];
+	return x === undefined ? undefined : `/tmp/.X11-unix/X${x}`;
 }
 
-function fail(message: string): never {
-	throw new Error(message);
+/** The sockets of the display a window is shown on: X's, and Wayland's for `WAYLAND_DISPLAY`. */
+function displaySockets(): string[] {
+	const sockets: string[] = [];
+	const x = xSocket();
+	if (x !== undefined) sockets.push(x);
+	const wayland = process.env.WAYLAND_DISPLAY;
+	if (wayland !== undefined && wayland !== "") {
+		if (isAbsolute(wayland)) sockets.push(wayland);
+		else if (process.env.XDG_RUNTIME_DIR !== undefined) sockets.push(join(process.env.XDG_RUNTIME_DIR, wayland));
+	}
+	return sockets;
 }
 
 /**
- * Launch options that run Chromium under `sandbox/` (Landlock): it reads the system's files but not the user's, writes
- * only where it is told to, and cannot reach the user's D-Bus or signal anything outside. This holds Chromium as a
- * whole once a renderer has broken out of Chromium's own sandbox, which holds only the renderers.
- *
- * A browser with a window reaches its display through UNIX sockets, so those are left open to it.
+ * Playwright's launch options for a Chromium run under `sandbox/` (Landlock). It reads the system's files but not the
+ * user's, writes only where it is told to, connects only to the egress proxy, uses no UDP, and reaches no UNIX socket
+ * made outside it (the user's D-Bus) but its display's, nor signals anything outside. This holds Chromium as a whole
+ * once a renderer has broken out of Chromium's own sandbox, which holds only the renderers.
  */
-export function sandboxedChromium(sandbox: ChromiumSandbox): { executablePath: string; env: Record<string, string> } {
-	const program = sandbox.executablePath ?? playwrightChromium(sandbox.headless);
+export function sandboxedChromium(sandbox: ChromiumSandbox): ChromiumLaunch {
+	const program = sandbox.executablePath ?? process.env.AGENT_CHROMIUM ?? fail("AGENT_CHROMIUM is not set (the dev shell and the package set it)");
 	const temp = tmpdir();
 	mkdirSync(sandbox.home, { recursive: true, mode: 0o700 });
 	const env: Record<string, string> = { HOME: sandbox.home, TMPDIR: temp };
@@ -65,11 +73,33 @@ export function sandboxedChromium(sandbox: ChromiumSandbox): { executablePath: s
 	if (!sandbox.headless) {
 		read.push(process.env.XAUTHORITY ?? join(process.env.HOME ?? "/", ".Xauthority"));
 		write.push("/dev/dri");
-		env.AGENT_SANDBOX_UNIX = "allow";
+		env.AGENT_SANDBOX_UNIX = displaySockets().join("\n");
+		// X's library tries the abstract socket first, and gives up on the refusal from the sandbox rather than trying
+		// the one with a path; given the path as the display, it goes there directly.
+		const x = xSocket();
+		if (x !== undefined) env.DISPLAY = x;
 	}
 	env.AGENT_SANDBOX_EXEC = program;
 	env.AGENT_SANDBOX_READ = read.join("\n");
 	env.AGENT_SANDBOX_WRITE = write.join("\n");
-	if (sandbox.tcpPorts !== undefined) env.AGENT_SANDBOX_TCP = sandbox.tcpPorts.join("\n");
-	return { executablePath: SANDBOX_BIN, env };
+	env.AGENT_SANDBOX_TCP = new URL(sandbox.proxy).port;
+	return {
+		executablePath: SANDBOX_BIN,
+		env,
+		// Playwright also sends this host's own addresses through the proxy (`<-loopback>`), so they are refused too.
+		proxy: { server: sandbox.proxy },
+		args: [
+			// The proxy has no UDP, and the sandbox none either: no QUIC, and WebRTC only through the proxy.
+			"--disable-quic",
+			"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+			"--disable-background-networking",
+		],
+		// Playwright turns Chromium's own sandbox off unless asked, which would leave a compromised renderer with the
+		// agent's files.
+		chromiumSandbox: true,
+	};
+}
+
+function fail(message: string): never {
+	throw new Error(message);
 }

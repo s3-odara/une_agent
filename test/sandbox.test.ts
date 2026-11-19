@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createSocket } from "node:dgram";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,10 +14,12 @@ import { type ChromiumSandbox, sandboxedChromium } from "../src/sandbox.ts";
  * is the one `just test` builds.
  */
 
+type Sandbox = Partial<Omit<ChromiumSandbox, "executablePath" | "home">>;
+
 /** Runs `body` (which may await) as the browser would be run, and tells whether it got through. */
-function asBrowser(sandbox: Omit<ChromiumSandbox, "executablePath" | "home">, body: string): Promise<"allowed" | "refused"> {
+function asBrowser(sandbox: Sandbox, body: string): Promise<"allowed" | "refused"> {
 	const home = mkdtempSync(join(tmpdir(), "agent-sandbox-home-"));
-	const { executablePath, env } = sandboxedChromium({ ...sandbox, home, executablePath: process.execPath });
+	const { executablePath, env } = sandboxedChromium({ headless: true, proxy: "http://127.0.0.1:1", ...sandbox, home, executablePath: process.execPath });
 	const code = `(async () => { try { ${body}; console.log("allowed"); } catch { console.log("refused"); } })();`;
 	return new Promise<"allowed" | "refused">((resolve, reject) =>
 		execFile(executablePath, ["-e", code], { env }, (error, stdout, stderr) => (error ? reject(new Error(stderr || String(error))) : resolve(stdout.trim() as "allowed" | "refused"))),
@@ -39,7 +42,7 @@ function withTemp(): { readonly path: string; [Symbol.dispose](): void } {
 
 test("the browser cannot read the user's files", async () => {
 	const userFile = fileURLToPath(new URL("../package.json", import.meta.url));
-	assert.equal(await asBrowser({ headless: true }, `require("node:fs").readFileSync(${JSON.stringify(userFile)})`), "refused");
+	assert.equal(await asBrowser({}, `require("node:fs").readFileSync(${JSON.stringify(userFile)})`), "refused");
 });
 
 test("the browser writes in its temporary directory and the directories it is given, and nowhere else", async (t) => {
@@ -51,7 +54,7 @@ test("the browser writes in its temporary directory and the directories it is gi
 	const previous = process.env.TMPDIR;
 	process.env.TMPDIR = own;
 	t.after(() => (previous === undefined ? delete process.env.TMPDIR : (process.env.TMPDIR = previous)));
-	const write = (dir: string) => asBrowser({ headless: true, write: [given] }, `require("node:fs").writeFileSync(${JSON.stringify(join(dir, "f"))}, "x")`);
+	const write = (dir: string) => asBrowser({ write: [given] }, `require("node:fs").writeFileSync(${JSON.stringify(join(dir, "f"))}, "x")`);
 	assert.equal(await write(own), "allowed");
 	assert.equal(await write(given), "allowed");
 	assert.equal(await write(other), "refused");
@@ -60,23 +63,32 @@ test("the browser writes in its temporary directory and the directories it is gi
 test("the browser does not get the agent's environment, nor read it from the agent's process", async (t) => {
 	process.env.AGENT_TEST_SECRET = "s3cret";
 	t.after(() => delete process.env.AGENT_TEST_SECRET);
-	assert.equal(await asBrowser({ headless: true }, `if (process.env.AGENT_TEST_SECRET === undefined) throw 0`), "refused");
-	assert.equal(await asBrowser({ headless: true }, `require("node:fs").readFileSync("/proc/" + process.ppid + "/environ")`), "refused");
+	assert.equal(await asBrowser({}, `if (process.env.AGENT_TEST_SECRET === undefined) throw 0`), "refused");
+	assert.equal(await asBrowser({}, `require("node:fs").readFileSync("/proc/" + process.ppid + "/environ")`), "refused");
 });
 
 test("the browser cannot signal the agent", async () => {
-	assert.equal(await asBrowser({ headless: true }, "process.kill(process.ppid, 0)"), "refused");
+	assert.equal(await asBrowser({}, "process.kill(process.ppid, 0)"), "refused");
 });
 
-test("the browser connects only to the TCP ports it is given", async (t) => {
-	const given = await listen(createServer(), 0);
+test("the browser connects only to its proxy", async (t) => {
+	const proxy = await listen(createServer(), 0);
 	const other = await listen(createServer(), 0);
 	t.after(() => {
-		given.close();
+		proxy.close();
 		other.close();
 	});
-	assert.equal(await asBrowser({ headless: true, tcpPorts: [port(given)] }, connect(port(given))), "allowed");
-	assert.equal(await asBrowser({ headless: true, tcpPorts: [port(given)] }, connect(port(other))), "refused");
+	const sandbox = { proxy: `http://127.0.0.1:${port(proxy)}` };
+	assert.equal(await asBrowser(sandbox, connect(port(proxy))), "allowed");
+	assert.equal(await asBrowser(sandbox, connect(port(other))), "refused");
+});
+
+test("the browser sends no UDP", async (t) => {
+	const server = createSocket("udp4");
+	await new Promise<void>((resolve) => server.bind(0, "127.0.0.1", resolve));
+	t.after(() => server.close());
+	const send = `await new Promise((resolve, reject) => { const socket = require("node:dgram").createSocket("udp4").on("error", reject); socket.send("x", ${server.address().port}, "127.0.0.1", (error) => { socket.close(); error ? reject(error) : resolve(); }); })`;
+	assert.equal(await asBrowser({}, send), "refused");
 });
 
 test("a headless browser cannot reach a UNIX socket outside, such as the user's D-Bus", async (t) => {
@@ -84,13 +96,21 @@ test("a headless browser cannot reach a UNIX socket outside, such as the user's 
 	const path = join(temp.path, "bus");
 	const server = await listen(createServer(), path);
 	t.after(() => server.close());
-	assert.equal(await asBrowser({ headless: true }, connect(path)), "refused");
+	assert.equal(await asBrowser({}, connect(path)), "refused");
 });
 
-test("a browser with a window reaches UNIX sockets outside, as its display needs", async (t) => {
+test("a browser with a window reaches its display's socket, and no other UNIX socket outside", async (t) => {
 	using temp = withTemp();
-	const path = join(temp.path, "display");
-	const server = await listen(createServer(), path);
-	t.after(() => server.close());
-	assert.equal(await asBrowser({ headless: false }, connect(path)), "allowed");
+	const display = join(temp.path, "wayland-0");
+	const bus = join(temp.path, "bus");
+	const servers = [await listen(createServer(), display), await listen(createServer(), bus)];
+	const previous = process.env.WAYLAND_DISPLAY;
+	process.env.WAYLAND_DISPLAY = display;
+	t.after(() => {
+		for (const server of servers) server.close();
+		if (previous === undefined) delete process.env.WAYLAND_DISPLAY;
+		else process.env.WAYLAND_DISPLAY = previous;
+	});
+	assert.equal(await asBrowser({ headless: false }, connect(display)), "allowed");
+	assert.equal(await asBrowser({ headless: false }, connect(bus)), "refused");
 });

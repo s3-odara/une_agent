@@ -52,7 +52,8 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - モデルには pi-durable の `read` / `write` / `edit` / `bash` を**制限なしで渡す**。Hermes や Muse のように何でもでき、
   エージェント自身の設定もモデルが変える（2026-11-19 決定）
 - ブラウザ（`browser_*` と `web_extract`）の Chromium は**自身のサンドボックスを有効にして動かし、外側を Landlock で囲う**。
-  bwrap や AppArmor では囲わない（2026-11-19 決定。「Chromium のサンドボックス」）
+  bwrap や AppArmor では囲わない。Chromium は nixpkgs のもの、Landlock ABI 10 以上が必須（VM は Ubuntu 26.10 にする）、
+  `browser_*` も通信は内部に届かないプロキシだけ（LAN の中のサイトは見ない）（2026-11-19 決定。「Chromium のサンドボックス」）
 - 人格ごとにセッションは分ける
 - Hermes の profile のように、口調を変えたいだけで設定ファイルまで分離されるのは避けたい
 - 既存 cron: Dreaming は毎日 02:00、Proactive は 06:00〜21:00 毎時（Asia/Tokyo）
@@ -228,8 +229,8 @@ Web ブラウザ。`config.json` に `browser` があれば有効になる。`sr
 
 ### 準備
 
-1. Chromium は nixpkgs の `playwright-driver.browsers` から Chromium だけを取り出したものを使う。開発用シェルと
-   パッケージがどちらも `PLAYWRIGHT_BROWSERS_PATH` をそこに向けるので、取得もシステムライブラリも要らない。
+1. Chromium は nixpkgs の `chromium` を使う。開発用シェルとパッケージがどちらも `AGENT_CHROMIUM` をそこに向けるので、
+   取得もシステムライブラリも要らない。
    Playwright（`playwright-core`）も npm ではなく nixpkgs の `playwright-driver` を使う（「Chromium のサンドボックス」）
 2. 二段階認証などエージェントにできないログインは、画面のある環境で
    `just browser-login https://example.com`（常駐中のものは `just deployed-browser-login https://example.com`、
@@ -519,21 +520,29 @@ Teredo、6to4、文書用を除いたものだけ（IPv4 を IPv6 で書いた�
 
 Playwright は `chromiumSandbox: true` を渡さない限り Chromium を `--no-sandbox` で起動する。それまでは `browser_*` も
 `web_extract` もサンドボックスなしで、レンダラーの脆弱性を突かれるとエージェントと同じ権限で `credentials.json`、
-`auth.json`、`env`、暗号ストアを読まれた。いまは両方に `chromiumSandbox: true` を付けている。
+`auth.json`、`env`、暗号ストアを読まれた。いまは必ず付ける（`src/sandbox.ts`）。
 
 - レンダラーは別のユーザー・PID・ネットワークの名前空間に入り、ファイルシステムの root が空のディレクトリに変わる。
   テスト（`test/chromium.ts` の `rendererRoots`）はこの root が `/` でないことで確かめる。seccomp ではない
-  （ヘッドレスシェルは `--no-sandbox` でもレンダラーに seccomp をかけていて、違いが出なかった）
+  （`--no-sandbox` でもレンダラーに seccomp がかかっていて、違いが出なかった）
 - Ubuntu は既定で、プロファイルを持たないプログラムがユーザー名前空間を作るのを禁じている
   （`kernel.apparmor_restrict_unprivileged_userns`）。Nix ストアの Chromium はこれに当たり、`No usable sandbox` で起動しない。
   `apparmor/agent-chromium`（Ubuntu の Chrome 用のものと同じ、`userns` だけを足した unconfined のプロファイル）を
-  `just apparmor` で入れる。`just setup` からも呼ぶ。パスは glob なので、ビルドが変わっても入れ直さなくてよい
-- Chromium は nixpkgs がビルドしたものではなく、Playwright の版ごとに決まったビルド済みのもの（nixpkgs の
-  `pkgs/development/web/playwright/` が `browsers.json` の版を取ってくる）。Chromium の修正が来るのは、Playwright の
-  新しい版が nixpkgs に入ったときだけで、Playwright のリリース（おおむね月1回）より早くはならない
-- Playwright は自分の版向けの Chromium しか探さないので、Playwright の版は nixpkgs だけで決める。`playwright-core` は
-  npm の依存に入れず、nixpkgs の `playwright-driver`（中身は npm の `playwright-core` パッケージそのもの）を
-  `node_modules/playwright-core` にリンクする。パッケージは `nix/agent.nix` が、開発用シェルは入るときに張る
+  `just apparmor` で入れる。`just setup` からも呼ぶ。パスは glob なので、ビルドが変わっても入れ直さなくてよい。
+  **2026-11-19 に Chromium を nixpkgs のものに替えてパスが変わったので、配置済みの VM では `just apparmor` をやり直す**
+
+### Chromium と Playwright の出どころ
+
+- Chromium は nixpkgs の `chromium`（`AGENT_CHROMIUM`。開発用シェルとパッケージが設定する）。Chrome の安定版の修正に
+  数日で追いつく。以前の Playwright 同梱の Chromium は Playwright の版ごとに決まったビルド済みのもので、修正は
+  Playwright のリリース（おおむね月1回）を待った
+- Playwright が保証するのは同梱の Chromium だけで、nixpkgs の版は1つ新しいことがある（2026-11-19 は Playwright 1.64.1 の
+  156 に対して 157）。Playwright は Chrome の安定版での動作もサポートしているので、実際に困ることは少ないはず。
+  `nix flake update` のあとは `just check` で確かめる
+- ヘッドレスシェルは nixpkgs に無いので、ヘッドレスでも通常の Chromium（新しいヘッドレスモード）を動かす。通常の
+  Chromium は1回の起動で約130スレッド（ヘッドレスシェルは約80）
+- Playwright（`playwright-core`）は npm の依存に入れず、nixpkgs の `playwright-driver`（中身は npm の `playwright-core`
+  パッケージそのもの）を `node_modules/playwright-core` にリンクする。パッケージは `nix/agent.nix` が、開発用シェルは入るときに張る
   （`npm install` するとリンクが消えるので、シェルに入り直す）。以前は npm と nixpkgs の両方が版を決めていて、
   揃えるための `just update` があった（2026-11-19 に廃止）
 - **定期的に `nix flake update` する**。そのあと `just check`、コミット、`just install`
@@ -543,31 +552,41 @@ Playwright は `chromiumSandbox: true` を渡さない限り Chromium を `--no-
 Chromium 自身のサンドボックスが閉じ込めるのはレンダラーだけ。そこを抜けられたときのために、Chromium 全体を
 小さなラッパー `agent-sandbox`（Rust、依存は libc だけ）の中で起動する。Playwright はブラウザに実行ファイルと環境変数しか
 渡せないので、`executablePath` をラッパーにし、方針を環境変数（`AGENT_SANDBOX_*`）で渡す。ラッパーは制限をかけてから
-Chromium を exec する。
+Chromium を exec する。対象は `browser_*`、`web_extract`、`just browser-login` の3つすべて。
 
+- **Landlock ABI 10 以上が必須**（2026-11-19 決定。VM は Ubuntu 26.10（カーネル 7.3）にする）。満たさないカーネルでは
+  ブラウザは起動しない（囲いを弱めて動かすことはしない）。このマシン（7.3）は ABI 11。26.04 の 7.0 は ABI 9 の
+  `RESOLVE_UNIX` も持っていないと思われる（パッチは 2026年3〜4月にまだレビュー中だった）
 - ファイル: 読めるのは `/nix/store`、`/etc`、`/usr`、`/sys`、フォントのキャッシュ、`/run/systemd/resolve` と Chromium の
-  ディレクトリ。書けるのは一時ディレクトリ（`TMPDIR`）、`/proc`、`/dev` のいくつか、`browser_*` ではプロファイル。
-  ホームディレクトリ（`credentials.json`、`auth.json`、`env`、暗号ストア、リポジトリ）は読めない
+  ディレクトリ。書けるのは一時ディレクトリ（`TMPDIR`）、Chromium 用の `HOME`、`/proc`、`/dev` のいくつか、`browser_*` では
+  プロファイル。ホームディレクトリ（`credentials.json`、`auth.json`、`env`、暗号ストア、リポジトリ）は読めない
   - `/proc` に書けないと Chromium のサンドボックスが uid_map を書けず起動しない。外のプロセスの `/proc`（`environ` など）は
     Landlock が ptrace と同じく止める
   - 常駐時は `TMPDIR` を `~/.cache/agent/tmp`（systemd の `CacheDirectory`）にして、`/tmp` 全体を書けないようにする。
-    Playwright は `launch()` のプロファイルを必ず一時ディレクトリに作るので、一時ディレクトリは外せない
-  - Chromium の `HOME` は一時ディレクトリの中に移す
+    Playwright は `launch()` のプロファイルを必ず一時ディレクトリに作るので、一時ディレクトリは外せない。
+    エージェント（モデルの `bash` を含む）と共有しているのは残っている穴
+  - `HOME` は起動ごとに別にする（`browser_*` はプロファイルの中の `.home`、`web_extract` は起動ごとに作って消す）。
+    共有すると並列で起動した Chromium が互いを待った
 - 環境変数: 決めたものだけを渡す（`PATH`、`LANG`、`LC_*`、`TZ`、証明書とフォントの場所。画面つきなら表示用のもの）。
   それまではエージェントの環境変数（API キー、CalDAV のパスワード）がそのまま Chromium に渡っていた
-- ネットワーク: TCP の待ち受けは禁止。`web_extract` は接続先をプロキシのポートだけにする。`browser_*` は制限しない
-- 外とのやり取り: 抽象 UNIX ソケットとシグナルは同じ囲いの中だけ（ABI 6）。パスのある UNIX ソケットへの接続は
-  ABI 9 の `RESOLVE_UNIX` で止める。ABI 9 はこのマシン（7.3）にはあるが、Ubuntu 26.04 の 7.0 には無いと思われる
-  （パッチは 2026年3〜4月にまだレビュー中だった）。そのため seccomp で `socket(AF_UNIX)` と io_uring と x86_64 以外の
-  システムコールも断る。`socketpair` は通す（Chromium のプロセス間通信）。止めたいのはユーザーの D-Bus
-  （`/run/user/<uid>/bus`。systemd に頼んで囲いの外でプロセスを起動できる）
-- 画面つき（`browser.headless: false`、`just browser-login`）は表示に UNIX ソケットが要るので、UNIX ソケットの制限だけを外す
-  （ファイルの制限は残す）。人が見ている手作業のログイン用という扱い
-- ヘッドレスでは Playwright と同じくヘッドレスシェルを起動する（ラッパーを挟むと Playwright が区別しなくなるので、
-  `playwright-core/lib/coreBundle` の registry で同じものを選ぶ。公開 API ではないので、`nix flake update` 後のテストで確かめる）。
-  通常の Chromium はプロファイルを1プロセスに限るための UNIX ソケットを作り、seccomp で落ちる
-- Landlock が無い、または ABI 6 より古いカーネルではブラウザが起動しない（囲わずに動かすことはしない）
-- ラッパーは `just sandbox`（`just test`・`just run` が先に作る）、パッケージでは `nix/sandbox.nix`（`AGENT_SANDBOX_BIN`）
+- ネットワーク: **3つとも通信は `src/egress.ts` のプロキシだけ**（2026-11-19 決定。LAN の中のサイトは見ない）。
+  Landlock で TCP の接続先をプロキシのポートだけにし、TCP の待ち受けと UDP（ABI 10）は全部禁止。以前の `browser_*` は
+  制限がなく、ページの JavaScript から `127.0.0.1` や LAN（認証の無い VOICEVOX、ルーターなど）に届いた
+- UNIX ソケット: 外で作られたものにはつながらない（ABI 9 の `RESOLVE_UNIX`。囲いの中で作ったものには許可なしで届く）。
+  抽象 UNIX ソケットとシグナルも同じ囲いの中だけ（ABI 6）。止めたいのはユーザーの D-Bus（`/run/user/<uid>/bus`。
+  systemd に頼んで囲いの外でプロセスを起動できる）。実際の Chromium のログにも、D-Bus への接続が `Permission denied` で
+  断られているのが出る
+  - 書ける場所にも `RESOLVE_UNIX` は与えない。一時ディレクトリは外と共有するので、そこに外から置かれたソケットに届いてしまう
+- 画面つき（`browser.headless: false`、`just browser-login`）は、表示のソケット（X の `/tmp/.X11-unix/X<n>`、Wayland の
+  `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`）にだけ `RESOLVE_UNIX` を与える。ほかの制限は同じ。X のライブラリ（libxcb）は
+  抽象ソケットを先に試し、囲いに断られるとパスのソケットを試さずにあきらめるので、Chromium に渡す `DISPLAY` を
+  ソケットのパスに書き換える
+- seccomp: io_uring と x86_64 以外のシステムコール（`int 0x80`、x32）を断る。Chromium はどれも使わず、カーネルの脆弱性が
+  多く見つかってきた場所。Chromium 自身の seccomp はレンダラーにしかかからない。以前は ABI 9 が無いカーネルに備えて
+  `socket(AF_UNIX)` も断っていたが、通常の Chromium は1プロセス制限（ProcessSingleton）の UNIX ソケットを作れないと
+  落ちるのと、ABI 10 を必須にしたので外した
+- ラッパーは `just sandbox`（`just test`・`just run`・`just browser-login` が先に作る）、パッケージでは `nix/sandbox.nix`
+  （`AGENT_SANDBOX_BIN`）
 
 選ばなかったもの:
 
@@ -576,29 +595,33 @@ Chromium を exec する。
   設定から決まる場所に追従できず、開発機でテストできない
 - `web_extract` だけを bwrap で包むこと。そこまでする相手は、ページの文面でモデルを誘導して `browser_*` で同じページを
   開かせられる
+- ヘッドレスで `--disable-gpu`。GPU プロセスはソフトウェア描画で残り、スレッドも減らなかった
+- まだやっていないもの: 実行できるプログラムを Chromium とその動的ローダーだけに絞る、seccomp にカーネルの攻撃に
+  使われやすいシステムコール（`bpf`、`userfaultfd`、`keyctl` 系、`perf_event_open`）を足す、一時ディレクトリをエージェントと分ける
 
 モデルには `bash` を制限なしで渡しているので、モデルが誘導されて秘密を読む経路はどれでも残る。守れるのは
 「ページを開いただけで乗っ取られる」経路だけ。
 
 ### 確かめたこと
 
-- このマシン（Gentoo、kernel 7.3）で、両方のブラウザのレンダラーの root が `/proc/<zygote>/fdinfo` になること。
+- このマシン（Gentoo、kernel 7.3、Landlock ABI 11）で、両方のブラウザのレンダラーの root が `/proc/<zygote>/fdinfo` になること。
   サンドボックスを切ると `/` になり、テストが落ちること
-- `apparmor/agent-chromium` を読み込むと、ヘッドレスシェルと画面つきの Chromium の両方に `agent-chromium` のラベルが付くこと。
-  ラッパー（no_new_privs を立てる）を通して起動しても付くこと（このマシンには Ubuntu の制限が無いので、制限下で起動できることは未確認）
+- `apparmor/agent-chromium` を読み込むと、nixpkgs の Chromium をラッパー（no_new_privs を立てる）から起動しても
+  `agent-chromium` のラベルが付くこと（このマシンには Ubuntu の制限が無いので、制限下で起動できることは未確認）
 - `test/sandbox.test.ts`: Node を同じ方針で動かし、ユーザーのファイルを読めない、決めた場所にだけ書ける、環境変数と
-  エージェントの `environ` が見えない、シグナルを送れない、決めた TCP ポートにだけつながる、外の UNIX ソケットに
-  ヘッドレスでは届かず画面つきでは届くこと。UNIX ソケットの件は `RESOLVE_UNIX` を切って seccomp だけでも、seccomp を切って `RESOLVE_UNIX` だけでも通ることを
-  確かめた（後者は最初、書ける場所にも `RESOLVE_UNIX` を与えていて、一時ディレクトリに外から置かれたソケットに届いていた。
-  自分で作ったソケットには許可が無くても届くので、どこにも与えない）
+  エージェントの `environ` が見えない、シグナルを送れない、プロキシにだけつながる、UDP を送れない、外の UNIX ソケットに
+  届かない、画面つきでは表示のソケットにだけ届くこと
 - 実 Chromium のテストはすべてラッパーの中で通る。ブラウザに `file://` でリポジトリのファイルを開かせても読めない
-  （ラッパーを外すと読めてテストが落ちる）。Nix でビルドしたラッパーでも同じテストが通る
-- 以前は Chromium が起動しないと実 Chromium のテストが黙ってスキップしていた。いまはスキップは Chromium が入っていない
-  ときだけで、起動しなければ失敗する
+  （ラッパーを外すと読めてテストが落ちる）。`browser_*` のページの画像も、ブラウザで直接開いても、このホストの別のサーバーに届かない。
+  Nix でビルドしたパッケージでもページを読める
+- 画面つき: Xvfb（`xvfb-run`）の上で、ラッパーの中の Chromium が窓を開いてスクリーンショットを撮れること。Wayland は未確認
+- 実 Chromium のテストは、Chromium が無いときだけスキップし、起動しなければ失敗する（以前は黙ってスキップしていた）
+- このマシンの Claude Code のセッションは systemd の scope にプロセス数の上限（コンテナ全体の 15%、当時 307）があり、
+  通常の Chromium を2つ同時に開くテストで超えて、セッションごと落ちた。`systemd-run --user --scope -p TasksMax=400` の中で
+  回して全件通過。本番の VM では上限がずっと大きいので問題にならないはず
 
-未確認: Ubuntu 26.04 の VM での `just apparmor`、制限下でのサンドボックスの起動、7.0 の Landlock の ABI と、その上で
-ブラウザが動くこと。画面つき（`just browser-login`）をラッパーの中で動かすこと（このマシンで画面を使って試していない）。
-Playwright の版が変わる `nix flake update` を実際に回すこと
+未確認: Ubuntu 26.10 の VM での `just apparmor`、制限下でのサンドボックスの起動、その上でブラウザが動くこと。
+Wayland の画面つき。nixpkgs の Chromium の版が上がる `nix flake update` を実際に回すこと
 
 ## 返答の途中経過（2026-11-19）
 
@@ -680,7 +703,7 @@ Nix はビルドと開発環境に使い、常駐は systemd のユーザーサ�
 
 - `flake.nix` のパッケージ
   - `agent`: TypeScript をそのまま Node 26 で動かすラッパー。gateway、whisper-server、モデル、ffmpeg、Chromium の
-    場所を環境変数（`AGENT_GATEWAY_BIN`、`AGENT_WHISPER_SERVER`、`AGENT_STT_MODELS`、`PLAYWRIGHT_BROWSERS_PATH`）で
+    場所を環境変数（`AGENT_GATEWAY_BIN`、`AGENT_WHISPER_SERVER`、`AGENT_STT_MODELS`、`AGENT_CHROMIUM`、`AGENT_SANDBOX_BIN`）で
     渡す。config に書けばそちらが優先。ソースから動かすときは従来どおりリポジトリ内の場所
   - `gateway`: crane でビルド。webrtc-sys はビルド中に libwebrtc をダウンロードするので、`nix/libwebrtc.nix` で
     先に取得して `LK_CUSTOM_WEBRTC` で渡す（タグは Cargo.lock の webrtc-sys-build の `WEBRTC_TAG`。上げるときは一緒に）。

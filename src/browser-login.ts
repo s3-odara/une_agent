@@ -9,6 +9,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { loadConfig } from "./config.ts";
+import { EgressProxy } from "./egress.ts";
+import { sandboxedChromium } from "./sandbox.ts";
 
 const [url, profile = "default"] = process.argv.slice(2);
 if (url === undefined || !/^https?:\/\//.test(url) || !/^[A-Za-z0-9_-]+$/.test(profile)) {
@@ -20,9 +22,11 @@ const config = loadConfig(process.env.AGENT_CONFIG ?? "config.json");
 const dir = join(config.dataDir, "browser", profile);
 mkdirSync(dir, { recursive: true });
 
+// Confined as the agent's browser is: the pages are as untrusted, and the profile is the same.
+const egress = await EgressProxy.start();
 const context = await chromium.launchPersistentContext(dir, {
 	headless: false,
-	executablePath: config.browser?.executablePath,
+	...sandboxedChromium({ headless: false, home: join(dir, ".home"), proxy: egress.url, executablePath: config.browser?.executablePath, write: [dir] }),
 	locale: "ja-JP",
 	timezoneId: config.timezone,
 	viewport: null,
@@ -31,3 +35,4 @@ const page = context.pages()[0] ?? (await context.newPage());
 await page.goto(url);
 console.error(`profile "${profile}" is open at ${url}. Close the window when you are done.`);
 await new Promise((resolve) => context.on("close", resolve));
+await egress.close();

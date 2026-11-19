@@ -26,18 +26,12 @@
       sandbox = pkgs.callPackage ./nix/sandbox.nix { inherit craneLib; };
       whisper-server = pkgs.callPackage ./nix/whisper-server.nix { };
       stt-models = pkgs.callPackage ./nix/stt-models.nix { };
-      # The headless shell stays: Playwright launches it for headless Chromium.
-      playwright-browsers = pkgs.playwright-driver.browsers.override {
-        withFirefox = false;
-        withWebkit = false;
-      };
       agent = pkgs.callPackage ./nix/agent.nix {
         inherit
           gateway
           sandbox
           whisper-server
           stt-models
-          playwright-browsers
           ;
       };
       deployment = pkgs.callPackage ./nix/deployment.nix {
@@ -89,7 +83,7 @@
           vulkan-tools
         ];
         LK_CUSTOM_WEBRTC = libwebrtc;
-        PLAYWRIGHT_BROWSERS_PATH = playwright-browsers;
+        AGENT_CHROMIUM = pkgs.lib.getExe pkgs.chromium;
         # playwright-core is nixpkgs', not npm's (see nix/agent.nix); `npm install` takes the link away, entering the
         # shell again puts it back.
         shellHook = ''

@@ -6,7 +6,7 @@
   makeWrapper,
   ffmpeg-headless,
   playwright-driver,
-  playwright-browsers,
+  chromium,
   gateway,
   sandbox,
   whisper-server,
@@ -42,7 +42,7 @@ buildNpmPackage {
         --set-default AGENT_SANDBOX_BIN ${lib.getExe sandbox} \
         --set-default AGENT_WHISPER_SERVER ${lib.getExe whisper-server} \
         --set-default AGENT_STT_MODELS ${stt-models} \
-        --set-default PLAYWRIGHT_BROWSERS_PATH ${playwright-browsers} \
+        --set-default AGENT_CHROMIUM ${lib.getExe chromium} \
         --prefix PATH : ${lib.makeBinPath [ ffmpeg-headless ]}
     done
     runHook postInstall

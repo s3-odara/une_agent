@@ -4,12 +4,13 @@
 //! - `AGENT_SANDBOX_EXEC`: the program, run with this program's arguments
 //! - `AGENT_SANDBOX_READ`, `AGENT_SANDBOX_WRITE`: the paths (one per line) whose trees may be read and executed, or
 //!   also written. Paths that do not exist are left out
-//! - `AGENT_SANDBOX_TCP`: the TCP ports (one per line) that may be connected to; unset, any. TCP ports are never bound
-//! - `AGENT_SANDBOX_UNIX=allow`: UNIX sockets outside the sandbox may be reached (a browser on a display needs them)
+//! - `AGENT_SANDBOX_TCP`: the TCP ports (one per line) that may be connected to; unset, any. TCP ports are never bound,
+//!   and UDP is never used
+//! - `AGENT_SANDBOX_UNIX`: the UNIX sockets made outside (one per line) that may be connected to, such as a display's.
+//!   No other: the user's D-Bus would let the program start anything outside the sandbox through systemd
 //!
-//! Without `allow`, a seccomp filter also refuses new UNIX sockets: Landlock controls connecting to a socket by its
-//! path only from ABI 9, which older kernels (likely Ubuntu 26.04's 7.0) lack, and the user's D-Bus would let the
-//! program start anything outside the sandbox through systemd.
+//! Landlock ABI 10 is required: ABI 9 controls connecting to UNIX sockets by their path, and ABI 10 controls UDP. On an
+//! older kernel the program is not run at all, rather than run less confined.
 
 use std::{
 	convert::Infallible,
@@ -45,10 +46,13 @@ mod landlock {
 	pub const FS_RESOLVE_UNIX: u64 = 1 << 16;
 	/// From EXECUTE to MAKE_SYM: the rights of ABI 1.
 	pub const FS_ABI1: u64 = (1 << 13) - 1;
-	pub const FS_FILE: u64 = FS_EXECUTE | FS_WRITE_FILE | FS_READ_FILE | FS_TRUNCATE | FS_IOCTL_DEV;
+	pub const FS_ALL: u64 = FS_ABI1 | FS_REFER | FS_TRUNCATE | FS_IOCTL_DEV | FS_RESOLVE_UNIX;
+	pub const FS_FILE: u64 = FS_EXECUTE | FS_WRITE_FILE | FS_READ_FILE | FS_TRUNCATE | FS_IOCTL_DEV | FS_RESOLVE_UNIX;
 
 	pub const NET_BIND_TCP: u64 = 1 << 0;
 	pub const NET_CONNECT_TCP: u64 = 1 << 1;
+	pub const NET_BIND_UDP: u64 = 1 << 2;
+	pub const NET_CONNECT_SEND_UDP: u64 = 1 << 3;
 
 	pub const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
 	pub const SCOPE_SIGNAL: u64 = 1 << 1;
@@ -78,7 +82,7 @@ struct Policy {
 	read: Vec<OsString>,
 	write: Vec<OsString>,
 	tcp: Option<Vec<u16>>,
-	unix: bool,
+	unix: Vec<OsString>,
 }
 
 impl Policy {
@@ -102,7 +106,7 @@ impl Policy {
 			read: lines(READ),
 			write: lines(WRITE),
 			tcp,
-			unix: env::var_os(UNIX).is_some_and(|value| value == "allow"),
+			unix: lines(UNIX),
 		})
 	}
 }
@@ -116,19 +120,10 @@ fn abi() -> Result<i64, String> {
 	if abi < 0 {
 		return Err(last_error("Landlock is not available"));
 	}
-	// Scopes (ABI 6) keep the program from abstract UNIX sockets and from signalling anything outside.
-	if abi < 6 {
-		return Err(format!("Landlock ABI {abi} is older than 6 (kernel 6.12)"));
+	if abi < 10 {
+		return Err(format!("Landlock ABI {abi} is older than 10, which controls UNIX sockets and UDP"));
 	}
 	Ok(abi)
-}
-
-fn handled_fs(abi: i64, unix: bool) -> u64 {
-	let mut rights = landlock::FS_ABI1 | landlock::FS_REFER | landlock::FS_TRUNCATE | landlock::FS_IOCTL_DEV;
-	if abi >= 9 && !unix {
-		rights |= landlock::FS_RESOLVE_UNIX;
-	}
-	rights
 }
 
 fn add_path(ruleset: &OwnedFd, path: &OsStr, rights: u64) -> Result<(), String> {
@@ -149,12 +144,15 @@ fn add_path(ruleset: &OwnedFd, path: &OsStr, rights: u64) -> Result<(), String> 
 }
 
 fn restrict(policy: &Policy) -> Result<(), String> {
-	let abi = abi()?;
-	let fs = handled_fs(abi, policy.unix);
+	abi()?;
+	let fs = landlock::FS_ALL;
 	let attr = landlock::RulesetAttr {
 		handled_access_fs: fs,
-		handled_access_net: landlock::NET_BIND_TCP | if policy.tcp.is_some() { landlock::NET_CONNECT_TCP } else { 0 },
-		scoped: landlock::SCOPE_SIGNAL | if policy.unix { 0 } else { landlock::SCOPE_ABSTRACT_UNIX_SOCKET },
+		handled_access_net: landlock::NET_BIND_TCP
+			| landlock::NET_BIND_UDP
+			| landlock::NET_CONNECT_SEND_UDP
+			| if policy.tcp.is_some() { landlock::NET_CONNECT_TCP } else { 0 },
+		scoped: landlock::SCOPE_SIGNAL | landlock::SCOPE_ABSTRACT_UNIX_SOCKET,
 	};
 	let fd = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, &attr, size_of::<landlock::RulesetAttr>(), 0u32) };
 	if fd < 0 {
@@ -168,6 +166,9 @@ fn restrict(policy: &Policy) -> Result<(), String> {
 		// Not RESOLVE_UNIX: a socket the program made itself is reachable without it, and with it any socket put in a
 		// writable directory from outside (the temporary directory is shared) would be too.
 		add_path(&ruleset, path, fs & !landlock::FS_RESOLVE_UNIX)?;
+	}
+	for path in &policy.unix {
+		add_path(&ruleset, path, landlock::FS_RESOLVE_UNIX)?;
 	}
 	for &port in policy.tcp.iter().flatten() {
 		let attr = landlock::NetPortAttr { allowed_access: landlock::NET_CONNECT_TCP, port: port.into() };
@@ -184,10 +185,9 @@ fn restrict(policy: &Policy) -> Result<(), String> {
 	Ok(())
 }
 
-/// Refuses socket(AF_UNIX, …), and io_uring, whose requests make sockets without that call. socketpair stays: Chromium's
-/// processes talk through socket pairs. Any other architecture's calls (int 0x80, x32) are refused, as they would get
-/// round the check.
-fn refuse_unix_sockets() -> Result<(), String> {
+/// Refuses io_uring and any other architecture's calls (int 0x80, x32): Chromium uses none of them, and they are where
+/// much of the kernel's attack surface has been. Chromium's own seccomp holds its renderers only.
+fn refuse_unused_syscalls() -> Result<(), String> {
 	const LD_W_ABS: u16 = (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16;
 	const JEQ: u16 = (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16;
 	const JGE: u16 = (libc::BPF_JMP | libc::BPF_JGE | libc::BPF_K) as u16;
@@ -197,15 +197,11 @@ fn refuse_unix_sockets() -> Result<(), String> {
 	let op = |code, jt, jf, k| libc::sock_filter { code, jt, jf, k };
 	let filter = [
 		op(LD_W_ABS, 0, 0, 4), // arch
-		op(JEQ, 0, 8, AUDIT_ARCH_X86_64),
+		op(JEQ, 0, 4, AUDIT_ARCH_X86_64),
 		op(LD_W_ABS, 0, 0, 0), // nr
-		op(JGE, 6, 0, X32_SYSCALL_BIT),
-		op(JEQ, 5, 0, libc::SYS_io_uring_setup as u32),
-		op(JEQ, 0, 2, libc::SYS_socket as u32),
-		op(LD_W_ABS, 0, 0, 16), // args[0], the domain
-		op(JEQ, 1, 0, libc::AF_UNIX as u32),
+		op(JGE, 2, 0, X32_SYSCALL_BIT),
+		op(JEQ, 1, 0, libc::SYS_io_uring_setup as u32),
 		op(RET, 0, 0, libc::SECCOMP_RET_ALLOW),
-		op(RET, 0, 0, libc::SECCOMP_RET_ERRNO | libc::EACCES as u32),
 		op(RET, 0, 0, libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32),
 	];
 	let program = libc::sock_fprog { len: filter.len() as u16, filter: filter.as_ptr().cast_mut() };
@@ -218,9 +214,7 @@ fn refuse_unix_sockets() -> Result<(), String> {
 fn run() -> Result<Infallible, String> {
 	let policy = Policy::from_env()?;
 	restrict(&policy)?;
-	if !policy.unix {
-		refuse_unix_sockets()?;
-	}
+	refuse_unused_syscalls()?;
 	let error = Command::new(&policy.program).args(env::args_os().skip(1)).env_remove(EXEC).env_remove(READ).env_remove(WRITE).env_remove(TCP).env_remove(UNIX).exec();
 	Err(format!("{:?}: {error}", policy.program))
 }

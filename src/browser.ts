@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { type BrowserContext, chromium, type Page } from "playwright-core";
 import { HIDDEN } from "./credentials.ts";
+import type { EgressProxy } from "./egress.ts";
 import { sandboxedChromium } from "./sandbox.ts";
 
 export type FieldInfo = {
@@ -34,6 +35,8 @@ export interface Browsers {
 
 export type BrowserOptions = {
 	readonly dir: string;
+	/** Pages reach only public addresses, as the pages `web_extract` reads do. */
+	readonly egress: EgressProxy;
 	readonly headless: boolean;
 	readonly executablePath?: string;
 	readonly timezone: string;
@@ -96,9 +99,13 @@ export class PlaywrightBrowsers implements Browsers {
 		mkdirSync(dir, { recursive: true });
 		const context = await chromium.launchPersistentContext(dir, {
 			headless: this.#options.headless,
-			...sandboxedChromium({ headless: this.#options.headless, home: join(dir, ".home"), executablePath: this.#options.executablePath, write: [dir] }),
-			// Playwright turns Chromium's own sandbox off unless asked, which would leave a compromised renderer with the agent's files.
-			chromiumSandbox: true,
+			...sandboxedChromium({
+				headless: this.#options.headless,
+				home: join(dir, ".home"),
+				proxy: this.#options.egress.url,
+				executablePath: this.#options.executablePath,
+				write: [dir],
+			}),
 			viewport: { width: 1280, height: 800 },
 			locale: "ja-JP",
 			timezoneId: this.#options.timezone,

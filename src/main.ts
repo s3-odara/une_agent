@@ -66,17 +66,20 @@ if (config.caldav !== undefined) {
 	const backend = connectCalDav({ url: config.caldav.url, username: config.caldav.username, password, calendars: Object.keys(config.caldav.calendars) });
 	calendars = new Calendars(backend, config.caldav.calendars, config.timezone);
 }
+// Both browsers reach only public addresses, through this.
+const egress = config.browser !== undefined || config.web !== undefined ? await EgressProxy.start() : undefined;
 const browsers =
-	config.browser === undefined
+	config.browser === undefined || egress === undefined
 		? undefined
 		: new PlaywrightBrowsers({
 				dir: join(config.dataDir, "browser"),
+				egress,
 				headless: config.browser.headless,
 				executablePath: config.browser.executablePath,
 				timezone: config.timezone,
 				idleMs: config.browser.idleMinutes * 60_000,
 			});
-const web = config.web === undefined ? undefined : await startWeb(config.web.maxChars);
+const web = config.web === undefined || egress === undefined ? undefined : startWeb(egress, config.web.maxChars);
 // The bridge is made after the harness, which needs the tools; approvals reach it once it exists.
 let bridge: Bridge | undefined;
 const viaBridge = () => bridge ?? fail("the bridge is not running yet");
@@ -178,6 +181,7 @@ async function shutdown(exitCode: number): Promise<void> {
 	transcriber?.close();
 	await browsers?.close();
 	await web?.close();
+	await egress?.close();
 	await mcp.close();
 	await harness.close(context);
 	db.close();
@@ -208,16 +212,12 @@ async function restartWhenIdle(): Promise<void> {
 	await shutdown(RESTART_EXIT_CODE);
 }
 
-/** Pages are read in a browser of its own whose connections reach only public addresses. */
-async function startWeb(maxChars: number) {
-	const egress = await EgressProxy.start();
+/** Pages are read in a browser of its own, without the logins of the agent's browser. */
+function startWeb(egress: EgressProxy, maxChars: number) {
 	const reader = new PlaywrightReader({ egress, timezone: config.timezone, executablePath: config.browser?.executablePath, idleMs: (config.browser?.idleMinutes ?? 10) * 60_000 });
 	return {
 		extension: createWebExtension({ reader, maxChars }),
-		close: async () => {
-			await reader.close();
-			await egress.close();
-		},
+		close: () => reader.close(),
 	};
 }
 

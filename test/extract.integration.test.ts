@@ -3,7 +3,6 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type TestContext, test } from "node:test";
 import { EgressProxy } from "../src/egress.ts";
-import { errorMessage } from "../src/errors.ts";
 import { PlaywrightReader, ReadError } from "../src/extract.ts";
 import { noChromium, rendererRoots } from "./chromium.ts";
 

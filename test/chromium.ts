@@ -1,11 +1,10 @@
 import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
-import { chromium } from "playwright-core";
 
 /**
  * Why the tests that drive a real Chromium are skipped, if they are. A Chromium that is there but does not start fails
  * them: that is how a sandbox that keeps it from starting shows.
  */
-export const noChromium: string | false = existsSync(chromium.executablePath()) ? false : "Playwright's Chromium is not installed (the dev shell has it)";
+export const noChromium: string | false = existsSync(process.env.AGENT_CHROMIUM ?? "") ? false : "AGENT_CHROMIUM is not set (the dev shell sets it)";
 
 /** The root directory each Chromium renderer this test process has started (however deep) sees its files from. */
 export function rendererRoots(): string[] {
