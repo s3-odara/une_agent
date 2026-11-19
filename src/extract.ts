@@ -1,10 +1,10 @@
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { type Browser, chromium } from "playwright-core";
+import type { Browser } from "playwright-core";
 import { settle } from "./browser.ts";
 import { EgressError, type EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
-import { chromiumHome, sandboxedChromium } from "./sandbox.ts";
+import { launchSandboxed } from "./sandbox.ts";
 import { httpUrl } from "./urls.ts";
 
 export type ReadPage = {
@@ -110,15 +110,10 @@ export class PlaywrightReader implements PageReader {
 
 	#launch(): Promise<Browser> {
 		if (this.#browser === undefined) {
-			const home = chromiumHome();
-			const launching = chromium.launch({
-				headless: true,
-				...sandboxedChromium({ headless: true, home, proxy: this.#options.egress.url, executablePath: this.#options.executablePath }),
-			});
+			const launching = launchSandboxed({ headless: true, proxy: this.#options.egress.url, executablePath: this.#options.executablePath });
 			this.#browser = launching;
 			const forget = () => {
 				if (this.#browser === launching) this.#browser = undefined;
-				rmSync(home, { recursive: true, force: true });
 			};
 			launching.then((browser) => browser.on("disconnected", forget), forget);
 		}

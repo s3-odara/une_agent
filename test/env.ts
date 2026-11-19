@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -19,6 +20,13 @@ export const ME = "@me:example.org";
 export function tempDir(): { readonly path: string; [Symbol.dispose](): void } {
 	const path = mkdtempSync(join(tmpdir(), "agent-test-"));
 	return { path, [Symbol.dispose]: () => rmSync(path, { recursive: true, force: true }) };
+}
+
+/** Listens on a free port of this host, or on the UNIX socket at `path`; resolves to the port (0 for a socket). */
+export async function listen(server: Server, path?: string): Promise<number> {
+	await new Promise<void>((resolve) => (path === undefined ? server.listen(0, "127.0.0.1", resolve) : server.listen(path, resolve)));
+	const address = server.address();
+	return typeof address === "object" && address !== null ? address.port : 0;
 }
 
 /** As written in config.json. */

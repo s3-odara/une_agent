@@ -6,7 +6,7 @@
 //!   also written. Paths that do not exist are left out. The profile Chromium is given (`--user-data-dir=`) is
 //!   written too: Playwright makes it in its own temporary directory under a name of its choosing, and the rest of that
 //!   directory is the agent's
-//! - `AGENT_SANDBOX_TCP`: the TCP ports (one per line) that may be connected to; unset, any. TCP ports are never bound,
+//! - `AGENT_SANDBOX_TCP`: the TCP ports (one per line) that may be connected to, and no other. TCP ports are never bound,
 //!   and UDP is never used
 //! - `AGENT_SANDBOX_UNIX`: the UNIX sockets made outside (one per line) that may be connected to, such as a display's.
 //!   No other: the user's D-Bus would let the program start anything outside the sandbox through systemd
@@ -83,7 +83,7 @@ struct Policy {
 	program: OsString,
 	read: Vec<OsString>,
 	write: Vec<OsString>,
-	tcp: Option<Vec<u16>>,
+	tcp: Vec<u16>,
 	unix: Vec<OsString>,
 }
 
@@ -94,15 +94,10 @@ impl Policy {
 				.map(|value| value.as_bytes().split(|&b| b == b'\n').filter(|line| !line.is_empty()).map(|line| OsStr::from_bytes(line).to_owned()).collect())
 				.unwrap_or_default()
 		};
-		let tcp = match env::var_os(TCP) {
-			None => None,
-			Some(_) => Some(
-				lines(TCP)
-					.iter()
-					.map(|port| port.to_str().and_then(|port| port.parse().ok()).ok_or_else(|| format!("{TCP}: not a port: {port:?}")))
-					.collect::<Result<_, _>>()?,
-			),
-		};
+		let tcp = lines(TCP)
+			.iter()
+			.map(|port| port.to_str().and_then(|port| port.parse().ok()).ok_or_else(|| format!("{TCP}: not a port: {port:?}")))
+			.collect::<Result<_, _>>()?;
 		Ok(Self {
 			program: env::var_os(EXEC).ok_or_else(|| format!("{EXEC} is not set"))?,
 			read: lines(READ),
@@ -117,7 +112,7 @@ fn last_error(what: &str) -> String {
 	format!("{what}: {}", io::Error::last_os_error())
 }
 
-fn abi() -> Result<i64, String> {
+fn require_abi() -> Result<(), String> {
 	let abi = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, std::ptr::null::<u8>(), 0usize, landlock::CREATE_RULESET_VERSION) };
 	if abi < 0 {
 		return Err(last_error("Landlock is not available"));
@@ -125,7 +120,7 @@ fn abi() -> Result<i64, String> {
 	if abi < 10 {
 		return Err(format!("Landlock ABI {abi} is older than 10, which controls UNIX sockets and UDP"));
 	}
-	Ok(abi)
+	Ok(())
 }
 
 fn add_path(ruleset: &OwnedFd, path: &OsStr, rights: u64) -> Result<(), String> {
@@ -146,14 +141,13 @@ fn add_path(ruleset: &OwnedFd, path: &OsStr, rights: u64) -> Result<(), String> 
 }
 
 fn restrict(policy: &Policy) -> Result<(), String> {
-	abi()?;
-	let fs = landlock::FS_ALL;
+	require_abi()?;
 	let attr = landlock::RulesetAttr {
-		handled_access_fs: fs,
+		handled_access_fs: landlock::FS_ALL,
 		handled_access_net: landlock::NET_BIND_TCP
 			| landlock::NET_BIND_UDP
 			| landlock::NET_CONNECT_SEND_UDP
-			| if policy.tcp.is_some() { landlock::NET_CONNECT_TCP } else { 0 },
+			| landlock::NET_CONNECT_TCP,
 		scoped: landlock::SCOPE_SIGNAL | landlock::SCOPE_ABSTRACT_UNIX_SOCKET,
 	};
 	let fd = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, &attr, size_of::<landlock::RulesetAttr>(), 0u32) };
@@ -167,12 +161,12 @@ fn restrict(policy: &Policy) -> Result<(), String> {
 	for path in &policy.write {
 		// Not RESOLVE_UNIX: a socket the program made itself is reachable without it, and with it any socket put in a
 		// writable directory from outside (the temporary directory is shared) would be too.
-		add_path(&ruleset, path, fs & !landlock::FS_RESOLVE_UNIX)?;
+		add_path(&ruleset, path, landlock::FS_ALL & !landlock::FS_RESOLVE_UNIX)?;
 	}
 	for path in &policy.unix {
 		add_path(&ruleset, path, landlock::FS_RESOLVE_UNIX)?;
 	}
-	for &port in policy.tcp.iter().flatten() {
+	for &port in &policy.tcp {
 		let attr = landlock::NetPortAttr { allowed_access: landlock::NET_CONNECT_TCP, port: port.into() };
 		if unsafe { libc::syscall(libc::SYS_landlock_add_rule, ruleset.as_raw_fd(), landlock::RULE_NET_PORT, &attr, 0u32) } < 0 {
 			return Err(last_error(&format!("rule for TCP port {port}")));

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { type TestContext, test } from "node:test";
@@ -9,14 +8,13 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { type BrowserPage, PlaywrightBrowsers } from "../src/browser.ts";
 import { createBrowserExtension, pngSize } from "../src/browser-tools.ts";
 import { Credentials } from "../src/credentials.ts";
-import { EgressProxy } from "../src/egress.ts";
-import { noChromium, rendererRoots } from "./chromium.ts";
-import { agentEnv, tempDir } from "./env.ts";
+import { beacon, egressTo, noChromium, rendererRoots } from "./chromium.ts";
+import { agentEnv, listen, tempDir } from "./env.ts";
 import { call, everything, lastToolResult, message, type Request } from "./fakes.ts";
 
 /**
  * Drives a real Chromium through `src/browser.ts` against a small site served from this process, under the sandbox
- * built by `just test`. Skipped where Playwright's Chromium is not installed (see `chromium.ts`).
+ * built by `just test`. Skipped outside the dev shell (see `chromium.ts`).
  */
 
 const page = (body: string) => `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>テストサイト</title></head><body>${body}</body></html>`;
@@ -29,7 +27,7 @@ function body(request: IncomingMessage): Promise<string> {
 	});
 }
 
-function site(beacon: string): Promise<Server> {
+function site(beacon: string): Server {
 	const server = createServer(async (request, response) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
 		const html = (text: string) => response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page(text));
@@ -54,7 +52,7 @@ function site(beacon: string): Promise<Server> {
 			response.writeHead(404).end();
 		}
 	});
-	return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
+	return server;
 }
 
 const refOf = (tree: string, role: string, name: string): string => {
@@ -69,32 +67,25 @@ async function realBrowser(t: TestContext) {
 		return undefined;
 	}
 	const dir = tempDir();
-	const hits: string[] = [];
-	const inside = createServer((request, response) => {
-		hits.push(request.url ?? "");
-		response.end("inside");
-	});
-	await new Promise<void>((resolve) => inside.listen(0, "127.0.0.1", resolve));
-	const beacon = `http://127.0.0.1:${(inside.address() as AddressInfo).port}`;
-	const server = await site(beacon);
-	const port = (server.address() as AddressInfo).port;
+	const inside = await beacon();
+	const server = site(inside.url);
+	const port = await listen(server);
 	const base = `http://127.0.0.1:${port}`;
-	// As the agent's proxy lets the browser reach only public addresses, this one lets it reach only the test's site.
-	const egress = await EgressProxy.start({ allow: (address, to) => to === port && (address === "127.0.0.1" || address === "::1") });
+	const egress = await egressTo(port);
 	const options = { dir: join(dir.path, "browser"), egress, headless: true, timezone: "Asia/Tokyo", idleMs: 600_000 };
 	let browsers = new PlaywrightBrowsers(options);
 	const dispose = async () => {
 		await browsers.close();
 		await egress.close();
 		await new Promise((resolve) => server.close(resolve));
-		await new Promise((resolve) => inside.close(resolve));
+		await inside.close();
 		dir[Symbol.dispose]();
 	};
 	return {
 		dir: dir.path,
 		base,
-		beacon,
-		hits,
+		beacon: inside.url,
+		hits: inside.hits,
 		get browsers() {
 			return browsers;
 		},

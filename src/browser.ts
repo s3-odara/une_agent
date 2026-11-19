@@ -1,9 +1,9 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { type BrowserContext, chromium, type Page } from "playwright-core";
+import type { BrowserContext, Page } from "playwright-core";
 import { HIDDEN } from "./credentials.ts";
 import type { EgressProxy } from "./egress.ts";
-import { chromiumHome, sandboxedChromium } from "./sandbox.ts";
+import { launchPersistentSandboxed } from "./sandbox.ts";
 
 export type FieldInfo = {
 	readonly kind: string;
@@ -97,25 +97,11 @@ export class PlaywrightBrowsers implements Browsers {
 	async #launch(name: string): Promise<Profile> {
 		const dir = join(this.#options.dir, name);
 		mkdirSync(dir, { recursive: true });
-		const home = chromiumHome();
-		const removeHome = () => rmSync(home, { recursive: true, force: true });
-		const context = await chromium.launchPersistentContext(dir, {
-			headless: this.#options.headless,
-			...sandboxedChromium({
-				headless: this.#options.headless,
-				home,
-				proxy: this.#options.egress.url,
-				executablePath: this.#options.executablePath,
-				write: [dir],
-			}),
-			viewport: { width: 1280, height: 800 },
-			locale: "ja-JP",
-			timezoneId: this.#options.timezone,
-		}).catch((error: unknown) => {
-			removeHome();
-			throw error;
-		});
-		context.on("close", removeHome);
+		const context = await launchPersistentSandboxed(
+			dir,
+			{ headless: this.#options.headless, proxy: this.#options.egress.url, executablePath: this.#options.executablePath },
+			{ viewport: { width: 1280, height: 800 }, locale: "ja-JP", timezoneId: this.#options.timezone },
+		);
 		context.setDefaultTimeout(15_000);
 		context.setDefaultNavigationTimeout(30_000);
 		return { context, pages: new Map(), lastUsed: Date.now() };

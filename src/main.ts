@@ -17,7 +17,7 @@ import { CodeRequests } from "./codes.ts";
 import { CredentialCommands } from "./credential-commands.ts";
 import { Credentials } from "./credentials.ts";
 import { EgressProxy } from "./egress.ts";
-import { errorMessage } from "./errors.ts";
+import { errorMessage, fail } from "./errors.ts";
 import { PlaywrightReader } from "./extract.ts";
 import { spawnGateway } from "./gateway.ts";
 import { createAgentModels, openAgentHarness, openConfig } from "./harness.ts";
@@ -219,8 +219,4 @@ function startWeb(egress: EgressProxy, maxChars: number) {
 		extension: createWebExtension({ reader, maxChars }),
 		close: () => reader.close(),
 	};
-}
-
-function fail(message: string): never {
-	throw new Error(message);
 }

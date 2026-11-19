@@ -1,10 +1,29 @@
 import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { createServer } from "node:http";
+import { EgressProxy } from "../src/egress.ts";
+import { listen } from "./env.ts";
 
 /**
  * Why the tests that drive a real Chromium are skipped, if they are. A Chromium that is there but does not start fails
  * them: that is how a sandbox that keeps it from starting shows.
  */
 export const noChromium: string | false = existsSync(process.env.AGENT_CHROMIUM ?? "") ? false : "AGENT_CHROMIUM is not set (the dev shell sets it)";
+
+/** As the agent's proxy lets the browser reach only public addresses, this one lets it reach only `port` on this host. */
+export function egressTo(port: number): Promise<EgressProxy> {
+	return EgressProxy.start({ allow: (address, to) => to === port && (address === "127.0.0.1" || address === "::1") });
+}
+
+/** A server on this host besides the test's site, which the browser must not reach; it records what does. */
+export async function beacon(): Promise<{ readonly url: string; readonly hits: string[]; close(): Promise<void> }> {
+	const hits: string[] = [];
+	const server = createServer((request, response) => {
+		hits.push(request.url ?? "");
+		response.end("inside");
+	});
+	const url = `http://127.0.0.1:${await listen(server)}`;
+	return { url, hits, close: () => new Promise((resolve) => server.close(() => resolve())) };
+}
 
 /** The root directory each Chromium renderer this test process has started (however deep) sees its files from. */
 export function rendererRoots(): string[] {

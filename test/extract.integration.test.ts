@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { type TestContext, test } from "node:test";
-import { EgressProxy } from "../src/egress.ts";
 import { PlaywrightReader, ReadError } from "../src/extract.ts";
-import { noChromium, rendererRoots } from "./chromium.ts";
+import { beacon, egressTo, noChromium } from "./chromium.ts";
+import { listen } from "./env.ts";
 
 /**
  * Reads pages of a small site served from this process in a real Chromium through `src/extract.ts`. The egress proxy
  * lets the browser reach that site and nothing else on this host, as it lets the deployed one reach only public
- * addresses. Skipped where Playwright's Chromium is not installed (see `chromium.ts`).
+ * addresses. Skipped outside the dev shell (see `chromium.ts`).
  */
 
 const PARAGRAPH = "緑茶は茶葉を摘んだ直後に加熱して発酵を止めた茶で、蒸し製と釜炒り製がある。日本では蒸し製が主流で、煎茶、玉露、かぶせ茶などに分かれる。";
@@ -54,33 +53,23 @@ function site(beacon: string): Server {
 	});
 }
 
-async function listen(server: Server): Promise<number> {
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-	return (server.address() as AddressInfo).port;
-}
-
 async function realReader(t: TestContext) {
 	if (noChromium) {
 		t.skip(noChromium);
 		return undefined;
 	}
-	const hits: string[] = [];
-	const inside = createServer((request, response) => {
-		hits.push(request.url ?? "");
-		response.end("inside");
-	});
-	const insidePort = await listen(inside);
-	const server = site(`http://127.0.0.1:${insidePort}`);
+	const inside = await beacon();
+	const server = site(inside.url);
 	const port = await listen(server);
-	const egress = await EgressProxy.start({ allow: (address, to) => to === port && (address === "127.0.0.1" || address === "::1") });
+	const egress = await egressTo(port);
 	const reader = new PlaywrightReader({ egress, timezone: "Asia/Tokyo", idleMs: 600_000, timeoutMs: 20_000 });
 	const dispose = async () => {
 		await reader.close();
 		await egress.close();
 		server.close();
-		inside.close();
+		await inside.close();
 	};
-	return { base: `http://127.0.0.1:${port}`, inside: `http://127.0.0.1:${insidePort}`, reader, hits, [Symbol.asyncDispose]: dispose };
+	return { base: `http://127.0.0.1:${port}`, inside: inside.url, reader, hits: inside.hits, [Symbol.asyncDispose]: dispose };
 }
 
 test("an article is read as its main content in Markdown, without the site's navigation", async (t) => {
@@ -91,15 +80,6 @@ test("an article is read as its main content in Markdown, without the site's nav
 	assert.ok(page.markdown.includes(PARAGRAPH));
 	assert.ok(!page.markdown.includes("このサイトについて"));
 	assert.ok(!page.markdown.includes("©"));
-});
-
-test("the pages are rendered where the files of this machine cannot be seen", async (t) => {
-	await using r = await realReader(t);
-	if (r === undefined) return;
-	await r.reader.read(`${r.base}/article`);
-	const roots = rendererRoots();
-	assert.ok(roots.length > 0);
-	assert.ok(!roots.includes("/"), `roots of the renderers: ${roots}`);
 });
 
 test("links in what is read point to absolute addresses", async (t) => {
