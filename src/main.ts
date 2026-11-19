@@ -1,8 +1,10 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry } from "@earendil-works/pi-durable";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { PlaywrightBrowsers } from "./browser.ts";
 import { createBrowserExtension } from "./browser-tools.ts";
 import { connectCalDav } from "./caldav.ts";
@@ -10,7 +12,7 @@ import { Calendars } from "./calendar.ts";
 import { createCalendarExtension } from "./calendar-tools.ts";
 import { Calls } from "./call.ts";
 import { Approvals } from "./approval.ts";
-import { loadConfig, persona, personaFor, usedModels } from "./config.ts";
+import { loadConfig, persona, personaFor } from "./config.ts";
 import { CodeRequests } from "./codes.ts";
 import { CredentialCommands } from "./credential-commands.ts";
 import { Credentials } from "./credentials.ts";
@@ -18,12 +20,13 @@ import { EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
 import { PlaywrightReader } from "./extract.ts";
 import { spawnGateway } from "./gateway.ts";
-import { createAgentModels, openAgentHarness, prepareModels } from "./harness.ts";
+import { createAgentModels, openAgentHarness, openConfig } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
 import { McpServers, serversFromConfig } from "./mcp.ts";
 import { createMemoryExtension, MemoryStore } from "./memory.ts";
 import { Bridge } from "./rooms.ts";
 import { Scheduler } from "./scheduler.ts";
+import { createSelfExtension } from "./self.ts";
 import { WhisperServer } from "./stt.ts";
 import { memoryFingerprint, tidyMemory } from "./tidy.ts";
 import { Voicevox } from "./tts.ts";
@@ -32,11 +35,12 @@ import { createWeatherExtension } from "./weather-tools.ts";
 import { createWebExtension } from "./web-tools.ts";
 
 const context = BACKGROUND_CONTEXT;
+const RESTART_EXIT_CODE = 75;
 const configPath = process.argv[2] ?? "config.json";
 const config = loadConfig(configPath);
 mkdirSync(config.dataDir, { recursive: true });
 const models = createAgentModels(config.dataDir);
-await prepareModels(models, usedModels(config));
+await openConfig(configPath, models);
 
 const db = new HostDb(join(config.dataDir, "host.sqlite"));
 const personas = Object.entries(config.personas).map(([name, item]) => ({ name, privateMemory: item.privateMemory }));
@@ -85,6 +89,14 @@ const approvals = new Approvals({
 const credentials = new Credentials(join(config.dataDir, "credentials.json"));
 const codes = new CodeRequests({ notice: (roomId, txnId, body) => viaBridge().post(roomId, txnId, body) });
 const extensions = [
+	CodingTools,
+	createSelfExtension({
+		configPath: resolve(configPath),
+		workDir: config.baseDir,
+		roomOf: (conversationId) => db.roomOf(conversationId),
+		check: () => openConfig(configPath, models),
+		restart: () => void restartWhenIdle(),
+	}),
 	memory,
 	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
 	...(weather === undefined ? [] : [createWeatherExtension(weather)]),
@@ -104,7 +116,11 @@ const extensions = [
 ];
 
 const registry = createRegistry();
-const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), models, context, { extensions, registry });
+const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), models, context, {
+	extensions,
+	registry,
+	env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? config.baseDir }),
+});
 // Their tools are installed when each server answers; the agent does not wait for them.
 const mcp = new McpServers({
 	registry,
@@ -184,6 +200,13 @@ gateway.exited.then(
 		void shutdown(1);
 	},
 );
+
+/** Once the answer that asked for it is sent. The unit starts the agent again on this exit code. */
+async function restartWhenIdle(): Promise<void> {
+	await bridge?.idle();
+	console.error("restarting on the agent's own request");
+	await shutdown(RESTART_EXIT_CODE);
+}
 
 /** Pages are read in a browser of its own whose connections reach only public addresses. */
 async function startWeb(maxChars: number) {

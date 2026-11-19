@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai/models";
+import { createModels, type Models } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, type Extension, type Harness, type Registry } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -21,24 +21,23 @@ export function tempDir(): { readonly path: string; [Symbol.dispose](): void } {
 	return { path, [Symbol.dispose]: () => rmSync(path, { recursive: true, force: true }) };
 }
 
+/** As written in config.json. */
+export const BASE_CONFIG = {
+	matrix: { homeserver: "https://example.org", userId: "@agent:example.org", allowedUsers: [ME] },
+	model: "faux/faux-1",
+	personas: { default: "soul.md" },
+	timezone: "Asia/Tokyo",
+};
+
 export function testConfig(dir: string, overrides: Record<string, unknown> = {}): Config {
-	return parseConfig(
-		{
-			matrix: { homeserver: "https://example.org", userId: "@agent:example.org", allowedUsers: [ME] },
-			model: "faux/faux-1",
-			personas: { default: "soul.md" },
-			timezone: "Asia/Tokyo",
-			...overrides,
-		},
-		dir,
-	);
+	return parseConfig({ ...BASE_CONFIG, ...overrides }, dir);
 }
 
 export type EnvOptions = {
 	readonly config?: Record<string, unknown>;
 	readonly souls?: Readonly<Record<string, string>>;
 	/** Built again at each (re)start, with that start's database. */
-	readonly extensions?: (env: { readonly config: Config; readonly db: HostDb }) => Extension[];
+	readonly extensions?: (env: { readonly config: Config; readonly db: HostDb; readonly models: Models }) => Extension[];
 	readonly now?: () => number;
 };
 
@@ -60,7 +59,7 @@ export async function agentEnv(options: EnvOptions = {}) {
 		db = new HostDb(join(dir.path, "host.sqlite"));
 		registry = createRegistry();
 		harness = await openAgentHarness(await openNodeSqliteStorage(join(dir.path, "session.sqlite")), models, context, {
-			extensions: options.extensions?.({ config, db }) ?? [],
+			extensions: options.extensions?.({ config, db, models }) ?? [],
 			now: options.now,
 			registry,
 		});

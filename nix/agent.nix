@@ -19,6 +19,7 @@ buildNpmPackage {
       ../package.json
       ../package-lock.json
       ../src
+      ../manual
     ];
   };
   nodejs = nodejs_26;
@@ -29,7 +30,7 @@ buildNpmPackage {
     runHook preInstall
     npm prune --omit=dev --no-save
     mkdir -p $out/lib/agent $out/bin
-    cp -r package.json src node_modules $out/lib/agent/
+    cp -r package.json src manual node_modules $out/lib/agent/
     for entry in agent:main.ts agent-browser-login:browser-login.ts agent-model-login:model-login.ts; do
       makeWrapper ${lib.getExe nodejs_26} $out/bin/''${entry%%:*} \
         --add-flags $out/lib/agent/src/''${entry#*:} \

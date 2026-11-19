@@ -2,13 +2,6 @@ import { CredentialError, type Credentials } from "./credentials.ts";
 import { errorMessage } from "./errors.ts";
 import type { Handled, MessageHandler } from "./rooms.ts";
 
-const HELP = [
-	"認証情報のコマンド:",
-	"- !cred add https://example.com ユーザー名 パスワード … 登録（同じサイトは置き換え）。送ったあと、その発言は削除してください",
-	"- !cred list … 登録済みのサイトとユーザー名",
-	"- !cred remove https://example.com … 削除",
-].join("\n");
-
 function originOf(site: string): string | undefined {
 	try {
 		const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(site) ? site : `https://${site}`);
@@ -26,6 +19,11 @@ function originOf(site: string): string | undefined {
  * The message itself stays in the room until the user deletes it; the reply says so.
  */
 export class CredentialCommands implements MessageHandler {
+	readonly help = [
+		"- !cred add https://example.com ユーザー名 パスワード … 登録（同じサイトは置き換え）。送ったあと、その発言は削除してください",
+		"- !cred list … 登録済みのサイトとユーザー名",
+		"- !cred remove https://example.com … 削除",
+	];
 	readonly #credentials: Credentials;
 
 	constructor(credentials: Credentials) {
@@ -66,7 +64,7 @@ export class CredentialCommands implements MessageHandler {
 				return this.#credentials.remove(origin) ? `${origin} の認証情報を削除しました。` : `${origin} の認証情報は登録されていません。`;
 			}
 			default:
-				return HELP;
+				return ["認証情報のコマンド:", ...this.help].join("\n");
 		}
 	}
 }

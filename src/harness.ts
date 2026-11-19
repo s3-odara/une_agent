@@ -5,7 +5,7 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { createRegistry, Harness, type Registry } from "@earendil-works/pi-durable";
-import type { ModelRef } from "./config.ts";
+import { type Config, loadConfig, type ModelRef, readSoul, usedModels } from "./config.ts";
 import { FileCredentialStore } from "./model-auth.ts";
 import { FileModelsStore, withRemoteCatalog } from "./model-catalog.ts";
 
@@ -50,6 +50,14 @@ export async function prepareModels(models: Models, refs: readonly ModelRef[], t
 	}
 }
 
+/** What the agent needs to start, checked up front: every persona's SOUL file and every model the config names. */
+export async function openConfig(path: string, models: Models): Promise<Config> {
+	const config = loadConfig(path);
+	for (const name of Object.keys(config.personas)) readSoul(config, name);
+	await prepareModels(models, usedModels(config));
+	return config;
+}
+
 /**
  * A tool belongs in an extension only once it has been sorted into "safe to rerun after a crash" (`replay: "safe"`)
  * or not: the bot runs unattended.
@@ -64,6 +72,7 @@ export function openAgentHarness(
 		readonly now?: () => number;
 		/** For extensions installed later, such as an MCP server's once it answers. */
 		readonly registry?: Registry;
+		readonly env?: HarnessOptions["env"];
 	} = {},
 ): Promise<Harness> {
 	const registry = options.registry ?? createRegistry();
@@ -74,6 +83,7 @@ export function openAgentHarness(
 			models,
 			registry,
 			now: options.now,
+			env: options.env,
 			identity: { attribution: null },
 			onReport: (report) => console.error(`harness report: ${report.kind}`, report.error),
 		},

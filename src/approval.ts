@@ -149,6 +149,12 @@ export class Approvals implements MessageHandler {
 		if (row !== undefined && choice !== undefined) this.#decide(row.id, choice.decision);
 	}
 
+	readonly help = [
+		...CHOICES.map((choice) => `- ${choice.command}（${choice.emoji} のリアクションでも）… 一番古い承認待ちに「${choice.label}」`),
+		"- !approvals … 確認しないツールと承認待ちの一覧",
+		"- !revoke ツール名 … 確認しないツールを確認するように戻す",
+	];
+
 	onMessage({ roomId, body }: { readonly roomId: string; readonly body: string }): Handled {
 		const { db } = this.#options;
 		const text = body.trim();

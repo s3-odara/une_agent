@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { CodeRequests } from "../src/codes.ts";
+import type { MessageHandler } from "../src/rooms.ts";
 import { agentEnv } from "./env.ts";
 import { answer, everything, instructionsOf, lastInput, message, type Request } from "./fakes.ts";
 
@@ -179,4 +181,36 @@ test("!new while an answer is being written stops it: the message gets a notice 
 			["cmd:$2", true],
 		],
 	);
+});
+
+test("!help lists the commands of every handler with this room's persona and model, and does not reach the model", async () => {
+	await using env = await agentEnv({ config: { personas: { talker: { soul: "soul.md", model: "faux/own" } }, defaultPersona: "talker" } });
+	const handler: MessageHandler = { help: ["- !frob … frobnicate"], onMessage: () => ({ handled: false }) };
+	const bridge = env.bridge({ handlers: [handler] });
+
+	env.link.emit(message(ROOM, "$1", "!help"));
+	await bridge.idle();
+
+	const [reply] = env.link.of("send");
+	assert.equal(reply?.notice, true);
+	assert.match(reply?.body ?? "", /!frob/);
+	assert.match(reply?.body ?? "", /talker/);
+	assert.match(reply?.body ?? "", /faux\/own/);
+	assert.equal(env.faux.state.callCount, 0);
+	assert.deepEqual(env.link.of("ack").map((ack) => ack.eventId), ["$1"]);
+});
+
+test("!help while a code is awaited leaves the request open for the code", async () => {
+	await using env = await agentEnv();
+	let bridge: ReturnType<typeof env.bridge> | undefined;
+	const codes = new CodeRequests({ notice: (roomId, txnId, body) => bridge!.post(roomId, txnId, body) });
+	bridge = env.bridge({ handlers: [codes] });
+	const outcome = codes.ask(ROOM, "k", "コードを送ってください");
+
+	env.link.emit(message(ROOM, "$1", "!help"));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$2", "123456"));
+	await bridge.idle();
+
+	assert.deepEqual(await outcome, { ok: true, code: "123456" });
 });

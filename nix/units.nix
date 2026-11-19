@@ -21,6 +21,8 @@ symlinkJoin {
       ExecStart=${lib.getExe agent} %h/.config/agent/config.json
       # The agent stops when its gateway does; both start again together.
       Restart=on-failure
+      # agent_restart: the agent exits with this to be started again on its changed config.
+      RestartForceExitStatus=75
       RestartSec=10
 
       [Install]

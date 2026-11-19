@@ -392,6 +392,10 @@ export function personaFor(config: Config, roomId: string): string {
 	return config.rooms[roomId] ?? config.defaultPersona;
 }
 
+export function modelFor(config: Config, name: string): ModelRef {
+	return persona(config, name).model ?? config.model;
+}
+
 export function persona(config: Config, name: string): Persona {
 	return config.personas[name] ?? fail(`persona "${name}" is not defined`);
 }

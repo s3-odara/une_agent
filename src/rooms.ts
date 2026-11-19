@@ -4,7 +4,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
 import { type Answer, answerOf } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
-import { type Config, persona, personaFor, readSoul } from "./config.ts";
+import { type Config, modelFor, persona, personaFor, readSoul } from "./config.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
 import { type Delivery, type HostDb, SCHEDULED_PREFIX } from "./hostdb.ts";
 import type { Transcriber } from "./stt.ts";
@@ -37,6 +37,8 @@ export type BridgeOptions = {
 export type Handled = { readonly handled: false } | { readonly handled: true; readonly reply?: string };
 
 export interface MessageHandler {
+	/** Lines for `!help`. */
+	readonly help?: readonly string[];
 	onMessage(message: { readonly roomId: string; readonly body: string; readonly replyTo?: string }): Handled;
 	/** The user sent a voice message, which no handler takes. */
 	interrupt?(roomId: string): void;
@@ -229,6 +231,8 @@ export class Bridge {
 	}
 
 	async #command(message: { readonly roomId: string; readonly body: string; readonly replyTo?: string }): Promise<Extract<Handled, { handled: true }> | undefined> {
+		// Before the handlers, so asking for help does not give up a pending approval or code request.
+		if (message.body.trim() === "!help") return { handled: true, reply: this.#help(message.roomId) };
 		for (const handler of this.#options.handlers ?? []) {
 			const result = handler.onMessage(message);
 			if (result.handled) return result;
@@ -237,6 +241,20 @@ export class Bridge {
 		if (message.body.trim() !== "!new") return undefined;
 		await this.#startOver(message.roomId);
 		return { handled: true, reply: "新しい会話を始めました。これまでの会話は引き継ぎません（記憶はそのままです）。" };
+	}
+
+	#help(roomId: string): string {
+		const { config } = this.#options;
+		const name = personaFor(config, roomId);
+		const model = modelFor(config, name);
+		return [
+			"コマンド:",
+			"- !help … この一覧",
+			"- !new … このルームの会話を最初からやり直す（記憶とカレンダーはそのまま）",
+			...(this.#options.handlers ?? []).flatMap((handler) => handler.help ?? []),
+			"",
+			`このルーム: 人格 ${name}、モデル ${model.provider}/${model.modelId}`,
+		].join("\n");
 	}
 
 	/** A reset rather than a new conversation: the ledger and the browser tab still refer to it. */
@@ -255,7 +273,7 @@ export class Bridge {
 	async #conversationFor(roomId: string): Promise<Conversation> {
 		const { harness, config, context, db } = this.#options;
 		const name = personaFor(config, roomId);
-		const model = persona(config, name).model ?? config.model;
+		const model = modelFor(config, name);
 		const instructions = readSoul(config, name);
 
 		const existing = await this.#existingConversation(roomId);
