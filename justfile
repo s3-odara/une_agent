@@ -73,8 +73,30 @@ model-login provider="openai-codex":
 vulkan:
     nix run .#vulkan-check
 
-# Once per machine: keep the services running without a login, and make ~/.config/agent from the examples.
-setup:
+# Take the newest nixpkgs, which brings Chromium's security fixes, with the npm Playwright that drives its Chromium.
+update:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nix flake update nixpkgs
+    version=$(nix eval --raw --inputs-from . nixpkgs#playwright-driver.version)
+    npm install --save-exact "playwright-core@$version"
+    hash=$(nix run --inputs-from . nixpkgs#prefetch-npm-deps -- package-lock.json)
+    sed -i "s|npmDepsHash = \".*\";|npmDepsHash = \"$hash\";|" nix/agent.nix
+    echo "playwright-core $version: run just check, commit, and just install"
+
+# Let Chromium from the Nix store make its sandbox where Ubuntu restricts user namespaces (asks for sudo).
+apparmor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" != 1 ]; then
+      echo "user namespaces are not restricted here: nothing to do"
+      exit 0
+    fi
+    sudo install -m 644 apparmor/agent-chromium /etc/apparmor.d/agent-chromium
+    sudo apparmor_parser -r /etc/apparmor.d/agent-chromium
+
+# Once per machine: keep the services running without a login, allow Chromium's sandbox, and make ~/.config/agent.
+setup: apparmor
     #!/usr/bin/env bash
     set -euo pipefail
     loginctl enable-linger "$USER"

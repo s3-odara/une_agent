@@ -51,6 +51,8 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
   ブラウザの画面を**スクリーンショットでルームに送れる**ようにする（2026-11-18 決定）
 - モデルには pi-durable の `read` / `write` / `edit` / `bash` を**制限なしで渡す**。Hermes や Muse のように何でもでき、
   エージェント自身の設定もモデルが変える（2026-11-19 決定）
+- ブラウザ（`browser_*` と `web_extract`）の Chromium は**自身のサンドボックスを有効にして動かす**。外側の囲いは
+  bwrap や AppArmor ではなく **Landlock** で、ソケットの件を確かめてから後で入れる（2026-11-19 決定。「Chromium のサンドボックス」）
 - 人格ごとにセッションは分ける
 - Hermes の profile のように、口調を変えたいだけで設定ファイルまで分離されるのは避けたい
 - 既存 cron: Dreaming は毎日 02:00、Proactive は 06:00〜21:00 毎時（Asia/Tokyo）
@@ -218,6 +220,7 @@ Web ブラウザ。`config.json` に `browser` があれば有効になる。`sr
   一致するときだけ入力する。別ドメイン、http と https の違い、別サイトの iframe 内のフォームは拒否する
 - ブラウザのツールが返す文字列から、登録済みのパスワードをすべて伏せ字にする
 - 開けるのは http と https だけ
+- Chromium のサンドボックスを有効にして起動する（2026-11-19。下の「Chromium のサンドボックス」）
 - スケジューラが始めた実行（ブリーフ、リマインド）ではブラウザを使えない。ユーザーの発言で始まった実行だけ
 
 守れていないこと: ログイン済みのサイトで、ページ内の文面に誘導されたモデルが操作してしまう余地は残る。
@@ -405,7 +408,8 @@ Web 検索とページ本文の取得。
 内部のネットワークへの接続は `src/egress.ts` の小さな HTTP プロキシで防ぐ。Chromium の通信はすべてこれを通り
 （Playwright はループバックもプロキシに通す）、プロキシが自分で名前を引いて、公開アドレスでなければ断り、引いた IP に
 そのまま接続する（DNS rebinding も通らない）。名前のアドレスに1つでも公開でないものがあれば、その名前ごと断る。
-UDP（QUIC、WebRTC）は起動オプションで止める。Hermes の systemd のサービス（IPAddressDeny、AppArmor）は移していない。
+UDP（QUIC、WebRTC）は起動オプションで止める。Hermes の systemd のサービス（IPAddressDeny、AppArmor）は移していない
+（理由は「Chromium のサンドボックス」）。
 公開アドレスの判定は IPv4 の私用・共有・リンクローカル・予約・マルチキャストを除き、IPv6 は 2000::/3 のうち
 Teredo、6to4、文書用を除いたものだけ（IPv4 を IPv6 で書いたアドレスは常に公開でない）。
 
@@ -510,6 +514,47 @@ Teredo、6to4、文書用を除いたものだけ（IPv4 を IPv6 で書いた�
 `data/credentials.json`、`data/auth.json`、`env` を読めるので、モデルがそうすれば会話ログ（`session.sqlite`）とモデルの
 提供元に届く。ページの文面に誘導されて任意のコマンドを実行する余地もある。説明書には「秘密情報の中身をチャットに書かない」とだけ書いた。
 
+## Chromium のサンドボックス（2026-11-19）
+
+Playwright は `chromiumSandbox: true` を渡さない限り Chromium を `--no-sandbox` で起動する。それまでは `browser_*` も
+`web_extract` もサンドボックスなしで、レンダラーの脆弱性を突かれるとエージェントと同じ権限で `credentials.json`、
+`auth.json`、`env`、暗号ストアを読まれた。いまは両方に `chromiumSandbox: true` を付けている。
+
+- レンダラーは別のユーザー・PID・ネットワークの名前空間に入り、ファイルシステムの root が空のディレクトリに変わる。
+  テスト（`test/chromium.ts` の `rendererRoots`）はこの root が `/` でないことで確かめる。seccomp ではない
+  （ヘッドレスシェルは `--no-sandbox` でもレンダラーに seccomp をかけていて、違いが出なかった）
+- Ubuntu は既定で、プロファイルを持たないプログラムがユーザー名前空間を作るのを禁じている
+  （`kernel.apparmor_restrict_unprivileged_userns`）。Nix ストアの Chromium はこれに当たり、`No usable sandbox` で起動しない。
+  `apparmor/agent-chromium`（Ubuntu の Chrome 用のものと同じ、`userns` だけを足した unconfined のプロファイル）を
+  `just apparmor` で入れる。`just setup` からも呼ぶ。パスは glob なので、ビルドが変わっても入れ直さなくてよい
+- Chromium の修正は nixpkgs と一緒に来るので、**`just update` で定期的に更新する**（nixpkgs を上げ、npm の
+  `playwright-core` を nixpkgs の `playwright-driver` と同じ版にし、`npmDepsHash` を直す）。そのあと `just check`、
+  コミット、`just install`。Playwright は自分の版向けの Chromium を探すので、版がずれると起動しない。
+  ずれていれば flake の評価で止まる
+
+### 外側の囲い（未実装）
+
+- Hermes の AppArmor と systemd の構成は移さない。root のシステムサービスと sudoers が要り（ユーザーサービスでは
+  `IPAddressDeny` が効かなかった）、内部への接続は `src/egress.ts` で防いでいる
+- `web_extract` だけを bwrap で包むことはしない。サンドボックスを抜けるには脆弱性が2段要り、そこまでする相手は
+  ページの文面でモデルを誘導して、ログイン済みで通信先の制限もない `browser_*` で同じページを開かせられる
+- 入れるなら Landlock のラッパーを両方のブラウザに。読めるのは `/nix/store` など、書けるのはプロファイルと一時領域
+  だけにする（extract は TCP の接続先をプロキシのポートだけにもできる）。root が要らず、許可するパスを設定から
+  起動のたびに決められ、開発機で `npm test` から確かめられる。AppArmor でなく Landlock にしたのはこのため
+- 入れる前に確かめること: Landlock がパスのある UNIX ソケットへの接続を止めるか。止めないなら
+  `/run/user/<uid>/bus`（systemd のユーザーバス。制限の外にプロセスを起動できる）と `data/stt.sock` に届く
+- モデルには `bash` を制限なしで渡しているので、モデルが誘導されて秘密を読む経路はどれでも残る。守れるのは
+  「ページを開いただけで乗っ取られる」経路だけ
+
+### 確かめたこと
+
+- このマシン（Gentoo、kernel 7.3）で、両方のブラウザのレンダラーの root が `/proc/<zygote>/fdinfo` になること。
+  サンドボックスを切ると `/` になり、テストが落ちること
+- `apparmor/agent-chromium` を読み込むと、ヘッドレスシェルと画面つきの Chromium の両方に `agent-chromium` のラベルが付くこと
+  （このマシンには Ubuntu の制限が無いので、制限下で起動できることは未確認）
+
+未確認: Ubuntu 26.04 の VM での `just apparmor` と、制限下でのサンドボックスの起動。`just update` を実際に回すこと
+
 ## 返答の途中経過（2026-11-19）
 
 ユーザーの発言への返答では、モデルの思考、ツールを呼ぶ前に書いた文、呼んだツール（引数と ⏳ / ✅ / ❌、失敗なら
@@ -608,11 +653,13 @@ Nix はビルドと開発環境に使い、常駐は systemd のユーザーサ�
   0. 使うユーザーを `nix-users` グループに入れる（`sudo usermod -aG nix-users $USER` のあと、ログインし直す）。
      入っていないと Nix のデーモンに接続できず、`getting status of "/nix/var/nix/daemon-socket/socket": Permission denied`
      で止まる（2026-11-18、実機で確認）
-  1. `just setup`（linger を有効にし、`~/.config/agent/` に config・人格・秘密情報の雛形を置く）
+  1. `just setup`（linger を有効にし、Chromium のサンドボックス用の AppArmor プロファイルを入れ（sudo）、
+     `~/.config/agent/` に config・人格・秘密情報の雛形を置く）
   2. `~/.config/agent/config.json` と `~/.config/agent/env`（`ANTHROPIC_API_KEY`、`CALDAV_PASSWORD` など）を書く
   3. `just deployed-login`。Codex のモデルを使うなら `just deployed-model-login` も
   4. `just vulkan` で GPU が見えるか確かめる（`AMD …（RADV …）` が出ればよい。llvmpipe だけなら CPU で動く）
   5. `just install`。更新は `git pull` してもう一度 `just install`。ログは `just logs`
+  6. 定期的に `just update` で nixpkgs（Chromium の修正）を上げる。`just check` とコミットのあと `just install`
   - `just install` はチェックアウトしているコミットをビルドし、`~/.local/state/agent/current` にリンクする。
     未コミットの変更があれば止まる（何が動いているかを `just status` でコミットとして見せるため）。
     `deployed-*` のレシピは `current` のコマンドを使う。以前はチェックアウトしている版をその場で動かしていたので、

@@ -1,0 +1,11 @@
+# Lets Chromium from the Nix store make the user namespaces of its sandbox, which Ubuntu otherwise refuses to programs
+# without a profile of their own (kernel.apparmor_restrict_unprivileged_userns). Ubuntu's own profile for Chrome is
+# the same: unconfined but for this.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile agent-chromium /nix/store/*-playwright-chromium{,-headless-shell}/chrome-*/chrome{,-headless-shell} flags=(unconfined) {
+  userns,
+
+  include if exists <local/agent-chromium>
+}

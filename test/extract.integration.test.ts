@@ -5,6 +5,7 @@ import { type TestContext, test } from "node:test";
 import { EgressProxy } from "../src/egress.ts";
 import { errorMessage } from "../src/errors.ts";
 import { PlaywrightReader, ReadError } from "../src/extract.ts";
+import { rendererRoots } from "./chromium.ts";
 
 /**
  * Reads pages of a small site served from this process in a real Chromium through `src/extract.ts`. The egress proxy
@@ -94,6 +95,15 @@ test("an article is read as its main content in Markdown, without the site's nav
 	assert.ok(page.markdown.includes(PARAGRAPH));
 	assert.ok(!page.markdown.includes("このサイトについて"));
 	assert.ok(!page.markdown.includes("©"));
+});
+
+test("the pages are rendered where the files of this machine cannot be seen", async (t) => {
+	await using r = await realReader(t);
+	if (r === undefined) return;
+	await r.reader.read(`${r.base}/article`);
+	const roots = rendererRoots();
+	assert.ok(roots.length > 0);
+	assert.ok(!roots.includes("/"), `roots of the renderers: ${roots}`);
 });
 
 test("links in what is read point to absolute addresses", async (t) => {

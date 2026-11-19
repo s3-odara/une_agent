@@ -96,6 +96,8 @@ export class PlaywrightBrowsers implements Browsers {
 		const context = await chromium.launchPersistentContext(dir, {
 			headless: this.#options.headless,
 			executablePath: this.#options.executablePath,
+			// Playwright turns Chromium's own sandbox off unless asked, which would leave a compromised renderer with the agent's files.
+			chromiumSandbox: true,
 			viewport: { width: 1280, height: 800 },
 			locale: "ja-JP",
 			timezoneId: this.#options.timezone,

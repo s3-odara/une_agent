@@ -112,6 +112,8 @@ export class PlaywrightReader implements PageReader {
 			const launching = chromium.launch({
 				headless: true,
 				executablePath: this.#options.executablePath,
+				// Playwright turns Chromium's own sandbox off unless asked, which would leave a compromised renderer with the agent's files.
+				chromiumSandbox: true,
 				// Playwright also sends this host's own addresses through the proxy (`<-loopback>`), so they are refused too.
 				proxy: { server: this.#options.egress.url },
 				args: [

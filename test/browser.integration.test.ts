@@ -9,6 +9,7 @@ import { type BrowserPage, PlaywrightBrowsers } from "../src/browser.ts";
 import { createBrowserExtension, pngSize } from "../src/browser-tools.ts";
 import { Credentials } from "../src/credentials.ts";
 import { errorMessage } from "../src/errors.ts";
+import { rendererRoots } from "./chromium.ts";
 import { agentEnv, tempDir } from "./env.ts";
 import { call, everything, lastToolResult, message, type Request } from "./fakes.ts";
 
@@ -106,6 +107,15 @@ test("a link is followed by the ref the snapshot gave it", async (t) => {
 	await tab.click(refOf((await tab.snapshot()).tree, "link", "記事へ"));
 	assert.equal((await tab.snapshot()).url, `${b.base}/article`);
 	assert.match(await tab.text(), /緑茶は発酵させない茶である。/);
+});
+
+test("the pages are rendered where the files of this machine cannot be seen", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	await b.open("/");
+	const roots = rendererRoots();
+	assert.ok(roots.length > 0);
+	assert.ok(!roots.includes("/"), `roots of the renderers: ${roots}`);
 });
 
 test("going back returns to the page before", async (t) => {
