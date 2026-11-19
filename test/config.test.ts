@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { modelFor } from "../src/config.ts";
 import { testConfig } from "./env.ts";
 
 test("a persona that a room uses but nobody defined is rejected when the config is read", () => {
@@ -20,7 +21,7 @@ test("a call's VAD setting that is given replaces only that setting", () => {
 });
 
 test("a model is written as provider/model, and only the first slash splits it", () => {
-	assert.deepEqual(testConfig("/nowhere", { model: "openrouter/anthropic/claude-fable-5.2" }).model, { provider: "openrouter", modelId: "anthropic/claude-fable-5.2" });
+	assert.deepEqual(modelFor(testConfig("/nowhere", { model: "openrouter/anthropic/claude-fable-5.2" }), "default"), { provider: "openrouter", modelId: "anthropic/claude-fable-5.2" });
 	for (const model of ["claude-fable-5-2", "/x", "anthropic/", { provider: "anthropic", modelId: "x" }]) {
 		assert.throws(() => testConfig("/nowhere", { model }), /provider\/model/, JSON.stringify(model));
 	}

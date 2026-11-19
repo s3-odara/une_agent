@@ -33,16 +33,6 @@ export function localToEpoch(local: string, tz: string): number {
 	return Temporal.PlainDateTime.from(local).toZonedDateTime(tz).epochMilliseconds;
 }
 
-export function minutesOfDay(ms: number, tz: string): number {
-	const time = zoned(ms, tz);
-	return time.hour * 60 + time.minute;
-}
-
-export function parseClock(clock: string): number | undefined {
-	const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(clock);
-	return match === null ? undefined : Number(match[1]) * 60 + Number(match[2]);
-}
-
 export function formatDay(date: string): string {
 	const day = Temporal.PlainDate.from(date);
 	return `${day.month}/${day.day}(${WEEKDAYS[day.dayOfWeek - 1]})`;

@@ -12,7 +12,7 @@ import { Calendars } from "./calendar.ts";
 import { createCalendarExtension } from "./calendar-tools.ts";
 import { Calls } from "./call.ts";
 import { Approvals } from "./approval.ts";
-import { loadConfig, persona, personaFor } from "./config.ts";
+import { loadConfig, modelRef, persona, personaFor } from "./config.ts";
 import { CodeRequests } from "./codes.ts";
 import { CredentialCommands } from "./credential-commands.ts";
 import { Credentials } from "./credentials.ts";
@@ -166,7 +166,7 @@ const scheduler = new Scheduler({
 	notice: (roomId, key, body) => bridge.notice(roomId, key, body),
 	tidy: {
 		fingerprint: () => memoryFingerprint(store, personas),
-		run: (date) => tidyMemory({ harness, store, personas, model: config.model, context }, date),
+		run: (date) => tidyMemory({ harness, store, personas, model: modelRef(config.model), context }, date),
 	},
 });
 scheduler.start();

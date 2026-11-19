@@ -368,7 +368,7 @@ export interface CalDavBackend {
 }
 
 type CalendarKind = "events" | "todos";
-export type CalendarConfig = Readonly<Record<string, { readonly kind: CalendarKind; readonly description: string }>>;
+export type CalendarConfig = Readonly<Record<string, { readonly kind: CalendarKind; readonly description?: string }>>;
 
 export class Calendars {
 	readonly #backend: CalDavBackend;

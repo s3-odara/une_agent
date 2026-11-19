@@ -4,7 +4,7 @@ import type { Config } from "./config.ts";
 import { errorMessage } from "./errors.ts";
 import type { HostDb } from "./hostdb.ts";
 import { formatTidy, type TidyChange } from "./tidy.ts";
-import { addDays, dateOf, daysBetween, formatDay, formatStamp, minutesOfDay, startOfDay } from "./time.ts";
+import { addDays, dateOf, daysBetween, formatClock, formatDay, formatStamp, startOfDay } from "./time.ts";
 import { formatForecast, type WeatherSource } from "./weather.ts";
 
 type Trigger = { readonly kind: "reminder" | "change"; readonly key: string; readonly line: string };
@@ -109,9 +109,9 @@ export class Scheduler {
 
 	async #tidy(now: number): Promise<void> {
 		const { config, db, tidy } = this.#options;
-		if (tidy === undefined || config.memory.tidyAt === undefined) return;
+		if (tidy === undefined || config.memory.tidyTime === null) return;
 		const today = dateOf(now, config.timezone);
-		if (minutesOfDay(now, config.timezone) < config.memory.tidyAt) return;
+		if (formatClock(now, config.timezone) < config.memory.tidyTime) return;
 		const last = db.value("tidy.date");
 		if (last !== undefined && daysBetween(last, today) < config.memory.tidyEveryDays) return;
 
@@ -132,9 +132,10 @@ export class Scheduler {
 		if (proactive === undefined || calendars === undefined) return;
 		const tz = config.timezone;
 		const today = dateOf(now, tz);
-		const minutes = minutesOfDay(now, tz);
-		const inWindow = minutes >= proactive.windowStart && minutes < proactive.windowEnd;
-		const briefDue = minutes >= proactive.briefAt && minutes < proactive.windowEnd && !db.wasNotified(`brief:${today}`);
+		// "HH:MM" compares as text in the order of the day.
+		const clock = formatClock(now, tz);
+		const inWindow = clock >= proactive.windowStart && clock < proactive.windowEnd;
+		const briefDue = clock >= proactive.briefTime && clock < proactive.windowEnd && !db.wasNotified(`brief:${today}`);
 		if (!inWindow && !briefDue) return;
 
 		let events: EventItem[];

@@ -152,7 +152,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 		}),
 	];
 
-	const calendarLines = Object.entries(calendars.calendars).map(([name, calendar]) => `- ${name}（${calendar.kind === "todos" ? "タスク" : "予定"}）: ${calendar.description}`);
+	const calendarLines = Object.entries(calendars.calendars).map(([name, calendar]) => `- ${name}（${calendar.kind === "todos" ? "タスク" : "予定"}）: ${calendar.description ?? name}`);
 	return defineExtension({
 		name: "calendar",
 		sections: [
