@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { type BrowserContext, chromium, type Page } from "playwright-core";
 import { HIDDEN } from "./credentials.ts";
+import { sandboxedChromium } from "./sandbox.ts";
 
 export type FieldInfo = {
 	readonly kind: string;
@@ -95,7 +96,7 @@ export class PlaywrightBrowsers implements Browsers {
 		mkdirSync(dir, { recursive: true });
 		const context = await chromium.launchPersistentContext(dir, {
 			headless: this.#options.headless,
-			executablePath: this.#options.executablePath,
+			...sandboxedChromium({ headless: this.#options.headless, home: join(dir, ".home"), executablePath: this.#options.executablePath, write: [dir] }),
 			// Playwright turns Chromium's own sandbox off unless asked, which would leave a compromised renderer with the agent's files.
 			chromiumSandbox: true,
 			viewport: { width: 1280, height: 800 },

@@ -7,6 +7,7 @@
   ffmpeg-headless,
   playwright-browsers,
   gateway,
+  sandbox,
   whisper-server,
   stt-models,
 }:
@@ -35,6 +36,7 @@ buildNpmPackage {
       makeWrapper ${lib.getExe nodejs_26} $out/bin/''${entry%%:*} \
         --add-flags $out/lib/agent/src/''${entry#*:} \
         --set-default AGENT_GATEWAY_BIN ${lib.getExe gateway} \
+        --set-default AGENT_SANDBOX_BIN ${lib.getExe sandbox} \
         --set-default AGENT_WHISPER_SERVER ${lib.getExe whisper-server} \
         --set-default AGENT_STT_MODELS ${stt-models} \
         --set-default PLAYWRIGHT_BROWSERS_PATH ${playwright-browsers} \

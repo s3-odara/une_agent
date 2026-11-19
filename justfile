@@ -20,7 +20,7 @@ typecheck:
     npx tsc --noEmit
 
 # Run the agent's tests: all of them, or the files given.
-test *files:
+test *files: sandbox
     node --test --test-timeout=60000 {{ if files == "" { "'test/**/*.test.ts'" } else { files } }}
 
 test-gateway:
@@ -51,8 +51,12 @@ protocol:
 gateway:
     cargo build --release --manifest-path gateway/Cargo.toml
 
+# Build the browser's sandbox from source, for `just run` and the tests.
+sandbox:
+    cargo build --release --manifest-path sandbox/Cargo.toml
+
 # Run the agent from source on ./config.json, with the speech recognizer and its models built by nix.
-run: gateway
+run: gateway sandbox
     AGENT_WHISPER_SERVER=$(nix build --no-link --print-out-paths .#whisper-server)/bin/whisper-server \
     AGENT_STT_MODELS=$(nix build --no-link --print-out-paths .#stt-models) \
     node --env-file-if-exists=.env src/main.ts {{ config }}
@@ -62,7 +66,7 @@ login *args: gateway
     gateway/target/release/matrix-gateway login --config {{ config }} {{ args }}
 
 # Open a browser window on the agent's profile to log in by hand (needs a display; stop the agent first).
-browser-login url profile="default":
+browser-login url profile="default": sandbox
     AGENT_CONFIG={{ config }} node --env-file-if-exists=.env src/browser-login.ts {{ quote(url) }} {{ quote(profile) }}
 
 # Log in to a subscription model provider (OpenAI Codex by default) and store it in the data directory's auth.json.
@@ -73,7 +77,7 @@ model-login provider="openai-codex":
 vulkan:
     nix run .#vulkan-check
 
-# Take the newest nixpkgs, which brings Chromium's security fixes, with the npm Playwright that drives its Chromium.
+# Take the newest nixpkgs and the npm Playwright of its version: Chromium is Playwright's build, new with a new Playwright.
 update:
     #!/usr/bin/env bash
     set -euo pipefail

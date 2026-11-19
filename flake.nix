@@ -23,6 +23,7 @@
       craneLib = crane.mkLib pkgs;
       libwebrtc = pkgs.callPackage ./nix/libwebrtc.nix { };
       gateway = pkgs.callPackage ./nix/gateway.nix { inherit craneLib libwebrtc; };
+      sandbox = pkgs.callPackage ./nix/sandbox.nix { inherit craneLib; };
       whisper-server = pkgs.callPackage ./nix/whisper-server.nix { };
       stt-models = pkgs.callPackage ./nix/stt-models.nix { };
       # The headless shell stays: Playwright launches it for headless Chromium.
@@ -42,6 +43,7 @@
       agent = pkgs.callPackage ./nix/agent.nix {
         inherit
           gateway
+          sandbox
           whisper-server
           stt-models
           playwright-browsers
@@ -69,6 +71,7 @@
         inherit
           agent
           gateway
+          sandbox
           whisper-server
           stt-models
           deployment

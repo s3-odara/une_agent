@@ -1,9 +1,12 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createRequire } from "node:module";
 import { type Browser, chromium } from "playwright-core";
 import { settle } from "./browser.ts";
 import { EgressError, type EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
+import { sandboxedChromium } from "./sandbox.ts";
 import { httpUrl } from "./urls.ts";
 
 export type ReadPage = {
@@ -109,9 +112,10 @@ export class PlaywrightReader implements PageReader {
 
 	#launch(): Promise<Browser> {
 		if (this.#browser === undefined) {
+			const home = mkdtempSync(join(tmpdir(), "agent-chromium-home-"));
 			const launching = chromium.launch({
 				headless: true,
-				executablePath: this.#options.executablePath,
+				...sandboxedChromium({ headless: true, home, executablePath: this.#options.executablePath, tcpPorts: [Number(new URL(this.#options.egress.url).port)] }),
 				// Playwright turns Chromium's own sandbox off unless asked, which would leave a compromised renderer with the agent's files.
 				chromiumSandbox: true,
 				// Playwright also sends this host's own addresses through the proxy (`<-loopback>`), so they are refused too.
@@ -126,6 +130,7 @@ export class PlaywrightReader implements PageReader {
 			this.#browser = launching;
 			const forget = () => {
 				if (this.#browser === launching) this.#browser = undefined;
+				rmSync(home, { recursive: true, force: true });
 			};
 			launching.then((browser) => browser.on("disconnected", forget), forget);
 		}

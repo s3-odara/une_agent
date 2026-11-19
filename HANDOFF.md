@@ -51,8 +51,8 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
   ブラウザの画面を**スクリーンショットでルームに送れる**ようにする（2026-11-18 決定）
 - モデルには pi-durable の `read` / `write` / `edit` / `bash` を**制限なしで渡す**。Hermes や Muse のように何でもでき、
   エージェント自身の設定もモデルが変える（2026-11-19 決定）
-- ブラウザ（`browser_*` と `web_extract`）の Chromium は**自身のサンドボックスを有効にして動かす**。外側の囲いは
-  bwrap や AppArmor ではなく **Landlock** で、ソケットの件を確かめてから後で入れる（2026-11-19 決定。「Chromium のサンドボックス」）
+- ブラウザ（`browser_*` と `web_extract`）の Chromium は**自身のサンドボックスを有効にして動かし、外側を Landlock で囲う**。
+  bwrap や AppArmor では囲わない（2026-11-19 決定。「Chromium のサンドボックス」）
 - 人格ごとにセッションは分ける
 - Hermes の profile のように、口調を変えたいだけで設定ファイルまで分離されるのは避けたい
 - 既存 cron: Dreaming は毎日 02:00、Proactive は 06:00〜21:00 毎時（Asia/Tokyo）
@@ -527,33 +527,73 @@ Playwright は `chromiumSandbox: true` を渡さない限り Chromium を `--no-
   （`kernel.apparmor_restrict_unprivileged_userns`）。Nix ストアの Chromium はこれに当たり、`No usable sandbox` で起動しない。
   `apparmor/agent-chromium`（Ubuntu の Chrome 用のものと同じ、`userns` だけを足した unconfined のプロファイル）を
   `just apparmor` で入れる。`just setup` からも呼ぶ。パスは glob なので、ビルドが変わっても入れ直さなくてよい
-- Chromium の修正は nixpkgs と一緒に来るので、**`just update` で定期的に更新する**（nixpkgs を上げ、npm の
-  `playwright-core` を nixpkgs の `playwright-driver` と同じ版にし、`npmDepsHash` を直す）。そのあと `just check`、
-  コミット、`just install`。Playwright は自分の版向けの Chromium を探すので、版がずれると起動しない。
-  ずれていれば flake の評価で止まる
+- Chromium は nixpkgs がビルドしたものではなく、Playwright の版ごとに決まったビルド済みのもの（nixpkgs の
+  `pkgs/development/web/playwright/` が `browsers.json` の版を取ってくる）。Chromium の修正が来るのは、Playwright の
+  新しい版が nixpkgs に入ったときだけで、Playwright のリリース（おおむね月1回）より早くはならない
+- **`just update` で定期的に更新する**。nixpkgs を上げ、npm の `playwright-core` を nixpkgs の `playwright-driver` と
+  同じ版にし、`package-lock.json` が変わるので `npmDepsHash` を直す。`nix flake update` だけでは、`playwright-driver` の
+  版が上がったときに npm の版とずれ、Playwright が自分の版向けの Chromium を探して起動しない（ずれていれば flake の評価で
+  止まる）。そのあと `just check`、コミット、`just install`
 
-### 外側の囲い（未実装）
+### 外側の囲い（Landlock、`sandbox/` と `src/sandbox.ts`）
 
-- Hermes の AppArmor と systemd の構成は移さない。root のシステムサービスと sudoers が要り（ユーザーサービスでは
-  `IPAddressDeny` が効かなかった）、内部への接続は `src/egress.ts` で防いでいる
-- `web_extract` だけを bwrap で包むことはしない。サンドボックスを抜けるには脆弱性が2段要り、そこまでする相手は
-  ページの文面でモデルを誘導して、ログイン済みで通信先の制限もない `browser_*` で同じページを開かせられる
-- 入れるなら Landlock のラッパーを両方のブラウザに。読めるのは `/nix/store` など、書けるのはプロファイルと一時領域
-  だけにする（extract は TCP の接続先をプロキシのポートだけにもできる）。root が要らず、許可するパスを設定から
-  起動のたびに決められ、開発機で `npm test` から確かめられる。AppArmor でなく Landlock にしたのはこのため
-- 入れる前に確かめること: Landlock がパスのある UNIX ソケットへの接続を止めるか。止めないなら
-  `/run/user/<uid>/bus`（systemd のユーザーバス。制限の外にプロセスを起動できる）と `data/stt.sock` に届く
-- モデルには `bash` を制限なしで渡しているので、モデルが誘導されて秘密を読む経路はどれでも残る。守れるのは
-  「ページを開いただけで乗っ取られる」経路だけ
+Chromium 自身のサンドボックスが閉じ込めるのはレンダラーだけ。そこを抜けられたときのために、Chromium 全体を
+小さなラッパー `agent-sandbox`（Rust、依存は libc だけ）の中で起動する。Playwright はブラウザに実行ファイルと環境変数しか
+渡せないので、`executablePath` をラッパーにし、方針を環境変数（`AGENT_SANDBOX_*`）で渡す。ラッパーは制限をかけてから
+Chromium を exec する。
+
+- ファイル: 読めるのは `/nix/store`、`/etc`、`/usr`、`/sys`、フォントのキャッシュ、`/run/systemd/resolve` と Chromium の
+  ディレクトリ。書けるのは一時ディレクトリ（`TMPDIR`）、`/proc`、`/dev` のいくつか、`browser_*` ではプロファイル。
+  ホームディレクトリ（`credentials.json`、`auth.json`、`env`、暗号ストア、リポジトリ）は読めない
+  - `/proc` に書けないと Chromium のサンドボックスが uid_map を書けず起動しない。外のプロセスの `/proc`（`environ` など）は
+    Landlock が ptrace と同じく止める
+  - 常駐時は `TMPDIR` を `~/.cache/agent/tmp`（systemd の `CacheDirectory`）にして、`/tmp` 全体を書けないようにする。
+    Playwright は `launch()` のプロファイルを必ず一時ディレクトリに作るので、一時ディレクトリは外せない
+  - Chromium の `HOME` は一時ディレクトリの中に移す
+- 環境変数: 決めたものだけを渡す（`PATH`、`LANG`、`LC_*`、`TZ`、証明書とフォントの場所。画面つきなら表示用のもの）。
+  それまではエージェントの環境変数（API キー、CalDAV のパスワード）がそのまま Chromium に渡っていた
+- ネットワーク: TCP の待ち受けは禁止。`web_extract` は接続先をプロキシのポートだけにする。`browser_*` は制限しない
+- 外とのやり取り: 抽象 UNIX ソケットとシグナルは同じ囲いの中だけ（ABI 6）。パスのある UNIX ソケットへの接続は
+  ABI 9 の `RESOLVE_UNIX` で止める。ABI 9 はこのマシン（7.3）にはあるが、Ubuntu 26.04 の 7.0 には無いと思われる
+  （パッチは 2026年3〜4月にまだレビュー中だった）。そのため seccomp で `socket(AF_UNIX)` と io_uring と x86_64 以外の
+  システムコールも断る。`socketpair` は通す（Chromium のプロセス間通信）。止めたいのはユーザーの D-Bus
+  （`/run/user/<uid>/bus`。systemd に頼んで囲いの外でプロセスを起動できる）
+- 画面つき（`browser.headless: false`、`just browser-login`）は表示に UNIX ソケットが要るので、UNIX ソケットの制限だけを外す
+  （ファイルの制限は残す）。人が見ている手作業のログイン用という扱い
+- ヘッドレスでは Playwright と同じくヘッドレスシェルを起動する（ラッパーを挟むと Playwright が区別しなくなるので、
+  `playwright-core/lib/coreBundle` の registry で同じものを選ぶ。公開 API ではないので、`just update` 後のテストで確かめる）。
+  通常の Chromium はプロファイルを1プロセスに限るための UNIX ソケットを作り、seccomp で落ちる
+- Landlock が無い、または ABI 6 より古いカーネルではブラウザが起動しない（囲わずに動かすことはしない）
+- ラッパーは `just sandbox`（`just test`・`just run` が先に作る）、パッケージでは `nix/sandbox.nix`（`AGENT_SANDBOX_BIN`）
+
+選ばなかったもの:
+
+- Hermes の AppArmor と systemd の構成。root のシステムサービスと sudoers が要り（ユーザーサービスでは
+  `IPAddressDeny` が効かなかった）、内部への接続は `src/egress.ts` で防いでいる。AppArmor はパスが読み込み時に固定で、
+  設定から決まる場所に追従できず、開発機でテストできない
+- `web_extract` だけを bwrap で包むこと。そこまでする相手は、ページの文面でモデルを誘導して `browser_*` で同じページを
+  開かせられる
+
+モデルには `bash` を制限なしで渡しているので、モデルが誘導されて秘密を読む経路はどれでも残る。守れるのは
+「ページを開いただけで乗っ取られる」経路だけ。
 
 ### 確かめたこと
 
 - このマシン（Gentoo、kernel 7.3）で、両方のブラウザのレンダラーの root が `/proc/<zygote>/fdinfo` になること。
   サンドボックスを切ると `/` になり、テストが落ちること
-- `apparmor/agent-chromium` を読み込むと、ヘッドレスシェルと画面つきの Chromium の両方に `agent-chromium` のラベルが付くこと
-  （このマシンには Ubuntu の制限が無いので、制限下で起動できることは未確認）
+- `apparmor/agent-chromium` を読み込むと、ヘッドレスシェルと画面つきの Chromium の両方に `agent-chromium` のラベルが付くこと。
+  ラッパー（no_new_privs を立てる）を通して起動しても付くこと（このマシンには Ubuntu の制限が無いので、制限下で起動できることは未確認）
+- `test/sandbox.test.ts`: Node を同じ方針で動かし、ユーザーのファイルを読めない、決めた場所にだけ書ける、環境変数と
+  エージェントの `environ` が見えない、シグナルを送れない、決めた TCP ポートにだけつながる、外の UNIX ソケットに
+  ヘッドレスでは届かず画面つきでは届くこと。UNIX ソケットの件は `RESOLVE_UNIX` を切って seccomp だけでも通ることを確かめた
+- 実 Chromium のテストはすべてラッパーの中で通る。ブラウザに `file://` でリポジトリのファイルを開かせても読めない
+  （ラッパーを外すと読めてテストが落ちる）。Nix でビルドしたラッパーでも同じテストが通る
+- 以前は Chromium が起動しないと実 Chromium のテストが黙ってスキップしていた。いまはスキップは Chromium が入っていない
+  ときだけで、起動しなければ失敗する
 
-未確認: Ubuntu 26.04 の VM での `just apparmor` と、制限下でのサンドボックスの起動。`just update` を実際に回すこと
+未確認: Ubuntu 26.04 の VM での `just apparmor`、制限下でのサンドボックスの起動、7.0 の Landlock の ABI と、その上で
+ブラウザが動くこと。画面つき（`just browser-login`）をラッパーの中で動かすこと（このマシンで画面を使って試していない）。
+`just update` を実際に回すこと
 
 ## 返答の途中経過（2026-11-19）
 
@@ -643,6 +683,7 @@ Nix はビルドと開発環境に使い、常駐は systemd のユーザーサ�
   - `whisper-server`: 測定したコミットの whisper.cpp を Vulkan つきで。CPU 向けコードは世代別に作って起動時に選ぶ
     （ビルドしたマシンに依存しない）。GPU は nixpkgs の Mesa（`-Damdgpu-virtio=true` でビルドされ、AMD の native
     context に対応）を使い、ホストの Ubuntu のドライバーと暗黙レイヤーは読まない
+  - `sandbox`: ブラウザを囲う `agent-sandbox`（「Chromium のサンドボックス」）。`agent` に `AGENT_SANDBOX_BIN` で渡す
   - `stt-models`、`voicevox-engine`（nixpkgs の 0.25.2。音声を測ったのは 0.26.2）、`deployment`（systemd ユニットと、agent・gateway のコマンド、ビルドしたコミット）、
     `vulkan-check`
 - VOICEVOX が使う onnxruntime は nixpkgs では unfree 扱い（VOICEVOX 独自の利用規約）。flake は名前が `voicevox` で
@@ -659,7 +700,7 @@ Nix はビルドと開発環境に使い、常駐は systemd のユーザーサ�
   3. `just deployed-login`。Codex のモデルを使うなら `just deployed-model-login` も
   4. `just vulkan` で GPU が見えるか確かめる（`AMD …（RADV …）` が出ればよい。llvmpipe だけなら CPU で動く）
   5. `just install`。更新は `git pull` してもう一度 `just install`。ログは `just logs`
-  6. 定期的に `just update` で nixpkgs（Chromium の修正）を上げる。`just check` とコミットのあと `just install`
+  6. 定期的に `just update` で nixpkgs と Playwright（と一緒に Chromium）を上げる。`just check` とコミットのあと `just install`
   - `just install` はチェックアウトしているコミットをビルドし、`~/.local/state/agent/current` にリンクする。
     未コミットの変更があれば止まる（何が動いているかを `just status` でコミットとして見せるため）。
     `deployed-*` のレシピは `current` のコマンドを使う。以前はチェックアウトしている版をその場で動かしていたので、

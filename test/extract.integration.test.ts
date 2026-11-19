@@ -5,12 +5,12 @@ import { type TestContext, test } from "node:test";
 import { EgressProxy } from "../src/egress.ts";
 import { errorMessage } from "../src/errors.ts";
 import { PlaywrightReader, ReadError } from "../src/extract.ts";
-import { rendererRoots } from "./chromium.ts";
+import { noChromium, rendererRoots } from "./chromium.ts";
 
 /**
  * Reads pages of a small site served from this process in a real Chromium through `src/extract.ts`. The egress proxy
  * lets the browser reach that site and nothing else on this host, as it lets the deployed one reach only public
- * addresses. Skipped where Chromium cannot be launched (see `browser.integration.test.ts`).
+ * addresses. Skipped where Playwright's Chromium is not installed (see `chromium.ts`).
  */
 
 const PARAGRAPH = "緑茶は茶葉を摘んだ直後に加熱して発酵を止めた茶で、蒸し製と釜炒り製がある。日本では蒸し製が主流で、煎茶、玉露、かぶせ茶などに分かれる。";
@@ -61,6 +61,10 @@ async function listen(server: Server): Promise<number> {
 }
 
 async function realReader(t: TestContext) {
+	if (noChromium) {
+		t.skip(noChromium);
+		return undefined;
+	}
 	const hits: string[] = [];
 	const inside = createServer((request, response) => {
 		hits.push(request.url ?? "");
@@ -77,13 +81,6 @@ async function realReader(t: TestContext) {
 		server.close();
 		inside.close();
 	};
-	try {
-		await reader.read(`http://127.0.0.1:${port}/`);
-	} catch (error) {
-		await dispose();
-		t.skip(`Chromium cannot be launched here: ${errorMessage(error).split("\n")[0]}`);
-		return undefined;
-	}
 	return { base: `http://127.0.0.1:${port}`, inside: `http://127.0.0.1:${insidePort}`, reader, hits, [Symbol.asyncDispose]: dispose };
 }
 

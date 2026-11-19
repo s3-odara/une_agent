@@ -3,21 +3,20 @@ import { writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { type TestContext, test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { type BrowserPage, PlaywrightBrowsers } from "../src/browser.ts";
 import { createBrowserExtension, pngSize } from "../src/browser-tools.ts";
 import { Credentials } from "../src/credentials.ts";
 import { errorMessage } from "../src/errors.ts";
-import { rendererRoots } from "./chromium.ts";
+import { noChromium, rendererRoots } from "./chromium.ts";
 import { agentEnv, tempDir } from "./env.ts";
 import { call, everything, lastToolResult, message, type Request } from "./fakes.ts";
 
 /**
- * Drives a real Chromium through `src/browser.ts` against a small site served from this process. Skipped where
- * Chromium cannot be launched (not installed, or system libraries missing): install it with
- * `npx playwright-core install chromium`, and its libraries with `npx playwright-core install-deps chromium` or the
- * distribution's packages.
+ * Drives a real Chromium through `src/browser.ts` against a small site served from this process, under the sandbox
+ * built by `just test`. Skipped where Playwright's Chromium is not installed (see `chromium.ts`).
  */
 
 const page = (body: string) => `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>テストサイト</title></head><body>${body}</body></html>`;
@@ -63,6 +62,10 @@ const refOf = (tree: string, role: string, name: string): string => {
 };
 
 async function realBrowser(t: TestContext) {
+	if (noChromium) {
+		t.skip(noChromium);
+		return undefined;
+	}
 	const dir = tempDir();
 	const server = await site();
 	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -73,13 +76,6 @@ async function realBrowser(t: TestContext) {
 		await new Promise((resolve) => server.close(resolve));
 		dir[Symbol.dispose]();
 	};
-	try {
-		await (await browsers.page("default", 0)).goto(`${base}/`);
-	} catch (error) {
-		await dispose();
-		t.skip(`Chromium cannot be launched here: ${errorMessage(error).split("\n")[0]}`);
-		return undefined;
-	}
 	return {
 		dir: dir.path,
 		base,
@@ -116,6 +112,15 @@ test("the pages are rendered where the files of this machine cannot be seen", as
 	const roots = rendererRoots();
 	assert.ok(roots.length > 0);
 	assert.ok(!roots.includes("/"), `roots of the renderers: ${roots}`);
+});
+
+test("the browser cannot open the user's files, though a page asks it to", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.browsers.page("default", 1);
+	const userFile = fileURLToPath(new URL("../package.json", import.meta.url));
+	await tab.goto(pathToFileURL(userFile).href).catch(() => {});
+	assert.doesNotMatch(await tab.text(), /playwright-core/);
 });
 
 test("going back returns to the page before", async (t) => {
