@@ -37,6 +37,10 @@ function site(beacon: string): Server {
 			html(`<p>表の本文</p><img src="${beacon}/img">`);
 		} else if (url.pathname === "/article") {
 			html("<h1>記事</h1><p>緑茶は発酵させない茶である。</p>");
+		} else if (url.pathname === "/strict") {
+			// A long article on a page whose policy forbids every script: the extraction must still run.
+			response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": "script-src 'none'" });
+			response.end(page(`<nav><a href="/">ホーム</a></nav><article><h1>記事</h1>${"<p>緑茶は発酵させない茶で、蒸し製と釜炒り製がある。日本では蒸し製が主流である。</p>".repeat(8)}</article>`));
 		} else if (url.pathname === "/search") {
 			html(`<p>「${url.searchParams.get("q")}」の検索結果</p>`);
 		} else if (url.pathname === "/login" && request.method === "POST") {
@@ -54,6 +58,8 @@ function site(beacon: string): Server {
 	});
 	return server;
 }
+
+const textOf = async (tab: BrowserPage) => (await tab.read(true)).markdown;
 
 const refOf = (tree: string, role: string, name: string): string => {
 	const ref = new RegExp(`${role} "${name}"[^\\n]*\\[ref=(\\w+)\\]`).exec(tree)?.[1];
@@ -109,7 +115,7 @@ test("a link is followed by the ref the snapshot gave it", async (t) => {
 	assert.equal((await tab.snapshot()).title, "テストサイト");
 	await tab.click(refOf((await tab.snapshot()).tree, "link", "記事へ"));
 	assert.equal((await tab.snapshot()).url, `${b.base}/article`);
-	assert.match(await tab.text(), /緑茶は発酵させない茶である。/);
+	assert.match(await textOf(tab), /緑茶は発酵させない茶である。/);
 });
 
 test("the pages are rendered where the files of this machine cannot be seen", async (t) => {
@@ -129,16 +135,27 @@ test("the browser cannot open the user's files, though a page asks it to", async
 	writeFileSync(userFile, "ユーザーの秘密");
 	const tab = await b.browsers.page("default", 1);
 	await tab.goto(pathToFileURL(userFile).href).catch(() => {});
-	assert.doesNotMatch(await tab.text(), /ユーザーの秘密/);
+	assert.doesNotMatch(await textOf(tab), /ユーザーの秘密/);
 });
 
 test("neither a page nor the browser itself reaches another server on this host", async (t) => {
 	await using b = await realBrowser(t);
 	if (b === undefined) return;
 	const tab = await b.open("/leak");
-	assert.match(await tab.text(), /表の本文/);
+	assert.match(await textOf(tab), /表の本文/);
 	await tab.goto(`${b.beacon}/open`).catch(() => {});
 	assert.deepEqual(b.hits, []);
+});
+
+test("a page is read as its main text, or whole when asked, also where the page forbids scripts", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/strict");
+	const main = await tab.read(false);
+	assert.equal(main.scope, "article");
+	assert.match(main.markdown, /蒸し製が主流/);
+	assert.doesNotMatch(main.markdown, /ホーム/);
+	assert.match((await tab.read(true)).markdown, /ホーム/);
 });
 
 test("going back returns to the page before", async (t) => {
@@ -158,7 +175,7 @@ test("a text box is typed into by its ref, and Enter submits its form", async (t
 	await tab.fill(search, "緑茶");
 	await tab.press("Enter", search);
 	assert.match((await tab.snapshot()).url, /\/search\?q=/);
-	assert.match(await tab.text(), /「緑茶」の検索結果/);
+	assert.match(await textOf(tab), /「緑茶」の検索結果/);
 });
 
 test("a field is told apart as a text box or a password field, with the origin of its document", async (t) => {
@@ -194,12 +211,12 @@ test("conversations of one profile have tabs of their own and share its login; a
 	if (b === undefined) return;
 	const tab = await b.open("/login", "default", 1);
 	await logIn(tab);
-	assert.match(await tab.text(), /ようこそ、me さん/);
+	assert.match(await textOf(tab), /ようこそ、me さん/);
 
 	const other = await b.open("/account", "default", 2);
-	assert.match(await other.text(), /ようこそ/);
+	assert.match(await textOf(other), /ようこそ/);
 	assert.equal((await tab.snapshot()).url, `${b.base}/account`, "the first tab stays where it was");
-	assert.match(await (await b.open("/account", "stranger", 1)).text(), /ログインしていません/);
+	assert.match(await textOf(await b.open("/account", "stranger", 1)), /ログインしていません/);
 });
 
 test("a login is kept in the profile on disk, for the next browser process", async (t) => {
@@ -207,7 +224,7 @@ test("a login is kept in the profile on disk, for the next browser process", asy
 	if (b === undefined) return;
 	await logIn(await b.open("/login"));
 	await b.restart();
-	assert.match(await (await b.open("/account")).text(), /ようこそ、me さん/);
+	assert.match(await textOf(await b.open("/account")), /ようこそ、me さん/);
 });
 
 test("the tools log in on a real page with a stored password the model never sees", async (t) => {

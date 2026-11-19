@@ -3,6 +3,8 @@ import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 import { HIDDEN } from "./credentials.ts";
 import type { EgressProxy } from "./egress.ts";
+import type { ReadPage } from "./extract.ts";
+import { extractFrom, settle } from "./page.ts";
 import { IdleChromium, launchPersistentSandboxed } from "./sandbox.ts";
 
 export type FieldInfo = {
@@ -18,7 +20,8 @@ export interface BrowserPage {
 	goto(url: string): Promise<void>;
 	back(): Promise<void>;
 	snapshot(): Promise<PageSnapshot>;
-	text(): Promise<string>;
+	/** `whole` reads the whole page instead of what looks like its main text. */
+	read(whole: boolean): Promise<ReadPage>;
 	click(ref: string): Promise<void>;
 	fill(ref: string, text: string): Promise<void>;
 	press(key: string, ref?: string): Promise<void>;
@@ -72,12 +75,6 @@ async function hidePasswords(page: Page, tree: string): Promise<string> {
 		}),
 	);
 	return lines.join("\n");
-}
-
-/** Short timeouts, with failures ignored, because some pages never go quiet. */
-export async function settle(page: Page): Promise<void> {
-	await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
-	await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
 }
 
 export class PlaywrightBrowsers implements Browsers {
@@ -137,7 +134,11 @@ export class PlaywrightBrowsers implements Browsers {
 				const page = await current();
 				return { url: page.url(), title: await page.title(), tree: await hidePasswords(page, await page.ariaSnapshot({ mode: "ai" })) };
 			},
-			text: async () => (await current()).locator("body").innerText(),
+			read: async (whole) => {
+				const page = await current();
+				await settle(page);
+				return { url: page.url(), ...(await extractFrom(page, whole)) };
+			},
 			click: async (ref) => {
 				const page = await current();
 				await page.getByRef(ref).click();

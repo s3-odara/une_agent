@@ -11,6 +11,7 @@ import type { HostDb } from "./hostdb.ts";
 import { startedByUser } from "./run.ts";
 import { UNTRUSTED } from "./untrusted.ts";
 import { httpUrl } from "./urls.ts";
+import { readParameters, renderPart } from "./web-tools.ts";
 
 export type BrowserToolsOptions = {
 	readonly browsers: Browsers;
@@ -125,12 +126,15 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 		}),
 		defineTool({
 			name: "browser_read",
-			description: "いま開いているページの本文テキストを返す。記事などを読むときはスナップショットよりこちらが短い。",
-			parameters: obj({}),
+			description:
+				"いま開いているページの本文を Markdown で返す。記事などを読むときはスナップショットよりこちらが短い。本文の判定で欲しい部分が落ちたときは whole=true でページ全体を読む。長いページは途中で切れ、続きは offset を付けて呼ぶ。",
+			parameters: obj(readParameters),
 			executionMode: "sequential",
-			execute: async (_args, api, context) => {
+			execute: async (args, api, context) => {
 				const page = await pageFor(api, context);
-				return textResult(credentials.scrub([UNTRUSTED, "", clip(await page.text())].join("\n")));
+				const whole = args.whole === true;
+				const again = (next: number) => `browser_read を${whole ? " whole=true、" : " "}offset=${next} で呼ぶ`;
+				return textResult(credentials.scrub(renderPart(await page.read(whole), whole, args.offset ?? 0, maxChars, again)));
 			},
 		}),
 		defineTool({

@@ -10,7 +10,7 @@ import { persona, personaFor } from "../src/config.ts";
 import type { Bridge } from "../src/rooms.ts";
 import { CredentialError, Credentials } from "../src/credentials.ts";
 import { agentEnv, tempDir } from "./env.ts";
-import { call, everything, lastInput, message, noting, type Request, type ToolResult } from "./fakes.ts";
+import { call, everything, lastInput, lastToolResult, message, noting, type Request, type ToolResult } from "./fakes.ts";
 
 /** The header of a PNG image of 640 x 480: all a reader of its size looks at. */
 const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 2, 128, 0, 0, 1, 224])]);
@@ -26,6 +26,7 @@ class FakeBrowsers implements Browsers {
 	/** Differs from the page's origin when the login form is in a frame. */
 	formOrigin: string | undefined;
 	tree: string | undefined;
+	text: string | undefined;
 
 	async page(profile: string, conversationId: number): Promise<BrowserPage> {
 		const fields: Record<string, string> = { user: "text", pass: "password", search: "text" };
@@ -40,7 +41,7 @@ class FakeBrowsers implements Browsers {
 				title: "テストページ",
 				tree: this.tree ?? ['- textbox "ユーザー名" [ref=user]', '- textbox "パスワード" [ref=pass]', ...[...this.values].map(([ref, value]) => `- text: ${ref} に入力済み: ${value}`)].join("\n"),
 			}),
-			text: async () => `本文 ${[...this.values.values()].join(" ")}`,
+			read: async (whole) => ({ url: this.url, title: "テストページ", markdown: this.text ?? `本文 ${[...this.values.values()].join(" ")}`, scope: whole ? "page" : "article" }),
 			click: async (ref) => void this.log.push(`click ${ref}`),
 			fill: async (ref, text) => {
 				this.log.push(`fill ${ref}`);
@@ -174,6 +175,27 @@ test("a long page is cut to what one tool result may carry, saying how much was 
 	const tree = (t.results[0]?.text ?? "").split(UNTRUSTED)[1] ?? "";
 	assert.equal(tree.match(/あ/g)?.length, 400);
 	assert.match(tree, /600/);
+});
+
+test("a long page is read in parts, the next part asked for by its offset", async () => {
+	await using t = await setup();
+	t.browsers.text = Array.from({ length: 40 }, (_, i) => `${String(i).padStart(2, "0")} 行目の本文です。`).join("\n");
+	let first = "";
+	t.env.faux.setResponses([
+		call("browser_open", { url: "https://example.com/" }),
+		call("browser_read", {}),
+		(request: Request) => {
+			first = lastToolResult(request).text;
+			return call("browser_read", { offset: Number(/offset=(\d+)/.exec(first)?.[1]) });
+		},
+		t.noting,
+	]);
+	await t.say("全部読んで");
+	const second = t.results[0]?.text ?? "";
+	assert.match(first, /00 行目/);
+	assert.doesNotMatch(first, /39 行目/);
+	assert.doesNotMatch(second, /00 行目/);
+	assert.match(second, /39 行目/);
 });
 
 async function logIn(t: Awaited<ReturnType<typeof setup>>) {

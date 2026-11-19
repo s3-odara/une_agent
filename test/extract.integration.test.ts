@@ -73,24 +73,33 @@ async function realReader(t: TestContext) {
 test("an article is read as its main content in Markdown, without the site's navigation", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/article`);
+	const page = await r.reader.read(`${r.base}/article`, false);
 	assert.equal(page.scope, "article");
 	assert.ok(page.markdown.includes(PARAGRAPH));
 	assert.ok(!page.markdown.includes("このサイトについて"));
 	assert.ok(!page.markdown.includes("©"));
 });
 
+test("asked for the whole page, what the article leaves out is read too", async (t) => {
+	await using r = await realReader(t);
+	if (r === undefined) return;
+	const page = await r.reader.read(`${r.base}/article`, true);
+	assert.equal(page.scope, "page");
+	assert.ok(page.markdown.includes(PARAGRAPH));
+	assert.ok(page.markdown.includes("このサイトについて"));
+});
+
 test("links in what is read point to absolute addresses", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/article`);
+	const page = await r.reader.read(`${r.base}/article`, false);
 	assert.ok(page.markdown.includes(`[続きの記事](${r.base}/more)`), page.markdown);
 });
 
 test("an image is read as its description, not its data", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/article`);
+	const page = await r.reader.read(`${r.base}/article`, false);
 	assert.ok(page.markdown.includes("茶畑"));
 	assert.ok(!page.markdown.includes("base64"));
 });
@@ -98,7 +107,7 @@ test("an image is read as its description, not its data", async (t) => {
 test("what a page's script writes is read", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/rendered`);
+	const page = await r.reader.read(`${r.base}/rendered`, false);
 	assert.equal(page.scope, "page");
 	assert.ok(page.markdown.includes("スクリプトが書いた本文"));
 });
@@ -106,14 +115,14 @@ test("what a page's script writes is read", async (t) => {
 test("a page that forbids scripts is still read", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/strict`);
+	const page = await r.reader.read(`${r.base}/strict`, false);
 	assert.ok(page.markdown.includes(PARAGRAPH));
 });
 
 test("a page cannot make the browser reach another server on this host", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/leak`);
+	const page = await r.reader.read(`${r.base}/leak`, false);
 	assert.ok(page.markdown.includes("表の本文"));
 	assert.deepEqual(r.hits, []);
 });
@@ -121,27 +130,27 @@ test("a page cannot make the browser reach another server on this host", async (
 test("an address on this host is refused before opening, with a reason", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	await assert.rejects(r.reader.read(`${r.inside}/`), ReadError);
+	await assert.rejects(r.reader.read(`${r.inside}/`, false), ReadError);
 	assert.deepEqual(r.hits, []);
 });
 
 test("a plain text page is read as it is", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/plain`);
+	const page = await r.reader.read(`${r.base}/plain`, false);
 	assert.equal(page.markdown, "ただのテキスト\n二行目");
 });
 
 test("a download is refused", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	await assert.rejects(r.reader.read(`${r.base}/file`), ReadError);
+	await assert.rejects(r.reader.read(`${r.base}/file`, false), ReadError);
 });
 
 test("an error page is read with its status", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/missing`);
+	const page = await r.reader.read(`${r.base}/missing`, false);
 	assert.equal(page.status, 404);
 	assert.ok(page.markdown.includes("ページがありません"));
 });
