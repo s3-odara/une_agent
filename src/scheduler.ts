@@ -85,7 +85,7 @@ const ASIDE = [
  * The brief mentions the day's events; without this, the model takes the reminder of one for a repetition and stays
  * silent.
  */
-export const NEAR = "「いま近づいていること」は、時刻や期日が近づいたという知らせ。朝のブリーフなどで予定そのものに触れていても、近づいたことはまだ伝えていないので伝える。";
+export const NEAR = "（時刻や期日が近づいたという知らせ。朝のブリーフなどで予定そのものに触れていても、近づいたことはまだ伝えていないので伝える）";
 
 /**
  * When to wake the model is decided here in code, without the model: at the brief, at the check times, when the
@@ -297,11 +297,12 @@ export class Scheduler {
 		];
 	}
 
-	#triggerLines(triggers: readonly Trigger[]): string[] {
+	/** `near` says what to make of the reminders, under their heading. */
+	#triggerLines(triggers: readonly Trigger[], near: string): string[] {
 		const reminders = triggers.filter((trigger) => trigger.kind === "reminder");
 		const news = triggers.filter((trigger) => trigger.kind === "change");
 		return [
-			...(reminders.length === 0 ? [] : ["", "## いま近づいていること", ...reminders.map((trigger) => `- ${trigger.line}`)]),
+			...(reminders.length === 0 ? [] : ["", "## いま近づいていること", near, ...reminders.map((trigger) => `- ${trigger.line}`)]),
 			...(news.length === 0 ? [] : ["", "## 前回の確認以降に追加・変更された項目（ユーザーかほかの人が書いた）", ...news.map((trigger) => `- ${trigger.line}`)]),
 		];
 	}
@@ -314,9 +315,8 @@ export class Scheduler {
 			"これまでの会話と下の材料を見て、いまユーザーに伝えるとよいことがあれば、その文面を書く。例:",
 			"- 近づいた予定や期日、追加・変更された予定",
 			"- 会話に出ていた用事のその後（「面接はどうだった？」）や、ユーザーが気にしていたことの続き",
-			...(triggers.some((trigger) => trigger.kind === "reminder") ? ["", NEAR] : []),
 			...this.#calendarLines(today, events, todos),
-			...this.#triggerLines(triggers),
+			...this.#triggerLines(triggers, NEAR),
 		].join("\n");
 	}
 
@@ -340,11 +340,10 @@ export class Scheduler {
 			"朝のブリーフの時刻です。下の材料とこれまでの会話から、今日の朝のブリーフを書く。",
 			...(calendar ? ["- 今日と明日の予定を時刻順に伝える。予定の無い日は無いと書く。", "- 7日以内に期日が来るタスクと、期日を過ぎたタスクがあれば伝える（無いことは書かない）。"] : []),
 			...(forecast === undefined ? [] : ["- 天気を一言で伝える。外出を伴いそうな予定があれば、その時間帯の降水確率に触れる。"]),
-			...(triggers.some((trigger) => trigger.kind === "reminder") ? ["- 「いま近づいていること」にある項目は、埋もれないように必ず触れる。"] : []),
 			"- 会話に出ていた用事で、今日気にかけるとよいことがあれば一言添える。",
 			"- 材料と会話に無いことは書かない。短く、読みやすく。",
 			...this.#calendarLines(today, events, todos),
-			...this.#triggerLines(triggers),
+			...this.#triggerLines(triggers, "（ここにある項目は、埋もれないように必ず触れる）"),
 			...(forecast === undefined ? [] : ["", "## 天気", forecast]),
 		].join("\n");
 	}

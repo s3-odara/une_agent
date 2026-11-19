@@ -104,11 +104,10 @@ const extensions = [
 		configPath: resolve(configPath),
 		workDir: config.baseDir,
 		roomOf: (conversationId) => db.roomOf(conversationId),
-		voice: { messages: config.voice !== undefined, spoken: config.voice?.tts !== undefined, calls: config.voice?.call !== undefined },
+		...(config.voice === undefined ? {} : { voice: { spoken: config.voice.tts !== undefined, calls: config.voice.call !== undefined } }),
 		check: () => openConfig(configPath, models),
 		restart: () => void restartWhenIdle(),
 	}),
-	memory,
 	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
 	...(weather === undefined ? [] : [createWeatherExtension(weather)]),
 	createProactiveExtension({
@@ -132,6 +131,8 @@ const extensions = [
 			]),
 	...(web === undefined ? [] : [web.extension]),
 	...(browsers === undefined && web === undefined && Object.keys(config.mcp).length === 0 ? [] : [createOutsideExtension({ extract: web !== undefined, browser: browsers !== undefined })]),
+	// Last: it is the one section that changes within a conversation, and a change re-reads all that follows it.
+	memory,
 ];
 
 const registry = createRegistry();

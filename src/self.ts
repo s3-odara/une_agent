@@ -13,8 +13,8 @@ export type SelfOptions = {
 	/** Where `bash` runs; a person's own skills are in its `skills/`. */
 	readonly workDir: string;
 	readonly roomOf: (conversationId: number) => string | undefined;
-	/** Which spoken inputs reach the model; each is told how it is answered. */
-	readonly voice?: { readonly messages: boolean; readonly spoken: boolean; readonly calls: boolean };
+	/** Present when voice messages reach the model. */
+	readonly voice?: { readonly spoken: boolean; readonly calls: boolean };
 	/** Throws when the config would not start. */
 	readonly check: () => Promise<unknown>;
 	/** After the answer being written is sent. */
@@ -32,12 +32,12 @@ export function createSelfExtension(options: SelfOptions) {
 				return [
 					"あなたは Matrix の bot として常駐する、ユーザー個人のアシスタント。ルームごとに人格と会話が分かれる。",
 					"- 各発言の先頭に、送られた日時が付く（例: [2026-11-20(金) 09:00]）。「今日」「来週」などはこの日時を基準に、ユーザーの現地時刻で読む。",
-					...(options.voice?.messages === true
-						? [
+					...(options.voice === undefined
+						? []
+						: [
 								`- [日時 音声] はボイスメッセージの文字起こし。${options.voice.spoken ? "返答は文字と読み上げの両方で届くので、表、長い箇条書き、URL の羅列を避け、話し言葉で短めに答える。" : ""}`,
-							]
-						: []),
-					...(options.voice?.calls === true
+							]),
+					...(options.voice?.calls
 						? [
 								"- [日時 通話] は通話での発言の文字起こし。返答は読み上げられるだけで、文字では届かない。1〜3文の話し言葉で答え、記号、表、URL、コードは使わない。調べものなどで時間がかかるときは、先にそう言う。発言の頭の（直前の返答は…）は、前の返答がどこまで伝わったか。",
 							]
