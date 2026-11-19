@@ -73,12 +73,17 @@ const MAX_WAIT_MS = 3_600_000;
 /** A check found this late, after the agent was down, is skipped: it would come at a time no one asked for. */
 const CHECK_LATENESS_MS = 60 * 60_000;
 
+/** What every wake is, whatever it is for. When to speak is said by each kind of wake. */
 const ASIDE = [
 	"これはユーザーの発言ではなく、自分から話しかけるかを決める確認。返答はそのままユーザーへのメッセージとしてルームに送られ、通知が鳴る。",
-	"- 話しかけるのは、いまユーザーが知ると助かることがあるときと、会話に出た用事のその後を聞くときだけ。話題の補足、雑談、挨拶だけのためには話しかけない。",
 	"- 話しかけないなら、文章を書かずに stay_silent を呼ぶ（「特にありません」とも書かない）。",
-	"- 会話の中ですでに伝えたことは繰り返さない。",
 	"- この確認の間は、書き込むツール（記憶、カレンダー、timer、bash など）は使えない。要るなら話しかけて、ユーザーの返事を待つ。",
+];
+
+/** A check comes several times a day whether or not there is anything to say. */
+const CHECK = [
+	"- 話しかけるのは、いまユーザーが知ると助かることがあるときと、会話に出た用事のその後を聞くときだけ。話題の補足、雑談、挨拶だけのためには話しかけない。",
+	"- 会話の中ですでに伝えたことは繰り返さない。",
 ];
 
 /**
@@ -178,7 +183,7 @@ export class Scheduler {
 				`timer_add で ${formatStamp(timer.createdAt, tz)} に登録した時刻（${formatStamp(timer.dueAt, tz)}）が来ました。登録した内容:`,
 				timer.note,
 				"",
-				"ユーザーに頼まれた知らせなので、伝える。ただし会話の中ですでに済んでいる（ユーザーがもう済ませた、要らなくなったと言った）なら stay_silent を呼ぶ。",
+				"これを伝える。ただし会話の中ですでに済んでいる（ユーザーがもう済ませた、要らなくなったと言った）なら stay_silent を呼ぶ。",
 			].join("\n");
 			this.#wake(now, { key: `timer:${timer.id}`, roomId: timer.roomId, kind: "timer", content });
 			db.markTimerFired(timer.id);
@@ -264,6 +269,7 @@ export class Scheduler {
 				...ASIDE,
 				"",
 				"これまでの会話を見て、会話に出ていた用事のその後（「面接はどうだった？」）や、ユーザーが気にしていたことの続きで、いま聞くとよいことがあれば、その文面を書く。予定やタスクの知らせは別のルームが受け持つので、ここではしない。",
+				...CHECK,
 			].join("\n");
 			this.#wake(now, { key: `check:${today}:${time}:${roomId}`, roomId, kind: "check", content });
 			db.setValue(`checked:${roomId}`, String(seq));
@@ -312,9 +318,8 @@ export class Scheduler {
 			`[定時チェック ${stamp}]`,
 			...ASIDE,
 			"",
-			"これまでの会話と下の材料を見て、いまユーザーに伝えるとよいことがあれば、その文面を書く。例:",
-			"- 近づいた予定や期日、追加・変更された予定",
-			"- 会話に出ていた用事のその後（「面接はどうだった？」）や、ユーザーが気にしていたことの続き",
+			"これまでの会話と下の材料を見て、いまユーザーに伝えるとよいこと（近づいた予定や期日、追加・変更された予定、会話に出ていた用事のその後（「面接はどうだった？」）や、ユーザーが気にしていたことの続き）があれば、その文面を書く。",
+			...CHECK,
 			...this.#calendarLines(today, events, todos),
 			...this.#triggerLines(triggers, NEAR),
 		].join("\n");
