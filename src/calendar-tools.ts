@@ -69,7 +69,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 		}),
 		defineTool({
 			name: "calendar_create",
-			description: "予定またはタスクを1件登録する。登録を頼まれ、日時と内容が具体的ならその場で登録する。曖昧なら登録せずに尋ねる。登録の前に、同じものが既に無いか calendar_list で確かめる。繰り返す予定は登録できない（頼まれたら、できないと伝える）。",
+			description: "予定またはタスクを1件登録する。登録を頼まれ、日時と内容が具体的ならその場で登録する。曖昧なら登録せずに尋ねる。登録の前に、同じものが既に無いか calendar_list で確かめる。繰り返す予定は登録できない。",
 			parameters: obj({
 				calendar: str({ description: `登録先: ${names.join(" / ")}` }),
 				summary: str({ description: "件名", minLength: 1 }),

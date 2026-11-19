@@ -161,7 +161,7 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 			}),
 			defineTool({
 				name: "timer_add",
-				description: "決まった時刻に自分から話しかけるよう登録する。その時刻に、登録した内容とそれまでの会話を読んで、伝えるかと文面を決める。",
+				description: "決まった時刻に自分から話しかけるよう登録する。",
 				parameters: obj({
 					at: str({ description: "時刻。ユーザーの現地時刻で YYYY-MM-DDTHH:MM", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$" }),
 					note: str({ description: "その時刻に何をするか。会話を読み返さなくても分かるように具体的に（例: 14時の面接の結果を聞く）", minLength: 1 }),

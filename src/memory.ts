@@ -152,7 +152,7 @@ export class MemoryStore {
 			"- 今後の会話でも役に立つことだけ書く（好み、決めたこと、続いている事柄、繰り返し出る人や物）。その場限りの話は書かない。",
 			"- 「ユーザーは〜を希望」のように、どの人格が読んでも分かる中立な文で、1項目1文にする。末尾の（日付）は自動で付く。",
 			"- ユーザーが明言したことと自分の推測を区別し、推測には「（推測）」と書く。",
-			"- 古くなった項目は書き換えるか消す。同じ内容を重ねて書かない。上限が近づいたら項目をまとめる。",
+			"- 同じ内容を重ねて書かない。",
 			persona.privateMemory
 				? "- shared は全人格が読む。private はこの人格だけが読む。他の人格にも知っていてほしいことは shared、迷ったら shared。"
 				: "- 記憶は全人格で共有される（scope は shared のみ）。",
@@ -192,7 +192,7 @@ export function createMemoryExtension(options: MemoryExtensionOptions) {
 		tools: [
 			defineTool({
 				name: "memory_add",
-				description: "長期記憶に1項目追加する。今後の会話でも役に立つことだけを、中立な1文で書く。",
+				description: "長期記憶に1項目追加する。",
 				parameters: obj({ scope, text: str({ description: "記憶する内容。1文。", minLength: 1 }) }),
 				replay: "safe",
 				execute: async (args, api) => textOutput(store.add(args.scope, persona(api.conversationId), args.text, dateOf(api.now(), tz))),
