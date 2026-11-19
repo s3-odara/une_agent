@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Browser, type BrowserContext, chromium, type LaunchOptions } from "playwright-core";
-import { fail } from "./errors.ts";
+import { errorMessage, fail } from "./errors.ts";
 
 export type ChromiumSandbox = {
 	readonly headless: boolean;
@@ -91,7 +92,12 @@ export function sandboxedChromium(sandbox: ChromiumSandbox & { readonly home: st
  */
 function chromiumHome(): { readonly path: string; remove(): void } {
 	const path = mkdtempSync(join(tmpdir(), "chromium-"));
-	return { path, remove: () => rmSync(path, { recursive: true, force: true }) };
+	return {
+		path,
+		// Called from Playwright's events, where a throw would take the agent down; Chromium's children may still be
+		// writing in it as it closes.
+		remove: () => void rm(path, { recursive: true, force: true, maxRetries: 3 }).catch((error) => console.error(`removing ${path}: ${errorMessage(error)}`)),
+	};
 }
 
 /** A sandboxed Chromium whose contexts start empty each time, with no profile on disk. */

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { type TestContext, test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { type BrowserPage, PlaywrightBrowsers } from "../src/browser.ts";
@@ -124,10 +124,12 @@ test("the pages are rendered where the files of this machine cannot be seen", as
 test("the browser cannot open the user's files, though a page asks it to", async (t) => {
 	await using b = await realBrowser(t);
 	if (b === undefined) return;
+	using files = tempDir();
+	const userFile = join(files.path, "secret.txt");
+	writeFileSync(userFile, "ユーザーの秘密");
 	const tab = await b.browsers.page("default", 1);
-	const userFile = fileURLToPath(new URL("../package.json", import.meta.url));
 	await tab.goto(pathToFileURL(userFile).href).catch(() => {});
-	assert.doesNotMatch(await tab.text(), /playwright-core/);
+	assert.doesNotMatch(await tab.text(), /ユーザーの秘密/);
 });
 
 test("neither a page nor the browser itself reaches another server on this host", async (t) => {
