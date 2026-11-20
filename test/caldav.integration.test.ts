@@ -105,8 +105,8 @@ test("a task is listed with its due date, and completed however often asked", ne
 test("removing twice succeeds, and leaves the event gone", needsServer, async () => {
 	const { events, calendars } = await fresh();
 	const id = await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30" }, now);
-	await calendars.remove(id);
-	await calendars.remove(id);
+	await calendars.remove(id, now);
+	await calendars.remove(id, now);
 	assert.deepEqual(await calendars.events(...week), []);
 	await assert.rejects(calendars.update(id, { summary: "x" }, now), CalendarError);
 });
@@ -114,4 +114,19 @@ test("removing twice succeeds, and leaves the event gone", needsServer, async ()
 test("a calendar the account does not have is named in the error", needsServer, async () => {
 	const missing = new Calendars(connectCalDav({ url: url!, username, password, calendars: ["No-Such-Calendar"] }), { "No-Such-Calendar": { kind: "events", description: "" } }, tz);
 	await assert.rejects(missing.events(...week), /No-Such-Calendar/);
+});
+
+test("a recurring event, with one occurrence moved and one removed, reads back from the server as it was left", needsServer, async () => {
+	const { events, calendars } = await fresh();
+	const id = await calendars.create(events, "r1", { summary: "朝会", start: "2026-11-16T08:00", rrule: "FREQ=DAILY;UNTIL=20261119" }, now);
+	await calendars.update(`${id}@2026-11-17T08:00`, { start: "2026-11-17T10:00" }, now, "this");
+	await calendars.remove(`${id}@2026-11-18T08:00`, now, "this");
+	assert.deepEqual(
+		(await calendars.events(...week)).map((event) => [event.occurrence, event.start]),
+		[
+			["2026-11-16T08:00", at("2026-11-16T08:00")],
+			["2026-11-17T08:00", at("2026-11-17T10:00")],
+			["2026-11-19T08:00", at("2026-11-19T08:00")],
+		],
+	);
 });

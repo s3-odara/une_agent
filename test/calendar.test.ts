@@ -12,8 +12,9 @@ import {
 	parseEvents,
 	parseTodo,
 	type RawObject,
+	removeFrom,
 } from "../src/calendar.ts";
-import { localToEpoch } from "../src/time.ts";
+import { localMinute, localToEpoch } from "../src/time.ts";
 import { ics, MemoryCalDav } from "./fakes.ts";
 
 const tz = "Asia/Tokyo";
@@ -130,18 +131,18 @@ test("when an item was last written is read from its stamps", () => {
 });
 
 test("an event is shown with its day, times, title and place", () => {
-	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "歯医者", location: "駅前", allDay: false, recurring: false, start: at("2026-11-17T15:30"), end: at("2026-11-17T16:30") };
+	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "歯医者", location: "駅前", allDay: false, start: at("2026-11-17T15:30"), end: at("2026-11-17T16:30") };
 	assert.equal(formatEvent(item, tz), "11/17(火) 15:30–16:30 歯医者 @駅前");
 });
 
 test("an all-day event over several days is shown as the range of its days", () => {
-	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "旅行", allDay: true, recurring: false, start: at("2026-11-20T00:00"), end: at("2026-11-23T00:00") };
+	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "旅行", allDay: true, start: at("2026-11-20T00:00"), end: at("2026-11-23T00:00") };
 	assert.equal(formatEvent(item, tz), "11/20(金)〜11/22(日) 終日 旅行");
 });
 
-test("a recurring event is shown as one", () => {
-	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "ゴミ捨て", allDay: false, recurring: true, start: at("2026-11-17T08:00"), end: at("2026-11-17T08:15") };
-	assert.match(formatEvent(item, tz), /繰り返し/);
+test("a recurring event is shown as one, with its rule", () => {
+	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "ゴミ捨て", allDay: false, rule: "FREQ=DAILY", start: at("2026-11-17T08:00"), end: at("2026-11-17T08:15") };
+	assert.match(formatEvent(item, tz), /繰り返し.*FREQ=DAILY/);
 });
 
 test("a task is shown with its due date, and its time when it has one", () => {
@@ -193,22 +194,22 @@ const DENTIST = ics(
 const readBack = (data: string) => parseEvents(raw(data), "Home", week, tz)[0]!;
 
 test("moving an event's start keeps its length", () => {
-	const moved = readBack(applyChanges(DENTIST, { start: "2026-11-18T10:00" }, tz, NOW));
+	const moved = readBack(applyChanges(DENTIST, { start: "2026-11-18T10:00" }, tz, NOW).data);
 	assert.deepEqual([moved.start, moved.end], [at("2026-11-18T10:00"), at("2026-11-18T10:45")]);
 });
 
 test("a change keeps what it does not touch, the alarm too", () => {
-	const changed = applyChanges(DENTIST, { summary: "歯科検診" }, tz, NOW);
+	const changed = applyChanges(DENTIST, { summary: "歯科検診" }, tz, NOW).data;
 	assert.deepEqual([readBack(changed).summary, readBack(changed).location, readBack(changed).start], ["歯科検診", "駅前", at("2026-11-17T15:30")]);
 	assert.match(changed, /BEGIN:VALARM/);
 });
 
 test("a change is marked as a new version, so other clients take it", () => {
-	assert.match(applyChanges(DENTIST, { summary: "歯科検診" }, tz, NOW), /^SEQUENCE:1\r?$/m);
+	assert.match(applyChanges(DENTIST, { summary: "歯科検診" }, tz, NOW).data, /^SEQUENCE:1\r?$/m);
 });
 
 test("a field changed to nothing is removed", () => {
-	assert.equal(readBack(applyChanges(DENTIST, { location: "" }, tz, NOW)).location, undefined);
+	assert.equal(readBack(applyChanges(DENTIST, { location: "" }, tz, NOW).data).location, undefined);
 });
 
 test("a due date for an event is refused", () => {
@@ -246,8 +247,8 @@ test("completing and removing succeed when they were done already", async () => 
 	assert.equal((await calendars.todos())[0]?.done, true);
 
 	const id = await calendars.create("Home", "u1", { summary: "歯医者", start: "2026-11-17T15:30" }, NOW);
-	await calendars.remove(id);
-	await calendars.remove(id);
+	await calendars.remove(id, NOW);
+	await calendars.remove(id, NOW);
 	assert.deepEqual(backend.files("Home"), []);
 });
 
@@ -255,4 +256,128 @@ test("an item that does not exist, or a calendar that is not configured, is refu
 	const { calendars } = store();
 	await assert.rejects(calendars.update("Home/nope.ics", { summary: "x" }, NOW), CalendarError);
 	await assert.rejects(calendars.create("Work", "u3", { summary: "x", start: "2026-11-17" }, NOW), CalendarError);
+});
+
+/** Mondays at 08:00, four of them in `month`. */
+const WEEKLY = buildEvent("w", { summary: "朝会", start: "2026-11-16T08:00", end: "2026-11-16T08:30", rrule: "FREQ=WEEKLY;BYDAY=MO" }, tz, NOW);
+const month = { from: at("2026-11-16T00:00"), to: at("2026-12-14T00:00") };
+const occurrences = (data: string) => parseEvents(raw(data), "Home", month, tz).map((event) => `${localMinute(event.start, tz)} ${event.summary}`);
+const thisOne = (occurrence: string) => ({ scope: "this" as const, occurrence });
+const all = { scope: "all" as const };
+
+test("a weekly event made at an early hour falls on the weekday asked for, not on the day before as in UTC", () => {
+	assert.deepEqual(occurrences(WEEKLY), ["2026-11-16T08:00 朝会", "2026-11-23T08:00 朝会", "2026-11-30T08:00 朝会", "2026-12-07T08:00 朝会"]);
+});
+
+test("each occurrence is listed under when it falls, and an all-day one under its day", () => {
+	assert.deepEqual(
+		parseEvents(raw(WEEKLY), "Home", month, tz).map((event) => event.occurrence),
+		["2026-11-16T08:00", "2026-11-23T08:00", "2026-11-30T08:00", "2026-12-07T08:00"],
+	);
+	const yearly = buildEvent("y", { summary: "記念日", start: "2026-11-20", rrule: "FREQ=YEARLY" }, tz, NOW);
+	assert.equal(parseEvents(raw(yearly), "Home", month, tz)[0]?.occurrence, "2026-11-20");
+});
+
+test("a repeat given a last day keeps that day's occurrence, even late at night", () => {
+	const nightly = buildEvent("n", { summary: "日記", start: "2026-11-16T23:30", rrule: "FREQ=DAILY;UNTIL=20261118" }, tz, NOW);
+	assert.deepEqual(occurrences(nightly), ["2026-11-16T23:30 日記", "2026-11-17T23:30 日記", "2026-11-18T23:30 日記"]);
+});
+
+test("a rule another client ended with a UNTIL in UTC keeps its last occurrence late in the day", () => {
+	const data = ics("BEGIN:VEVENT", "UID:n", "SUMMARY:日記", "DTSTART;TZID=Asia/Tokyo:20261116T233000", "DURATION:PT15M", "RRULE:FREQ=DAILY;UNTIL=20261118T145959Z", "END:VEVENT");
+	assert.equal(occurrences(data).at(-1), "2026-11-18T23:30 日記");
+});
+
+for (const [what, rrule] of [
+	["no FREQ", "BYDAY=MO"],
+	["both an end and a count", "FREQ=DAILY;COUNT=3;UNTIL=20261130"],
+] as const) {
+	test(`a rule with ${what} is refused`, () => {
+		assert.throws(() => buildEvent("u", { summary: "x", start: "2026-11-16T08:00", rrule }, tz, NOW), CalendarError);
+	});
+}
+
+test("a recurring event is changed or removed only when told whether one occurrence or all are meant", () => {
+	assert.throws(() => applyChanges(WEEKLY, { summary: "定例" }, tz, NOW), CalendarError);
+	assert.throws(() => removeFrom(WEEKLY, tz, NOW), CalendarError);
+});
+
+test("changing one occurrence leaves the others as they were", () => {
+	const changed = applyChanges(WEEKLY, { start: "2026-11-24T10:00", summary: "朝会（火曜）" }, tz, NOW, thisOne("2026-11-23T08:00")).data;
+	assert.deepEqual(occurrences(changed), ["2026-11-16T08:00 朝会", "2026-11-24T10:00 朝会（火曜）", "2026-11-30T08:00 朝会", "2026-12-07T08:00 朝会"]);
+});
+
+test("a moved occurrence is still listed as the occurrence it was, so it can be changed again", () => {
+	const moved = applyChanges(WEEKLY, { start: "2026-11-24T10:00" }, tz, NOW, thisOne("2026-11-23T08:00")).data;
+	assert.equal(parseEvents(raw(moved), "Home", month, tz)[1]?.occurrence, "2026-11-23T08:00");
+	const again = applyChanges(moved, { start: "2026-11-25T10:00" }, tz, NOW, thisOne("2026-11-23T08:00")).data;
+	assert.deepEqual(occurrences(again), ["2026-11-16T08:00 朝会", "2026-11-25T10:00 朝会", "2026-11-30T08:00 朝会", "2026-12-07T08:00 朝会"]);
+});
+
+test("the same change to one occurrence applied twice ends as it did once", () => {
+	const once = applyChanges(WEEKLY, { summary: "休み明け" }, tz, NOW, thisOne("2026-11-23T08:00")).data;
+	const twice = applyChanges(once, { summary: "休み明け" }, tz, NOW, thisOne("2026-11-23T08:00")).data;
+	assert.deepEqual(occurrences(twice), occurrences(once));
+});
+
+for (const [what, target, changes] of [
+	["an occurrence the series does not have", thisOne("2026-11-24T08:00"), { summary: "x" }],
+	["one occurrence without saying which", { scope: "this" as const }, { summary: "x" }],
+	["the rule of one occurrence", thisOne("2026-11-23T08:00"), { rrule: "FREQ=DAILY" }],
+] as const) {
+	test(`changing ${what} is refused`, () => {
+		assert.throws(() => applyChanges(WEEKLY, changes, tz, NOW, target), CalendarError);
+	});
+}
+
+test("removing one occurrence leaves the rest, and removing it again changes nothing", () => {
+	const removed = removeFrom(WEEKLY, tz, NOW, thisOne("2026-11-23T08:00"));
+	assert.ok(typeof removed === "object");
+	assert.deepEqual(occurrences(removed.data), ["2026-11-16T08:00 朝会", "2026-11-30T08:00 朝会", "2026-12-07T08:00 朝会"]);
+	assert.equal(removeFrom(removed.data, tz, NOW, thisOne("2026-11-23T08:00")), "unchanged");
+});
+
+/** 11/23 moved to the Tuesday, 11/30 renamed only, 12/7 removed. */
+function edited(): string {
+	let data = applyChanges(WEEKLY, { start: "2026-11-24T10:00" }, tz, NOW, thisOne("2026-11-23T08:00")).data;
+	data = applyChanges(data, { summary: "朝会（オンライン）" }, tz, NOW, thisOne("2026-11-30T08:00")).data;
+	const removed = removeFrom(data, tz, NOW, thisOne("2026-12-07T08:00"));
+	assert.ok(typeof removed === "object");
+	return removed.data;
+}
+
+test("moving every occurrence moves the ones changed on their own only in what they did not change", () => {
+	const moved = applyChanges(edited(), { start: "2026-11-16T09:00" }, tz, NOW, all);
+	assert.deepEqual(occurrences(moved.data), ["2026-11-16T09:00 朝会", "2026-11-24T10:00 朝会", "2026-11-30T09:00 朝会（オンライン）"]);
+	assert.equal(moved.dropped, 0);
+});
+
+test("renaming every occurrence renames the ones that kept the old name", () => {
+	const renamed = applyChanges(edited(), { summary: "定例" }, tz, NOW, all).data;
+	assert.deepEqual(occurrences(renamed), ["2026-11-16T08:00 定例", "2026-11-24T10:00 定例", "2026-11-30T08:00 朝会（オンライン）"]);
+});
+
+test("a new rule keeps what was changed or removed in the occurrences it still has, and counts what it drops", () => {
+	const shorter = applyChanges(edited(), { rrule: "FREQ=WEEKLY;BYDAY=MO;UNTIL=20261130" }, tz, NOW, all);
+	assert.deepEqual(occurrences(shorter.data), ["2026-11-16T08:00 朝会", "2026-11-24T10:00 朝会", "2026-11-30T08:00 朝会（オンライン）"]);
+	assert.equal(shorter.dropped, 1);
+});
+
+test("ending the repeating leaves the first occurrence as a single event, dropping the rest's changes", () => {
+	const single = applyChanges(edited(), { rrule: "" }, tz, NOW, all);
+	assert.deepEqual(occurrences(single.data), ["2026-11-16T08:00 朝会"]);
+	assert.equal(single.dropped, 3);
+});
+
+test("a single event given a rule repeats on its weekday, even one written in UTC", () => {
+	const monday = buildEvent("m", { summary: "ジム", start: "2026-11-16T07:00" }, tz, NOW);
+	const weekly = applyChanges(monday, { rrule: "FREQ=WEEKLY;BYDAY=MO" }, tz, NOW).data;
+	assert.deepEqual(occurrences(weekly), ["2026-11-16T07:00 ジム", "2026-11-23T07:00 ジム", "2026-11-30T07:00 ジム", "2026-12-07T07:00 ジム"]);
+});
+
+test("removing every occurrence removes the whole event", async () => {
+	const { backend, calendars } = store();
+	const id = await calendars.create("Home", "w", { summary: "朝会", start: "2026-11-16T08:00", rrule: "FREQ=WEEKLY;BYDAY=MO" }, NOW);
+	await calendars.remove(`${id}@2026-11-23T08:00`, NOW, "all");
+	assert.deepEqual(backend.files("Home"), []);
 });

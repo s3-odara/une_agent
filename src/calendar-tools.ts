@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
-import { obj, opt, str } from "@earendil-works/pi-schema";
+import { obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import type { Approvals } from "./approval.ts";
-import { CalendarError, type Calendars, type EventFields, formatEvent, formatTodo, type ItemChanges, splitId, type TodoFields } from "./calendar.ts";
+import { CalendarError, type Calendars, type EventFields, formatEvent, formatTodo, type ItemChanges, occurrenceId, splitId, type TodoFields } from "./calendar.ts";
 import type { HostDb } from "./hostdb.ts";
 import { textOutput } from "./text.ts";
 import { addDays, dateOf, startOfDay } from "./time.ts";
@@ -16,9 +16,11 @@ export type CalendarToolsOptions = {
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const WHEN = "終日なら YYYY-MM-DD、時刻つきなら YYYY-MM-DDTHH:MM（ユーザーの現地時刻）";
+const RRULE = "RFC 5545 の RRULE（例: FREQ=WEEKLY;BYDAY=MO、FREQ=MONTHLY;BYMONTHDAY=25;COUNT=6）。UNTIL は YYYYMMDD（その日の回まで）でよい";
+const scope = opt(oneOf(["this", "all"], { description: "繰り返しの予定では必須。this: id の回だけ。all: 全ての回。" }));
 
 function describeChanges(changes: ItemChanges): string {
-	const labels: Record<keyof ItemChanges, string> = { summary: "件名", start: "開始", end: "終了", due: "期日", location: "場所", description: "メモ" };
+	const labels: Record<keyof ItemChanges, string> = { summary: "件名", start: "開始", end: "終了", due: "期日", location: "場所", description: "メモ", rrule: "繰り返し" };
 	const lines = (Object.keys(labels) as (keyof ItemChanges)[]).flatMap((key) => {
 		const value = changes[key];
 		return value === undefined ? [] : [`${labels[key]} → ${value === "" ? "（削除）" : value}`];
@@ -44,7 +46,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 	const tools = [
 		defineTool({
 			name: "calendar_list",
-			description: "予定と未完了のタスクを一覧する。変更・削除・完了に使う id もここで分かる。",
+			description: "予定と未完了のタスクを一覧する。変更・削除・完了に使う id もここで分かる。繰り返しの予定は回ごとに出て、id は「…@その回の日時」になる。",
 			parameters: obj({
 				from: opt(str({ description: "最初の日 YYYY-MM-DD。省略すると今日。" })),
 				to: opt(str({ description: "最後の日 YYYY-MM-DD。省略すると from の7日後。" })),
@@ -59,7 +61,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 				return textOutput(
 					[
 						`予定（${from}〜${to}）`,
-						...(events.length === 0 ? ["- なし"] : events.map((event) => `- ${formatEvent(event, tz)} [${event.id}]`)),
+						...(events.length === 0 ? ["- なし"] : events.map((event) => `- ${formatEvent(event, tz)} [${occurrenceId(event)}]`)),
 						"",
 						"未完了のタスク",
 						...(open.length === 0 ? ["- なし"] : open.map((todo) => `- ${formatTodo(todo, tz)} [${todo.id}]`)),
@@ -69,7 +71,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 		}),
 		defineTool({
 			name: "calendar_create",
-			description: "予定またはタスクを1件登録する。登録を頼まれ、日時と内容が具体的ならその場で登録する。曖昧なら登録せずに尋ねる。登録の前に、同じものが既に無いか calendar_list で確かめる。繰り返す予定は登録できない。",
+			description: "予定またはタスクを1件登録する。登録を頼まれ、日時と内容が具体的ならその場で登録する。曖昧なら登録せずに尋ねる。登録の前に、同じものが既に無いか calendar_list で確かめる。",
 			parameters: obj({
 				calendar: str({ description: `登録先: ${names.join(" / ")}` }),
 				summary: str({ description: "件名", minLength: 1 }),
@@ -78,6 +80,7 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 				due: opt(str({ description: `タスクの期日。${WHEN}。` })),
 				location: opt(str({ description: "場所" })),
 				description: opt(str({ description: "メモ" })),
+				rrule: opt(str({ description: `繰り返す予定なら ${RRULE}。start が最初の回で、規則に合う日にする。` })),
 			}),
 			replay: "safe",
 			execute: async (args, api, context) => {
@@ -85,11 +88,12 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 				let fields: EventFields | TodoFields;
 				if (kind === "todos") {
 					if (args.start !== undefined || args.end !== undefined) throw new CalendarError("タスクに start / end はありません。期日は due で指定してください。");
+					if (args.rrule !== undefined) throw new CalendarError("タスクは繰り返せません。");
 					fields = { summary: args.summary, due: args.due, description: args.description };
 				} else {
 					if (args.start === undefined) throw new CalendarError("予定には start が必要です。");
 					if (args.due !== undefined) throw new CalendarError("予定に due はありません。日時は start / end で指定してください。");
-					fields = { summary: args.summary, start: args.start, end: args.end, location: args.location, description: args.description };
+					fields = { summary: args.summary, start: args.start, end: args.end, location: args.location, description: args.description, rrule: args.rrule };
 				}
 				// Remembered with the call: a rerun after a crash writes the same object instead of a second one.
 				const uid = await api.memo("uid", randomUUID(), context);
@@ -101,41 +105,44 @@ export function createCalendarExtension(options: CalendarToolsOptions) {
 		defineTool({
 			name: "calendar_update",
 			description:
-				"既存の予定・タスクを変更する。実行前にツールがユーザーに承認を求め、決定が出るまで待つ。前もって会話で確認を取る必要はない。繰り返し予定は全ての回が変わる。",
+				"既存の予定・タスクを変更する。実行前にツールがユーザーに承認を求め、決定が出るまで待つ。前もって会話で確認を取る必要はない。繰り返しの予定を全ての回で変えると、個別に変えた回もその回で変えていない項目は一緒に変わる。",
 			parameters: obj({
 				id: str({ description: "calendar_list が返した id", minLength: 1 }),
+				scope,
 				summary: opt(str({ description: "新しい件名" })),
 				start: opt(str({ description: `予定の新しい開始。${WHEN}。end を省略すると長さを保って移動する。` })),
 				end: opt(str({ description: "予定の新しい終了" })),
 				due: opt(str({ description: `タスクの新しい期日。${WHEN}。空文字で期日を消す。` })),
 				location: opt(str({ description: "新しい場所。空文字で消す。" })),
 				description: opt(str({ description: "新しいメモ。空文字で消す。" })),
+				rrule: opt(str({ description: `新しい繰り返しの規則。${RRULE}。空文字で繰り返しをやめる。繰り返しの予定では scope: all のときだけ。` })),
 			}),
 			replay: "safe",
 			execute: async (args, api, context) => {
-				const { id, ...changes } = args;
-				splitId(id);
+				const { id, scope, ...changes } = args;
+				const { item } = splitId(id);
 				if (!Object.values(changes).some((value) => value !== undefined)) throw new CalendarError("変更内容がありません。");
-				const no = await approvals.forCall("calendar_update", `予定・タスクを変更: ${await calendars.describe(id)}（${describeChanges(changes)}）`, api, context);
+				const { what, dropped } = await calendars.preview(id, changes, scope);
+				const lost = dropped === 0 ? "" : `\n個別に変えた・消した回のうち ${dropped} 件は、変更後の繰り返しに無いので無くなります。`;
+				const no = await approvals.forCall("calendar_update", `予定・タスクを変更: ${what}（${describeChanges(changes)}）${lost}`, api, context);
 				if (no !== undefined) return textOutput(no);
-				await calendars.update(id, changes, api.now());
-				await noteOwnWrite(id);
-				return textOutput(`変更しました: ${await calendars.describe(id)}`);
+				await calendars.update(id, changes, api.now(), scope);
+				await noteOwnWrite(item);
+				return textOutput(`変更しました: ${await calendars.describe(id, scope)}`);
 			},
 		}),
 		defineTool({
 			name: "calendar_delete",
-			description:
-				"既存の予定・タスクを削除する。実行前にツールがユーザーに承認を求め、決定が出るまで待つ。前もって会話で確認を取る必要はない。繰り返し予定は全ての回が消える。",
-			parameters: obj({ id: str({ description: "calendar_list が返した id", minLength: 1 }) }),
+			description: "既存の予定・タスクを削除する。実行前にツールがユーザーに承認を求め、決定が出るまで待つ。前もって会話で確認を取る必要はない。",
+			parameters: obj({ id: str({ description: "calendar_list が返した id", minLength: 1 }), scope }),
 			replay: "safe",
 			execute: async (args, api, context) => {
-				splitId(args.id);
-				const target = await calendars.describe(args.id);
+				const { item } = splitId(args.id);
+				const target = await calendars.removal(args.id, args.scope);
 				const no = await approvals.forCall("calendar_delete", `予定・タスクを削除: ${target}`, api, context);
 				if (no !== undefined) return textOutput(no);
-				await calendars.remove(args.id);
-				db.setSeenItem(args.id, undefined);
+				if ((await calendars.remove(args.id, api.now(), args.scope)) === "gone") db.setSeenItem(item, undefined);
+				else await noteOwnWrite(item);
 				return textOutput(`削除しました: ${target}`);
 			},
 		}),

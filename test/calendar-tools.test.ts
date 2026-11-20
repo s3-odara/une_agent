@@ -226,3 +226,79 @@ test("completing a task needs no approval", async () => {
 	assert.equal((await t.calendars.todos())[0]?.done, true);
 	assert.equal(t.env.link.of("react").length, 0);
 });
+
+const WEEKLY = "Home/weekly.ics";
+const mondays = (t: Awaited<ReturnType<typeof setup>>) =>
+	t.calendars.events(at("2026-11-16T00:00"), at("2026-12-07T00:00")).then((events) => events.filter((event) => event.uid === "weekly").map((event) => [event.occurrence, event.start]));
+function withWeekly(t: Awaited<ReturnType<typeof setup>>) {
+	t.backend.put("Home", "weekly.ics", buildEvent("weekly", { summary: "朝会", start: "2026-11-16T08:00", rrule: "FREQ=WEEKLY;BYDAY=MO" }, tz, 0));
+}
+
+test("a recurring event is created at once, and listed occurrence by occurrence, each with an id to act on it", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([call("calendar_create", { calendar: "Home", summary: "朝会", start: "2026-11-16T08:00", rrule: "FREQ=WEEKLY;BYDAY=MO" }), t.noting, call("calendar_list", { from: "2026-11-16", to: "2026-11-30" }), t.noting]);
+	t.write("毎週月曜8時に朝会");
+	await t.settled();
+	t.write("一覧");
+	await t.settled();
+
+	const listed = t.results[1]?.text ?? "";
+	const id = t.results[0]?.text.match(/\[(Home\/[^\]]+)\]/)?.[1];
+	for (const day of ["2026-11-16", "2026-11-23", "2026-11-30"]) assert.ok(listed.includes(`${id}@${day}T08:00`), `${day} is listed`);
+	assert.equal(t.env.link.of("react").length, 0, "nothing to approve");
+});
+
+test("changing a recurring event without saying which occurrences is refused before anything is asked", async () => {
+	await using t = await setup();
+	withWeekly(t);
+	t.env.faux.setResponses([call("calendar_update", { id: `${WEEKLY}@2026-11-23T08:00`, summary: "定例" }), t.noting]);
+	t.write("朝会の名前を変えて");
+	await t.settled();
+
+	assert.equal(t.results[0]?.isError, true);
+	assert.equal(t.env.link.of("react").length, 0);
+});
+
+test("a change to one occurrence is asked about as that occurrence, and once approved made to it alone", async () => {
+	await using t = await setup();
+	withWeekly(t);
+	t.env.faux.setResponses([call("calendar_update", { id: `${WEEKLY}@2026-11-23T08:00`, scope: "this", start: "2026-11-24T08:00" }), t.noting]);
+	t.write("23日の朝会は火曜にずらして");
+	const request = await t.request();
+	assert.match(request.body, /11\/23/);
+
+	t.react(request.eventId, "✅");
+	await t.settled();
+	assert.deepEqual(await mondays(t), [
+		["2026-11-16T08:00", at("2026-11-16T08:00")],
+		["2026-11-23T08:00", at("2026-11-24T08:00")],
+		["2026-11-30T08:00", at("2026-11-30T08:00")],
+	]);
+});
+
+test("a change to every occurrence that drops occurrences changed on their own says how many in the request", async () => {
+	await using t = await setup();
+	withWeekly(t);
+	await t.calendars.update(`${WEEKLY}@2026-11-30T08:00`, { summary: "朝会（オンライン）" }, t.now(), "this");
+	t.env.faux.setResponses([call("calendar_update", { id: WEEKLY, scope: "all", rrule: "FREQ=WEEKLY;BYDAY=MO;COUNT=2" }), t.noting]);
+	t.write("朝会は2回で終わり");
+	const request = await t.request();
+	t.react(request.eventId, "❌");
+	await t.settled();
+
+	assert.match(request.body, /1 件/);
+});
+
+test("deleting one occurrence, once approved, leaves the others", async () => {
+	await using t = await setup();
+	withWeekly(t);
+	t.env.faux.setResponses([call("calendar_delete", { id: `${WEEKLY}@2026-11-23T08:00`, scope: "this" }), t.noting]);
+	t.write("23日の朝会は無し");
+	t.react((await t.request()).eventId, "✅");
+	await t.settled();
+
+	assert.deepEqual(
+		(await mondays(t)).map(([occurrence]) => occurrence),
+		["2026-11-16T08:00", "2026-11-30T08:00"],
+	);
+});

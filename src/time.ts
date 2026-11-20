@@ -4,13 +4,30 @@ function zoned(ms: number, tz: string): Temporal.ZonedDateTime {
 	return Temporal.Instant.fromEpochMilliseconds(ms).toZonedDateTimeISO(tz);
 }
 
+const knownZones = new Map<string, boolean>();
+
+/** Asked for the TZID of every occurrence read, so remembered. */
 export function isTimeZone(tz: string): boolean {
-	try {
-		new Intl.DateTimeFormat("en", { timeZone: tz });
-		return true;
-	} catch {
-		return false;
+	let known = knownZones.get(tz);
+	if (known === undefined) {
+		try {
+			new Intl.DateTimeFormat("en", { timeZone: tz });
+			known = true;
+		} catch {
+			known = false;
+		}
+		knownZones.set(tz, known);
 	}
+	return known;
+}
+
+export function localDateTime(ms: number, tz: string): Temporal.PlainDateTime {
+	return zoned(ms, tz).toPlainDateTime();
+}
+
+/** YYYY-MM-DDTHH:MM, as the tools take a time. */
+export function localMinute(ms: number, tz: string): string {
+	return localDateTime(ms, tz).toString({ smallestUnit: "minute" });
 }
 
 export function dateOf(ms: number, tz: string): string {
