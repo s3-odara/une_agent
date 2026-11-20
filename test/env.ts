@@ -7,12 +7,12 @@ import { createModels, type Models } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createRegistry, type Extension, type Harness, type Registry } from "@earendil-works/pi-durable";
-import { type CodemodeNamespace, createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
-import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type Config, parseConfig } from "../src/config.ts";
 import { compactionSettings, openAgentHarness } from "../src/harness.ts";
 import { HostDb } from "../src/hostdb.ts";
+import { createToolAccessExtensions, type McpServer } from "../src/mcp.ts";
 import { Bridge, type BridgeOptions } from "../src/rooms.ts";
 import { FakeLink } from "./fakes.ts";
 
@@ -56,8 +56,8 @@ export type EnvOptions = {
 	readonly contextWindow?: number;
 	/** The share of the window at which compaction starts (`compaction.at`); none gives pi-durable's defaults. */
 	readonly compactAt?: number;
-	/** Gives the model `codemode` and `tool_search`, as the agent does. */
-	readonly codemode?: { readonly namespaces?: readonly CodemodeNamespace[] };
+	/** Gives the model `codemode` and `tool_search` as the agent does, knowing of these MCP servers. */
+	readonly codemode?: { readonly servers?: Readonly<Record<string, McpServer>> };
 };
 
 export async function agentEnv(options: EnvOptions = {}) {
@@ -74,10 +74,7 @@ export async function agentEnv(options: EnvOptions = {}) {
 	models.setProvider(faux.provider);
 
 	const sandbox = options.codemode === undefined ? undefined : new CodemodeSandbox();
-	const codemode =
-		options.codemode === undefined || sandbox === undefined
-			? []
-			: [createCodemodeExtension({ sandbox, ...(options.codemode.namespaces === undefined ? {} : { namespaces: options.codemode.namespaces }) }), createToolSearchExtension()];
+	const codemode = sandbox === undefined ? [] : createToolAccessExtensions(sandbox, options.codemode?.servers ?? {});
 
 	let db!: HostDb;
 	let harness!: Harness;
@@ -88,6 +85,7 @@ export async function agentEnv(options: EnvOptions = {}) {
 		registry = createRegistry();
 		harness = await openAgentHarness(await openNodeSqliteStorage(join(dir.path, "session.sqlite")), models, context, {
 			extensions: [...(options.extensions?.({ config, db, models }) ?? []), ...codemode],
+			env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? dir.path }),
 			now: options.now,
 			registry,
 			...(options.compactAt === undefined ? {} : { compaction: compactionSettings(models, [{ provider: model.provider, modelId: model.id }], options.compactAt) }),

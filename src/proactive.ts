@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, type Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
+import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-durable/codemode";
+import { TOOL_SEARCH_TOOL_NAME } from "@earendil-works/pi-durable/tool-search";
 import { obj, str } from "@earendil-works/pi-schema";
 import { answerOf } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
@@ -115,7 +117,7 @@ export class Proactive {
  * tool is refused, those added later and those of MCP servers included. A script's calls are refused one by one, as
  * any call is, so `codemode` itself may run.
  */
-const READS: ReadonlySet<string> = new Set(["read", "calendar_list", "weather_forecast", "web_extract", "timer_list", "stay_silent", "codemode", "tool_search"]);
+const READS: ReadonlySet<string> = new Set(["read", "calendar_list", "weather_forecast", "web_extract", "timer_list", "stay_silent", CODEMODE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME]);
 
 export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。";
 

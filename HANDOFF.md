@@ -66,7 +66,7 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - `src/`（Node）: pi-durable のエージェント
 - `sandbox/`（Rust、依存は libc だけ）: Chromium を囲う `agent-sandbox`
 - 状態は `data/`: `session.sqlite`（会話）、`host.sqlite`（ルーム、配送の台帳、承認、通知済み、起こした記録、約束の時刻）、`matrix-store/`（暗号ストア）、
-  `matrix-session.json`、`gateway-state.json`、`memory/`、`browser/<プロファイル>/`、`credentials.json`、`auth.json`、`web/`、`mcp/`
+  `matrix-session.json`、`gateway-state.json`、`memory/`、`browser/<プロファイル>/`、`credentials.json`、`auth.json`、`web/`
 
 依存の固定:
 
@@ -240,7 +240,9 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - `exposure: "codemode"` のツールは `deferred` にする。どのリクエストにも載らないので、サーバーが遅れてつながってもツールの一覧が
   変わらない。そういうサーバーは設定の `description` と一緒に `mcp_servers` セクションに名前を出す（設定だけから作るので変わらない）。
   サーバーの `instructions` を使わないのは上と同じ理由。ツールが少なくよく使うサーバーは `direct` にする（`tool_search` を挟むと往復が1回増える）
-- 20KB を超える結果は中ほどを削り（`limitMcpContent`）、全文を `data/mcp/` に1時間置いてモデルが `read` で読めるようにする
+- 20KB を超える結果は中ほどを削り（`limitMcpContent`）、全文は `bash` や `codemode` の長い出力と同じく pi-durable の一時ファイル
+  （OS の一時ディレクトリ）に置いて、モデルが `read` で読めるようにする（pi 本体も一時ファイル）。片付けは systemd-tmpfiles 任せ
+  （このマシンの `/tmp` は10日）で、溜まるならツールの出力全体の問題として扱う
 - MCP の通信は egress プロキシを通さない。設定に書くサーバーはユーザーが選んだもので、LAN の中のサーバーも使えるようにするため。
   サーバーの `instructions` はシステムプロンプトに入れない
 - サーバーが落ちていても起動は待たせない。試し直してつながった時点でツールが現れる

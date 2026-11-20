@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, type Extension, type Registry, section } from "@earendil-works/pi-durable";
-import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
+import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode";
+import { type CodemodeNamespace, createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { type ExecutionEnv, getOrThrow } from "@earendil-works/pi-durable/env";
+import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import {
 	type CallToolResult,
 	createMcpToolName,
@@ -29,22 +30,11 @@ export function serversFromConfig(servers: Readonly<Record<string, McpServerConf
 				const value = env[variable];
 				return value === undefined || value === "" ? [] : [[header, value] as const];
 			});
-			return [
-				name,
-				{
-					url: server.url,
-					headers: { ...server.headers, ...Object.fromEntries(fromEnv) },
-					...(server.tools === undefined ? {} : { tools: server.tools }),
-					replay: server.replay,
-					exposure: server.exposure,
-					...(server.description === undefined ? {} : { description: server.description }),
-				},
-			];
+			const { headersFromEnv: _, ...rest } = server;
+			return [name, { ...rest, headers: { ...server.headers, ...Object.fromEntries(fromEnv) } }];
 		}),
 	);
 }
-
-export class McpError extends Error {}
 
 /**
  * pi-mcp reports a session the server forgot but keeps the client, so a new client starts a new session and the request
@@ -109,37 +99,42 @@ class McpSession {
 	}
 }
 
-const KEEP_MS = 60 * 60_000;
-
-/** Where the model reads the whole of a result cut to fit, for as long as `web_extract` keeps a page. */
-function keepFullOutput(dir: string, now: () => number): McpOutputSaver {
+/** Where `bash` and `codemode` keep the whole of their output too, for the model to `read`. */
+function saveIn(env: ExecutionEnv | undefined, context: Context): McpOutputSaver | undefined {
+	if (env === undefined) return undefined;
 	return async (data, extension) => {
-		await mkdir(dir, { recursive: true });
-		for (const name of await readdir(dir)) {
-			const path = join(dir, name);
-			const kept = await stat(path).catch(() => undefined);
-			if (kept !== undefined && now() - kept.mtimeMs >= KEEP_MS) await rm(path, { force: true });
-		}
-		const path = join(dir, `${randomUUID()}${extension}`);
-		await writeFile(path, data);
+		const path = getOrThrow(await env.createTempFile({ prefix: "pi-mcp-", suffix: extension }, context));
+		getOrThrow(await env.writeFile(path, data, context));
 		return path;
 	};
 }
 
-/** How codemode groups each server's tools, for `searchTools()` and `describeNamespace()`. */
-export function mcpNamespaces(servers: Readonly<Record<string, McpServer>>): CodemodeNamespace[] {
+const prefixOf = (server: string) => `${mcpNamespace(server)}__`;
+
+function mcpNamespaces(servers: Readonly<Record<string, McpServer>>): CodemodeNamespace[] {
 	return Object.entries(servers).map(([name, server]) => ({
 		name: mcpNamespace(name),
-		prefix: `${mcpNamespace(name)}__`,
+		prefix: prefixOf(name),
 		...(server.description === undefined ? {} : { description: server.description }),
 	}));
+}
+
+/** Whether a tool is one of a server the config says only reads (`replay: "safe"`). */
+export function mcpReads(servers: Readonly<Record<string, McpServer>>): (tool: string) => boolean {
+	const prefixes = Object.entries(servers).flatMap(([name, server]) => (server.replay === "safe" ? [prefixOf(name)] : []));
+	return (tool) => prefixes.some((prefix) => tool.startsWith(prefix));
+}
+
+/** `codemode`, `tool_search`, and the names of the servers that only they reach: the agent always has all three. */
+export function createToolAccessExtensions(sandbox: CodemodeSandboxBase, servers: Readonly<Record<string, McpServer>>): Extension[] {
+	return [createCodemodeExtension({ sandbox, namespaces: mcpNamespaces(servers) }), createToolSearchExtension(), createMcpSectionExtension(servers)];
 }
 
 /**
  * Names the servers whose tools no request offers, so the model knows to look for them. From the config alone, so it
  * stays the same while servers connect.
  */
-export function createMcpSectionExtension(servers: Readonly<Record<string, McpServer>>): Extension {
+function createMcpSectionExtension(servers: Readonly<Record<string, McpServer>>): Extension {
 	const hidden = Object.entries(servers).filter(([, server]) => server.exposure === "codemode");
 	return defineExtension({
 		name: "mcp-servers",
@@ -157,7 +152,7 @@ export function createMcpSectionExtension(servers: Readonly<Record<string, McpSe
 	});
 }
 
-function createMcpExtension(server: string, session: McpSession, tools: readonly Tool[], options: McpServer, save: McpOutputSaver): Extension {
+function createMcpExtension(server: string, session: McpSession, tools: readonly Tool[], options: McpServer): Extension {
 	const names = new Set<string>();
 	return defineExtension({
 		name: `mcp-${server}`,
@@ -170,11 +165,11 @@ function createMcpExtension(server: string, session: McpSession, tools: readonly
 				parameters: normalizeMcpInputSchema(tool.inputSchema) as { type: "object" },
 				replay: options.replay,
 				...(options.exposure === "codemode" ? { deferred: true as const } : {}),
-				execute: async (args, _api, context) => {
+				execute: async (args, api, context) => {
 					const result = await session.callTool(tool.name, args as Record<string, unknown>, context.abortSignal);
-					const { content } = await limitMcpContent(toLlmContent(result), save);
+					const { content } = await limitMcpContent(toLlmContent(result), saveIn(api.env, context));
 					if (result.isError === true) {
-						throw new McpError(content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n") || `${tool.name} が失敗しました。`);
+						throw new Error(content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n") || `${tool.name} が失敗しました。`);
 					}
 					return { output: [{ type: "text" as const, text: fromServer(server) }, ...content] };
 				},
@@ -186,11 +181,8 @@ function createMcpExtension(server: string, session: McpSession, tools: readonly
 export type McpServersOptions = {
 	readonly servers: Readonly<Record<string, McpServer>>;
 	readonly registry: Pick<Registry, "install">;
-	/** Where the whole of a result too long for the model is kept. */
-	readonly outputDir: string;
 	readonly retryDelaysMs?: readonly number[];
 	readonly log?: (message: string) => void;
-	readonly now?: () => number;
 };
 
 /** The agent does not wait for them: a server that is down is tried again in the background, and its tools appear when it answers. */
@@ -199,13 +191,11 @@ export class McpServers {
 	readonly #sessions = new Map<string, McpSession>();
 	readonly #timers = new Set<NodeJS.Timeout>();
 	readonly #log: (message: string) => void;
-	readonly #save: McpOutputSaver;
 	#stopped = false;
 
 	constructor(options: McpServersOptions) {
 		this.#options = options;
 		this.#log = options.log ?? ((message) => console.error(message));
-		this.#save = keepFullOutput(options.outputDir, options.now ?? Date.now);
 	}
 
 	start(): Promise<void> {
@@ -224,7 +214,7 @@ export class McpServers {
 				this.#log(`mcp ${name}: the server has no tool ${missing}`);
 			}
 			this.#sessions.set(name, session);
-			this.#options.registry.install(createMcpExtension(name, session, offered, server, this.#save));
+			this.#options.registry.install(createMcpExtension(name, session, offered, server));
 			this.#log(`mcp ${name}: ${offered.length} tools installed`);
 		} catch (error) {
 			await session.close().catch(() => {});

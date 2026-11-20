@@ -1,3 +1,4 @@
+import { type Context, getCurrentTools, normalizeContext } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { CalDavBackend, RawObject } from "../src/calendar.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.ts";
@@ -133,13 +134,10 @@ export function ics(...lines: string[]): string {
 
 export type Request = {
 	readonly systemPrompt?: string;
-	readonly tools?: readonly { readonly name: string }[];
 	readonly messages: readonly {
 		readonly role: string;
 		readonly content: unknown;
 		readonly sections?: Readonly<Record<string, string | null>>;
-		readonly toolsAdded?: readonly { readonly name: string }[];
-		readonly toolsRemoved?: readonly { readonly name: string }[];
 		readonly isError?: boolean;
 	}[];
 };
@@ -157,12 +155,7 @@ export function instructionsOf(request: Request): string {
 
 /** The names of the tools a request offered the model, after the changes its system messages make. */
 export function offered(request: Request): string[] {
-	const names = new Set((request.tools ?? []).map((tool) => tool.name));
-	for (const item of request.messages) {
-		for (const tool of item.toolsAdded ?? []) names.add(tool.name);
-		for (const tool of item.toolsRemoved ?? []) names.delete(tool.name);
-	}
-	return [...names];
+	return getCurrentTools(normalizeContext(request as Context).messages).map((tool) => tool.name);
 }
 
 export function lastInput(request: Request): string {

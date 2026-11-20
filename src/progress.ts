@@ -1,7 +1,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { AssistantEntry, type Conversation, type EntryId, type EntryRecord, type LiveState, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
-import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
+import { CODEMODE_TOOL_NAME, type CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import type { Settled, Submission } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
 import { oneLine, onCharacter } from "./text.ts";
@@ -16,7 +16,8 @@ const MAX_CHARS = 3000;
 const MAX_ARGS_CHARS = 80;
 const MAX_ERROR_CHARS = 100;
 
-type Nested = { readonly name: string; readonly args: string; readonly status: "running" | "ok" | "error" | "stopped"; readonly error?: string };
+/** A call a script made; `error` only when it failed. */
+type Nested = { readonly name: string; readonly args: string; readonly status: string; readonly error?: string };
 type Result = { readonly isError: boolean; readonly text: string; readonly nested: readonly Nested[] };
 type Results = ReadonlyMap<string, Result>;
 
@@ -26,13 +27,13 @@ function resultsOf(entries: readonly EntryRecord[]): Results {
 		const message = ToolResultEntry.is(entry) ? (entry.model?.[0] as ToolResultMessage | undefined) : undefined;
 		if (message === undefined) continue;
 		const text = message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
-		const calls = message.toolName === "codemode" ? ((message.details as CodemodeToolDetails | undefined)?.calls ?? []) : [];
-		const nested = calls.map((call): Nested => ({
-			name: call.name,
-			args: call.args,
-			status: call.status === "cancelled" || call.status === "running" ? "stopped" : call.status,
-			...(call.error === undefined ? {} : { error: call.error }),
-		}));
+		const calls = message.toolName === CODEMODE_TOOL_NAME ? ((message.details as CodemodeToolDetails | undefined)?.calls ?? []) : [];
+		const nested = calls.map(
+			(call): Nested =>
+				call.status === "error"
+					? { name: call.name, args: call.args, status: TOOL_FAILED, error: call.error ?? "" }
+					: { name: call.name, args: call.args, status: call.status === "ok" ? TOOL_DONE : TOOL_STOPPED },
+		);
 		results.set(message.toolCallId, { isError: message.isError, text, nested });
 	}
 	return results;
@@ -56,18 +57,15 @@ function line(indent: string, status: string, name: string, args: string, error:
 	return `${indent}- ${status} ${name} \`${clipped(args, MAX_ARGS_CHARS).replaceAll("`", "'")}\`${error === undefined ? "" : ` ${clipped(error, MAX_ERROR_CHARS)}`}`;
 }
 
-const NESTED_STATUS = { running: TOOL_RUNNING, ok: TOOL_DONE, error: TOOL_FAILED, stopped: TOOL_STOPPED } as const;
-
 /** What a script's calls are doing while it runs, from the live state; once it settles, its result lists them. */
 function liveNested(callId: string, live: LiveState | undefined): Nested[] {
 	return (live?.nestedTools ?? [])
 		.filter((slot) => slot.parentCallId === callId)
-		.map((slot) => ({
-			name: slot.name,
-			args: JSON.stringify(slot.arguments),
-			status: slot.summary === undefined ? "running" : slot.summary.isError ? "error" : "ok",
-			...(slot.summary?.error === undefined ? {} : { error: slot.summary.error }),
-		}));
+		.map((slot): Nested => {
+			const args = JSON.stringify(slot.arguments);
+			if (slot.summary === undefined) return { name: slot.name, args, status: TOOL_RUNNING };
+			return slot.summary.isError ? { name: slot.name, args, status: TOOL_FAILED, error: slot.summary.error ?? "" } : { name: slot.name, args, status: TOOL_DONE };
+		});
 }
 
 function toolLine(call: ToolCall, results: Results, live: LiveState | undefined): string {
@@ -77,7 +75,7 @@ function toolLine(call: ToolCall, results: Results, live: LiveState | undefined)
 	const nested = result?.nested ?? liveNested(call.id, live);
 	return [
 		line("", status, call.name, JSON.stringify(call.arguments), result?.isError === true ? result.text : undefined),
-		...nested.map((inner) => line("  ", NESTED_STATUS[inner.status], inner.name, inner.args, inner.status === "error" ? inner.error : undefined)),
+		...nested.map((inner) => line("  ", inner.status, inner.name, inner.args, inner.error)),
 	].join("\n");
 }
 

@@ -51,7 +51,6 @@ const McpServer = obj({
 	replay: oneOf(["safe", "unsafe"], { default: "unsafe" }),
 	// `codemode` keeps the tools out of every request until a script or `tool_search` needs them; `direct` suits a few tools used often.
 	exposure: oneOf(["codemode", "direct"], { default: "codemode" }),
-	// What the server is for, so the model knows to look for its tools.
 	description: opt(text()),
 });
 

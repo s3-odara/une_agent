@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { join } from "node:path";
+import { dirname } from "node:path";
 import { test } from "node:test";
-import { createMcpSectionExtension, type McpServer, McpServers, mcpNamespaces, serversFromConfig } from "../src/mcp.ts";
+import { type McpServer, McpServers, serversFromConfig } from "../src/mcp.ts";
 import { fromServer } from "../src/untrusted.ts";
 import { agentEnv, listen, testConfig, tempDir } from "./env.ts";
 import { call, instructionsOf, message, noting, offered, type Request, type ToolResult } from "./fakes.ts";
@@ -77,22 +77,19 @@ class FakeMcpServer {
 	}
 }
 
-async function setup(options: { down?: boolean; headers?: Record<string, string>; now?: () => number; exposure?: "codemode" | "direct" } = {}) {
+async function setup(options: { down?: boolean; headers?: Record<string, string>; exposure?: "codemode" | "direct" } = {}) {
 	const server = new FakeMcpServer();
-	const output = tempDir();
 	server.down = options.down === true;
 	const url = await server.start();
 	const servers: Record<string, McpServer> = {
 		keenable: { url, headers: options.headers ?? {}, tools: ["search_web_pages"], replay: "safe", exposure: options.exposure ?? "direct", description: "Web を検索する" },
 	};
-	const env = await agentEnv({ codemode: { namespaces: mcpNamespaces(servers) }, extensions: () => [createMcpSectionExtension(servers)] });
+	const env = await agentEnv({ codemode: { servers } });
 	const installed = Promise.withResolvers<void>();
 	const mcp = new McpServers({
 		registry: env.registry,
-		servers: servers,
-		outputDir: output.path,
+		servers,
 		retryDelaysMs: [10],
-		...(options.now === undefined ? {} : { now: options.now }),
 		log: (line) => {
 			if (line.includes("installed")) installed.resolve();
 		},
@@ -104,7 +101,6 @@ async function setup(options: { down?: boolean; headers?: Record<string, string>
 	return {
 		env,
 		server,
-		output: output.path,
 		bridge,
 		installed: installed.promise,
 		results,
@@ -117,7 +113,6 @@ async function setup(options: { down?: boolean; headers?: Record<string, string>
 			await mcp.close();
 			server.close();
 			await env[Symbol.asyncDispose]();
-			output[Symbol.dispose]();
 		},
 	};
 }
@@ -144,24 +139,13 @@ test("a result too long for the model is cut, and the whole of it is in the file
 	const text = t.results[0]?.text ?? "";
 	assert.ok(text.length < LONG.length);
 	assert.ok(text.includes("1 行目の検索結果") && text.includes("2000 行目の検索結果"));
-	const kept = readdirSync(t.output).map((name) => join(t.output, name));
-	assert.equal(kept.length, 1);
-	assert.ok(text.includes(kept[0] as string));
-	assert.equal(readFileSync(kept[0] as string, "utf8"), LONG);
-});
-
-test("the whole of a cut result is gone once more than an hour has passed and another is kept", async () => {
-	let now = Date.now();
-	await using t = await setup({ now: () => now });
-	t.env.faux.setResponses([search("長い"), t.noting]);
-	await t.say("たくさん調べて");
-	const [first] = readdirSync(t.output);
-	now += 61 * 60_000;
-	t.env.faux.setResponses([search("長い"), t.noting]);
-	await t.say("もう一度");
-	const kept = readdirSync(t.output);
-	assert.equal(kept.length, 1);
-	assert.notEqual(kept[0], first);
+	const path = text.match(/\/\S+\.txt/)?.[0];
+	assert.ok(path !== undefined, "the result names a file");
+	try {
+		assert.equal(readFileSync(path, "utf8"), LONG);
+	} finally {
+		rmSync(dirname(path), { recursive: true, force: true });
+	}
 });
 
 test("a call stopped by !new is called off on the server", async () => {
