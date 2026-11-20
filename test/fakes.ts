@@ -133,10 +133,13 @@ export function ics(...lines: string[]): string {
 
 export type Request = {
 	readonly systemPrompt?: string;
+	readonly tools?: readonly { readonly name: string }[];
 	readonly messages: readonly {
 		readonly role: string;
 		readonly content: unknown;
 		readonly sections?: Readonly<Record<string, string | null>>;
+		readonly toolsAdded?: readonly { readonly name: string }[];
+		readonly toolsRemoved?: readonly { readonly name: string }[];
 		readonly isError?: boolean;
 	}[];
 };
@@ -150,6 +153,16 @@ function textOf(content: unknown): string {
 export function instructionsOf(request: Request): string {
 	const system = request.messages.filter((item) => item.role === "system");
 	return [request.systemPrompt ?? "", ...system.flatMap((item) => [textOf(item.content), ...Object.values(item.sections ?? {}).map((section) => section ?? "")])].join("\n");
+}
+
+/** The names of the tools a request offered the model, after the changes its system messages make. */
+export function offered(request: Request): string[] {
+	const names = new Set((request.tools ?? []).map((tool) => tool.name));
+	for (const item of request.messages) {
+		for (const tool of item.toolsAdded ?? []) names.add(tool.name);
+		for (const tool of item.toolsRemoved ?? []) names.delete(tool.name);
+	}
+	return [...names];
 }
 
 export function lastInput(request: Request): string {

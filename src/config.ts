@@ -49,6 +49,10 @@ const McpServer = obj({
 	tools: opt(arr(text())),
 	// `safe` only when its tools only read, so a call a crash cut off may be made again.
 	replay: oneOf(["safe", "unsafe"], { default: "unsafe" }),
+	// `codemode` keeps the tools out of every request until a script or `tool_search` needs them; `direct` suits a few tools used often.
+	exposure: oneOf(["codemode", "direct"], { default: "codemode" }),
+	// What the server is for, so the model knows to look for its tools.
+	description: opt(text()),
 });
 
 const ConfigSchema = obj({

@@ -1,20 +1,24 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
+import { join } from "node:path";
 import { test } from "node:test";
-import { McpServers, serversFromConfig } from "../src/mcp.ts";
+import { createMcpSectionExtension, type McpServer, McpServers, mcpNamespaces, serversFromConfig } from "../src/mcp.ts";
 import { fromServer } from "../src/untrusted.ts";
 import { agentEnv, listen, testConfig, tempDir } from "./env.ts";
-import { call, message, noting, type ToolResult } from "./fakes.ts";
+import { call, instructionsOf, message, noting, offered, type Request, type ToolResult } from "./fakes.ts";
 
 const ROOM = "!main:example.org";
+const LONG = Array.from({ length: 2000 }, (_, i) => `${i + 1} 行目の検索結果`).join("\n");
 
 type Call = { readonly name: string; readonly args: unknown; readonly headers: IncomingMessage["headers"] };
 
 /** An MCP server over Streamable HTTP with the two tools Keenable has. */
 class FakeMcpServer {
 	readonly calls: Call[] = [];
+	readonly cancelled = Promise.withResolvers<void>();
 	readonly sessions = new Set<string>();
-	stream = false;
+	readonly called = Promise.withResolvers<void>();
 	down = false;
 	#server: Server;
 	#n = 0;
@@ -34,6 +38,7 @@ class FakeMcpServer {
 					return this.#reply(response, message.id, { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1" } }, { "mcp-session-id": id });
 				}
 				if (typeof session !== "string" || !this.sessions.has(session)) return void response.writeHead(404).end();
+				if (message.method === "notifications/cancelled") this.cancelled.resolve();
 				if (message.id === undefined) return void response.writeHead(202).end();
 				if (message.method === "tools/list") {
 					return this.#reply(response, message.id, {
@@ -45,9 +50,12 @@ class FakeMcpServer {
 				}
 				if (message.method === "tools/call") {
 					this.calls.push({ name: message.params?.name ?? "", args: message.params?.arguments, headers: request.headers });
+					this.called.resolve();
 					const query = (message.params?.arguments as { query?: string } | undefined)?.query;
+					if (query === "終わらない") return;
 					const failed = query === "失敗";
-					return this.#reply(response, message.id, { content: [{ type: "text", text: failed ? "検索に失敗しました" : `「${query}」の検索結果` }], isError: failed });
+					const text = failed ? "検索に失敗しました" : query === "長い" ? LONG : `「${query}」の検索結果`;
+					return this.#reply(response, message.id, { content: [{ type: "text", text }], isError: failed });
 				}
 				return this.#reply(response, message.id, undefined, {}, { code: -32601, message: "no such method" });
 			});
@@ -56,14 +64,7 @@ class FakeMcpServer {
 
 	#reply(response: import("node:http").ServerResponse, id: number | undefined, result: unknown, headers: Record<string, string> = {}, error?: unknown): void {
 		const payload = JSON.stringify({ jsonrpc: "2.0", id, ...(error === undefined ? { result } : { error }) });
-		if (this.stream) {
-			response.writeHead(200, { "content-type": "text/event-stream", ...headers });
-			// Something else first, as a server may send progress before the answer.
-			response.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: {} })}\n\n`);
-			response.end(`event: message\ndata: ${payload}\n\n`);
-		} else {
-			response.writeHead(200, { "content-type": "application/json", ...headers }).end(payload);
-		}
+		response.writeHead(200, { "content-type": "application/json", ...headers }).end(payload);
 	}
 
 	async start(): Promise<string> {
@@ -76,27 +77,35 @@ class FakeMcpServer {
 	}
 }
 
-async function setup(options: { down?: boolean; headers?: Record<string, string> } = {}) {
+async function setup(options: { down?: boolean; headers?: Record<string, string>; now?: () => number; exposure?: "codemode" | "direct" } = {}) {
 	const server = new FakeMcpServer();
+	const output = tempDir();
 	server.down = options.down === true;
 	const url = await server.start();
-	const env = await agentEnv();
+	const servers: Record<string, McpServer> = {
+		keenable: { url, headers: options.headers ?? {}, tools: ["search_web_pages"], replay: "safe", exposure: options.exposure ?? "direct", description: "Web を検索する" },
+	};
+	const env = await agentEnv({ codemode: { namespaces: mcpNamespaces(servers) }, extensions: () => [createMcpSectionExtension(servers)] });
 	const installed = Promise.withResolvers<void>();
-	const servers = new McpServers({
+	const mcp = new McpServers({
 		registry: env.registry,
-		servers: { keenable: { url, headers: options.headers ?? {}, tools: ["search_web_pages"], replay: "safe" } },
+		servers: servers,
+		outputDir: output.path,
 		retryDelaysMs: [10],
+		...(options.now === undefined ? {} : { now: options.now }),
 		log: (line) => {
 			if (line.includes("installed")) installed.resolve();
 		},
 	});
-	await servers.start();
+	await mcp.start();
 	const bridge = env.bridge();
 	const results: ToolResult[] = [];
 	let n = 0;
 	return {
 		env,
 		server,
+		output: output.path,
+		bridge,
 		installed: installed.promise,
 		results,
 		noting: noting(results),
@@ -105,9 +114,10 @@ async function setup(options: { down?: boolean; headers?: Record<string, string>
 			await bridge.idle();
 		},
 		async [Symbol.asyncDispose]() {
-			await servers.close();
+			await mcp.close();
 			server.close();
 			await env[Symbol.asyncDispose]();
+			output[Symbol.dispose]();
 		},
 	};
 }
@@ -127,12 +137,79 @@ test("a search the model makes reaches the server's tool, and its result comes b
 	assert.ok(text.indexOf(fromServer("keenable")) < text.indexOf("「緑茶」の検索結果"));
 });
 
-test("an answer sent as an event stream is read", async () => {
+test("a result too long for the model is cut, and the whole of it is in the file the result names", async () => {
 	await using t = await setup();
-	t.server.stream = true;
-	t.env.faux.setResponses([search("緑茶"), t.noting]);
+	t.env.faux.setResponses([search("長い"), t.noting]);
+	await t.say("たくさん調べて");
+	const text = t.results[0]?.text ?? "";
+	assert.ok(text.length < LONG.length);
+	assert.ok(text.includes("1 行目の検索結果") && text.includes("2000 行目の検索結果"));
+	const kept = readdirSync(t.output).map((name) => join(t.output, name));
+	assert.equal(kept.length, 1);
+	assert.ok(text.includes(kept[0] as string));
+	assert.equal(readFileSync(kept[0] as string, "utf8"), LONG);
+});
+
+test("the whole of a cut result is gone once more than an hour has passed and another is kept", async () => {
+	let now = Date.now();
+	await using t = await setup({ now: () => now });
+	t.env.faux.setResponses([search("長い"), t.noting]);
+	await t.say("たくさん調べて");
+	const [first] = readdirSync(t.output);
+	now += 61 * 60_000;
+	t.env.faux.setResponses([search("長い"), t.noting]);
+	await t.say("もう一度");
+	const kept = readdirSync(t.output);
+	assert.equal(kept.length, 1);
+	assert.notEqual(kept[0], first);
+});
+
+test("a call stopped by !new is called off on the server", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([search("終わらない")]);
+	t.env.link.emit(message(ROOM, "$a", "調べて"));
+	await t.server.called.promise;
+	t.env.link.emit(message(ROOM, "$b", "!new"));
+	await t.bridge.idle();
+	await t.server.cancelled.promise;
+});
+
+test("a server left to codemode is named in the instructions with what it is for, and its tools are not offered", async () => {
+	await using t = await setup({ exposure: "codemode" });
+	const requests: Request[] = [];
+	t.env.faux.setResponses([noting([], requests)]);
+	await t.say("調べて");
+	assert.ok(instructionsOf(requests[0]!).includes("Web を検索する"));
+	assert.ok(!offered(requests[0]!).includes("mcp__keenable__search_web_pages"));
+	assert.ok(offered(requests[0]!).includes("codemode"));
+});
+
+test("a script calls a tool of a server left to codemode, and gets its result marked as from outside", async () => {
+	await using t = await setup({ exposure: "codemode" });
+	t.env.faux.setResponses([call("codemode", { code: 'return await tools.mcp__keenable__search_web_pages({ query: "緑茶" });' }), t.noting]);
 	await t.say("緑茶を調べて");
-	assert.ok(t.results[0]?.text.includes("「緑茶」の検索結果"));
+	assert.deepEqual(
+		t.server.calls.map(({ args }) => args),
+		[{ query: "緑茶" }],
+	);
+	const text = t.results[0]?.text ?? "";
+	assert.ok(text.indexOf(fromServer("keenable")) < text.indexOf("「緑茶」の検索結果"));
+});
+
+test("a tool of a server left to codemode that tool_search finds is offered, and the model calls it itself", async () => {
+	await using t = await setup({ exposure: "codemode" });
+	t.env.faux.setResponses([call("tool_search", { query: "search web pages" }), search("緑茶"), t.noting]);
+	await t.say("緑茶を調べて");
+	assert.equal(t.results[0]?.isError, false);
+	assert.equal(t.server.calls.length, 1);
+});
+
+test("the tools of a server given directly are offered to the model", async () => {
+	await using t = await setup({ exposure: "direct" });
+	const requests: Request[] = [];
+	t.env.faux.setResponses([noting([], requests)]);
+	await t.say("調べて");
+	assert.ok(offered(requests[0]!).includes("mcp__keenable__search_web_pages"));
 });
 
 test("a tool of the server that the config does not list cannot be called", async () => {

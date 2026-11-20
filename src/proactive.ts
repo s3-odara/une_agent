@@ -112,9 +112,10 @@ export class Proactive {
 
 /**
  * The tools that only read. A check that is thrown away must not have done anything, so while one is weighed every other
- * tool is refused, those added later and those of MCP servers included.
+ * tool is refused, those added later and those of MCP servers included. A script's calls are refused one by one, as
+ * any call is, so `codemode` itself may run.
  */
-const READS: ReadonlySet<string> = new Set(["read", "calendar_list", "weather_forecast", "web_extract", "timer_list", "stay_silent"]);
+const READS: ReadonlySet<string> = new Set(["read", "calendar_list", "weather_forecast", "web_extract", "timer_list", "stay_silent", "codemode", "tool_search"]);
 
 export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。";
 

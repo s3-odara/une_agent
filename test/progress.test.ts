@@ -37,7 +37,7 @@ function progress(link: FakeLink): { readonly notice: Send; readonly shown: stri
 }
 
 async function progressEnv(lookup: (city: string) => Promise<string> = async () => "sunny") {
-	return agentEnv({ extensions: () => [lookupExtension(lookup)] });
+	return agentEnv({ extensions: () => [lookupExtension(lookup)], codemode: {} });
 }
 
 test("the tools a run called are shown in a notice before the answer, with their arguments and that they succeeded", async () => {
@@ -110,6 +110,36 @@ test("while a tool runs the notice shows it running, and that same notice is edi
 	assert.ok(shown.includes(TOOL_DONE));
 	assert.ok(!shown.includes(TOOL_RUNNING));
 	assert.equal(env.link.of("send").filter((send) => send.notice === true).length, sends.length);
+});
+
+test("the calls a script made are shown under it, with their arguments and how they went", async () => {
+	await using env = await progressEnv(async (city) => {
+		if (city === "Atlantis") throw new Error("no such city");
+		return "sunny";
+	});
+	const script = 'await tools.lookup({ city: "Kyoto" });\ntry { await tools.lookup({ city: "Atlantis" }); } catch {}';
+	env.faux.setResponses([call("codemode", { code: script }), fauxAssistantMessage("晴れです")]);
+	const bridge = env.bridge({ progressIntervalMs: 0 });
+
+	env.link.emit(message(ROOM, "$1", "天気は?"));
+	await bridge.idle();
+
+	const lines = progress(env.link).shown.split("\n");
+	const at = lines.findIndex((line) => line.includes("codemode"));
+	assert.ok(lines[at + 1]?.startsWith("  ") && lines[at + 1]?.includes(TOOL_DONE) && lines[at + 1]?.includes("Kyoto"));
+	assert.ok(lines[at + 2]?.startsWith("  ") && lines[at + 2]?.includes(TOOL_FAILED) && lines[at + 2]?.includes("no such city"));
+});
+
+test("while a script's call runs, the notice shows it running under the script", async () => {
+	const { promise: released, resolve: release } = Promise.withResolvers<string>();
+	await using env = await progressEnv(() => released);
+	env.faux.setResponses([call("codemode", { code: 'return await tools.lookup({ city: "Kyoto" });' }), fauxAssistantMessage("晴れです")]);
+	const bridge = env.bridge({ progressIntervalMs: 0 });
+
+	env.link.emit(message(ROOM, "$1", "天気は?"));
+	await env.link.waitFor("send", (send) => send.notice === true && send.body.includes(`  - ${TOOL_RUNNING} lookup`));
+	release("sunny");
+	await bridge.idle();
 });
 
 test("an answer with nothing to show before it comes without a notice", async () => {

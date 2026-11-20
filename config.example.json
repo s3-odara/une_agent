@@ -32,7 +32,8 @@
 			"url": "https://api.keenable.ai/mcp",
 			"headersFromEnv": { "X-API-Key": "KEENABLE_API_KEY" },
 			"tools": ["search_web_pages"],
-			"replay": "safe"
+			"replay": "safe",
+			"exposure": "direct"
 		}
 	},
 	"voice": {

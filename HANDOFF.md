@@ -39,8 +39,10 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
   音声合成は **VOICEVOX**。ボイスメッセージを通話より先に作った
 - 通話は**許可ユーザーがルームの通話に入ったら bot も入り、全員抜けたら抜ける**。**ユーザーが話し始めたら bot は話すのを止める**。
   通話の発言はそのルームの会話の続きとして記録する
-- Web 検索は **Keenable の MCP**（Streamable HTTP）。ツールをそのままモデルに渡す（codemode は介さない）。
+- Web 検索は **Keenable の MCP**（Streamable HTTP）。Keenable のツールはモデルに直接渡す（`exposure: "direct"`）。
   本文の取得は Hermes の local-extract（Trafilatura + Crawl4AI）を移さず、**Playwright + Readability + Turndown** で作る
+- モデルに **`codemode`（pi-durable）と `tool_search` を渡す**。スクリプトから呼べるツールは制限しない。MCP のサーバーは既定で
+  pi と同じく、ツールをモデルに見せず、スクリプトか `tool_search` から呼ぶ（`exposure: "codemode"`）。以前は「codemode は介さない」としていたが撤回した
 - モデルには pi-durable の `read` / `write` / `edit` / `bash` を**制限なしで渡す**。エージェント自身の設定もモデルが変える
 - ブラウザ（`browser_*` と `web_extract`）の Chromium は**自身のサンドボックスを有効にし、外側を Landlock で囲う**
   （bwrap や AppArmor では囲わない）。Chromium は nixpkgs のもの。**Landlock ABI 10 以上が必須**で、満たさなければ
@@ -64,7 +66,7 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - `src/`（Node）: pi-durable のエージェント
 - `sandbox/`（Rust、依存は libc だけ）: Chromium を囲う `agent-sandbox`
 - 状態は `data/`: `session.sqlite`（会話）、`host.sqlite`（ルーム、配送の台帳、承認、通知済み、起こした記録、約束の時刻）、`matrix-store/`（暗号ストア）、
-  `matrix-session.json`、`gateway-state.json`、`memory/`、`browser/<プロファイル>/`、`credentials.json`、`auth.json`、`web/`
+  `matrix-session.json`、`gateway-state.json`、`memory/`、`browser/<プロファイル>/`、`credentials.json`、`auth.json`、`web/`、`mcp/`
 
 依存の固定:
 
@@ -101,6 +103,7 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - 編集は2秒に1回まで。Matrix の編集は全文の新しいイベントなので1文字ずつにはしない。3000字を超えたら古いほうから省く
   （編集は本文を2回持ち、イベントは 64KiB まで）
 - 書きかけの文と思考は、最後の改行か文末までだけを出す（書きかけの Markdown を見せない）
+- `codemode` のスクリプトが呼んだツールは、その下に字下げして並べる（実行中は `pi.live` の `nestedTools`、終わったら結果の `details`）
 - ツールの実行中の出力（`bash` など）は見せない。秘密情報がルームに流れるため
 - スケジューラの実行と通話では出さない
 - 思考は `thinking`（既定 `off`）。off のままだと思考は出ない
@@ -181,7 +184,8 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
   （同じ知らせでは2度起こさない）
 - 約束の時刻は、頼まれた知らせなので、会話で済んでいなければ伝える、と書く
 - aside の間は、読むだけのツール（`read`、`calendar_list`、`weather_forecast`、`web_extract`、`timer_list`、`stay_silent`、
-  設定で `replay: "safe"` の MCP サーバーのツール）のほかを、`beforeTool` フックで拒む。捨てる会話で何かを書き換えていると困るため。
+  `codemode`、`tool_search`、設定で `replay: "safe"` の MCP サーバーのツール）のほかを、`beforeTool` フックで拒む。スクリプトから
+  呼んだツールにもフックがかかるので、`codemode` は通してよい。捨てる会話で何かを書き換えていると困るため。
   書き込むツールを並べるのではなく読むツールを並べるのは、あとから足したツールや MCP のツールを、既定で拒むため
 - aside はルームの会話と同じツールを持つ（`stay_silent` と `timer_*` も全会話に出す）。ツールの一覧が変わるとプロンプトキャッシュが切れるため。
   fork は新しい provider のセッション ID を持つが、ルームの会話のものを写す（OpenAI は `prompt_cache_key` で振り分けるため）
@@ -228,8 +232,17 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 
 ### Web 検索と本文（`src/mcp.ts`、`src/extract.ts`、`src/page.ts`、`src/web-tools.ts`）
 
-- MCP クライアントは自作。pi-durable には無く、公式の `@modelcontextprotocol/sdk` は express や hono などサーバー用の依存を約90個
-  連れてくるため。初期化、`tools/list`、`tools/call` だけを持ち、サーバーからの要求と通知は扱わない
+- MCP クライアントは `@earendil-works/pi-mcp`（pi-durable と同じ版に固定）。以前は自作だった（pi-durable に無く、公式の
+  `@modelcontextprotocol/sdk` はサーバー用の依存を約90個連れてくるため）。pi-mcp は依存が1つで、中断をサーバーに伝える
+- サーバーが忘れたセッション（404）は、pi-mcp が知らせるだけで張り直さないので、クライアントを作り直して1回だけ送り直す
+- サーバーからの GET ストリームは開かない（`tools/list_changed` に対応しない）。ツールが変わるとプロンプトキャッシュが切れ、Keenable は
+  ツールを変えない。ツールは起動時に読むだけ。stdio のサーバーと OAuth も、要るまで入れない
+- `exposure: "codemode"` のツールは `deferred` にする。どのリクエストにも載らないので、サーバーが遅れてつながってもツールの一覧が
+  変わらない。そういうサーバーは設定の `description` と一緒に `mcp_servers` セクションに名前を出す（設定だけから作るので変わらない）。
+  サーバーの `instructions` を使わないのは上と同じ理由。ツールが少なくよく使うサーバーは `direct` にする（`tool_search` を挟むと往復が1回増える）
+- 20KB を超える結果は中ほどを削り（`limitMcpContent`）、全文を `data/mcp/` に1時間置いてモデルが `read` で読めるようにする
+- MCP の通信は egress プロキシを通さない。設定に書くサーバーはユーザーが選んだもので、LAN の中のサーバーも使えるようにするため。
+  サーバーの `instructions` はシステムプロンプトに入れない
 - サーバーが落ちていても起動は待たせない。試し直してつながった時点でツールが現れる
 - Keenable は `fetch_page_content` も持つが、本文の取得は自作に一本化するので `tools` は `search_web_pages` だけ。鍵なしでも使える（回数制限あり）
 - `web_extract` はブラウザのツールとは別の Chromium で、ページごとに新しいコンテキスト（cookie もログインも無し）で開く
@@ -316,6 +329,26 @@ Chromium と Playwright の出どころ:
 - `playwright-core` は npm の依存に入れず、nixpkgs の `playwright-driver` を `node_modules/playwright-core` にリンクする
   （パッケージは `nix/agent.nix`、開発用シェルは入るときに張る。`npm install` するとリンクが消えるので、シェルに入り直す）
 
+### codemode（`@earendil-works/pi-durable/codemode`、`tool-search`）
+
+- スクリプトは QuickJS（`CodemodeSandbox`、ワーカースレッド）で動かす。メモリは 256MiB まで。再起動しても続きから動く
+- 確かめたこと（2026-11-20、テストあり）:
+  - スクリプトが受け取るのは、`structuredOutputSchema` の無いツールならモデル向けの `output`。ブラウザのツールは `output` で
+    パスワードと確認コードを伏せているので、スクリプトにも伏せた値が届く
+  - ブラウザの「ユーザーの発言で始まった実行だけ」は、スクリプトから呼んでも同じ実行として判定される
+  - pi-durable が使う `sandbox.start()` は、スクリプトが `timeout_ms` を書かなければ時間で切らない。承認待ち（24時間）もそのまま待てる
+- `codemode` セクションは、deferred でないツールの宣言を全部並べる（予算は推定 3000 トークン、4文字で1トークンとして数える）。
+  このエージェントのツール30個で約10,500字（うち日本語約2,400字）なので全部入り、実際には 4〜5千トークンほど毎回増える。
+  モデルにはツールとして同じ定義が渡っているので重複している
+- スクリプトの `models.*`（分類器、画像生成）は既定のまま有効
+- 2026-11-20 に `openai-codex/gpt-6.2-sol` で、このエージェントのハーネス（記憶、self、proactive、web、MCP、codemode）を通して確かめた
+  （ツール13個。予算の既定で基本の入力は約7,400トークン、`inlineBudget: 0` なら約4,500）:
+  - 既定の予算では、3つを調べて比べる依頼で、3回とも `codemode` の `Promise.all` で検索か `web_extract` をまとめた（1回は本文の取得だけ）。予算0では2回とも
+    使わず、ツールを直接並べて呼んだ。リクエストの数と合計のトークンは同じくらいだった
+  - 1つを調べる依頼は Keenable を直接呼んだ。`exposure: "codemode"` の家計簿のサーバーは、集計（3回）も記録（1回）も `tool_search` で
+    見つけて直接呼んだ（スクリプトは書かなかった）。挨拶やファイルの行数では `codemode` を使わなかった
+  - 予算を0の近くにしても、並ぶのは安い（説明の短い）順なので、役に立つツールが選ばれるわけではない
+
 ### シェルと自分の設定（`src/self.ts`）
 
 - 作業ディレクトリは設定ファイルの置き場所（常駐時は `~/.config/agent`）。隔離はしていない
@@ -392,6 +425,9 @@ Chromium と Playwright の出どころ:
 
 ## 配置済みの環境でやること
 
+- `~/.config/agent/config.json` の `mcp.keenable` に `"exposure": "direct"` を足す。無いと既定の `codemode` になり、検索のたびに
+  スクリプトか `tool_search` を挟む
+
 - `~/.config/agent/config.json` を今の形に直す。モデルは文字列（`{ provider, modelId }` は読めない）。知らない項目はエラーになる
   （消した `browser.headless` が残っていれば消す）。思考を見せるなら `"thinking": "medium"` などを足す
 - Chromium を nixpkgs のものに替えてパスが変わったので、`just apparmor` をやり直す
@@ -412,6 +448,7 @@ Chromium と Playwright の出どころ:
 - 自分から話しかける仕組みの実際: モデルが定時の確認で会話からフォローアップを拾えるか、黙るべきときに `stay_silent` を呼ぶか
   （文章で「特になし」と書かないか）、ブリーフの質。fork を採用し続けると fork の連なりが伸びる（話しかけるたびに1段）が、
   会話の読み込みが遅くならないか。写した provider のセッション ID で Codex のプロンプトキャッシュが実際に効くか
+- 実際のモデルが `codemode` と `tool_search` をどう使うか（どんなときにスクリプトを書くか、deferred のツールを探せるか）
 - 画像認証: GPT 系のモデルが 1024×768 の画像の座標をどこまで正確に返すか。実在の画像認証を解けるか
 - 実際のモデルの振る舞い: 音声と通話で短く答えるか、ツリーを読んでブラウザを操作できるか、検索と `web_extract` の
   使い分けと `offset`・`whole`、思考を返すか（Claude の要約された思考、Codex の推論の要約）

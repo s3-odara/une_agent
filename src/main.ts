@@ -3,6 +3,10 @@ import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { mcpNamespace } from "@earendil-works/pi-mcp";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { PlaywrightBrowsers } from "./browser.ts";
@@ -24,7 +28,7 @@ import { spawnGateway } from "./gateway.ts";
 import { compactionSettings, createAgentModels, openAgentHarness, openConfig } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
 import { createImageWindowExtension } from "./images.ts";
-import { McpServers, serversFromConfig } from "./mcp.ts";
+import { createMcpSectionExtension, McpServers, mcpNamespaces, serversFromConfig } from "./mcp.ts";
 import { createMemoryExtension, MemoryStore } from "./memory.ts";
 import { createProactiveExtension, Proactive } from "./proactive.ts";
 import { Bridge } from "./rooms.ts";
@@ -96,6 +100,8 @@ const credentials = new Credentials(join(config.dataDir, "credentials.json"));
 const codes = new CodeRequests({ notice: (roomId, txnId, body) => viaBridge().post(roomId, txnId, body) });
 // The scheduler is made last; timers reach it once it exists.
 let scheduler: Scheduler | undefined;
+const mcpServers = serversFromConfig(config.mcp, process.env);
+const codemodeSandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
 const extensions = [
 	CodingTools,
 	createCompactionExtension({ db }),
@@ -115,7 +121,7 @@ const extensions = [
 		tz: config.timezone,
 		onTimers: () => scheduler?.timersChanged(),
 		// `replay: "safe"` is what the config says of a server whose tools only read.
-		reads: (tool) => Object.entries(config.mcp).some(([name, server]) => server.replay === "safe" && tool.startsWith(`mcp__${name}__`)),
+		reads: (tool) => Object.entries(config.mcp).some(([name, server]) => server.replay === "safe" && tool.startsWith(`${mcpNamespace(name)}__`)),
 	}),
 	...(browsers === undefined
 		? []
@@ -131,6 +137,9 @@ const extensions = [
 			]),
 	...(web === undefined ? [] : [web.extension]),
 	...(browsers === undefined && web === undefined && Object.keys(config.mcp).length === 0 ? [] : [createOutsideExtension({ extract: web !== undefined, browser: browsers !== undefined })]),
+	createCodemodeExtension({ sandbox: codemodeSandbox, namespaces: mcpNamespaces(mcpServers) }),
+	createToolSearchExtension(),
+	createMcpSectionExtension(mcpServers),
 	// Last: it is the one section that changes within a conversation, and a change re-reads all that follows it.
 	memory,
 ];
@@ -145,7 +154,8 @@ const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.d
 // Their tools are installed when each server answers; the agent does not wait for them.
 const mcp = new McpServers({
 	registry,
-	servers: serversFromConfig(config.mcp, process.env),
+	servers: mcpServers,
+	outputDir: join(config.dataDir, "mcp"),
 });
 void mcp.start();
 // Continue the runs the last process left unfinished before any new message arrives.
@@ -205,6 +215,7 @@ async function shutdown(exitCode: number): Promise<void> {
 	await egress?.close();
 	await mcp.close();
 	await harness.close(context);
+	await codemodeSandbox.close();
 	db.close();
 	process.exit(exitCode);
 }

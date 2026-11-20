@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels, type Models } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createRegistry, type Extension, type Harness, type Registry } from "@earendil-works/pi-durable";
+import { type CodemodeNamespace, createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type Config, parseConfig } from "../src/config.ts";
 import { compactionSettings, openAgentHarness } from "../src/harness.ts";
@@ -53,6 +56,8 @@ export type EnvOptions = {
 	readonly contextWindow?: number;
 	/** The share of the window at which compaction starts (`compaction.at`); none gives pi-durable's defaults. */
 	readonly compactAt?: number;
+	/** Gives the model `codemode` and `tool_search`, as the agent does. */
+	readonly codemode?: { readonly namespaces?: readonly CodemodeNamespace[] };
 };
 
 export async function agentEnv(options: EnvOptions = {}) {
@@ -68,6 +73,12 @@ export async function agentEnv(options: EnvOptions = {}) {
 	const models = createModels();
 	models.setProvider(faux.provider);
 
+	const sandbox = options.codemode === undefined ? undefined : new CodemodeSandbox();
+	const codemode =
+		options.codemode === undefined || sandbox === undefined
+			? []
+			: [createCodemodeExtension({ sandbox, ...(options.codemode.namespaces === undefined ? {} : { namespaces: options.codemode.namespaces }) }), createToolSearchExtension()];
+
 	let db!: HostDb;
 	let harness!: Harness;
 	let link!: FakeLink;
@@ -76,7 +87,7 @@ export async function agentEnv(options: EnvOptions = {}) {
 		db = new HostDb(join(dir.path, "host.sqlite"));
 		registry = createRegistry();
 		harness = await openAgentHarness(await openNodeSqliteStorage(join(dir.path, "session.sqlite")), models, context, {
-			extensions: options.extensions?.({ config, db, models }) ?? [],
+			extensions: [...(options.extensions?.({ config, db, models }) ?? []), ...codemode],
 			now: options.now,
 			registry,
 			...(options.compactAt === undefined ? {} : { compaction: compactionSettings(models, [{ provider: model.provider, modelId: model.id }], options.compactAt) }),
@@ -115,6 +126,7 @@ export async function agentEnv(options: EnvOptions = {}) {
 		},
 		async [Symbol.asyncDispose]() {
 			await close();
+			await sandbox?.close();
 			dir[Symbol.dispose]();
 		},
 	};

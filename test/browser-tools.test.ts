@@ -78,6 +78,7 @@ async function setup() {
 	let credentials!: Credentials;
 	const env = await agentEnv({
 		config: { personas: { default: "soul.md", work: { soul: "soul.md", browserProfile: "work" } }, rooms: { "!work:example.org": "work" }, browser: {} },
+		codemode: {},
 		extensions: ({ config, db }) => {
 			const path = join(config.dataDir, "credentials.json");
 			writeFileSync(path, JSON.stringify({ "https://shop.example.com/login": { username: "me@example.org", password: SECRET } }));
@@ -207,6 +208,21 @@ test("a stored password never reaches the model, even where the page shows it", 
 	await logIn(t);
 	// The last request holds everything the model was given in the run: each tool result, the page included.
 	assert.ok(everything(t.requests[0]!).includes("pass に入力済み"));
+	assert.ok(!everything(t.requests[0]!).includes(SECRET));
+});
+
+test("a script in a run the user started uses the browser, and a stored password the page shows never reaches it", async () => {
+	await using t = await setup();
+	const script = [
+		'await tools.browser_open({ url: "https://shop.example.com/account" });',
+		'await tools.browser_fill_credential({ usernameRef: "user", passwordRef: "pass" });',
+		"return await tools.browser_read({});",
+	].join("\n");
+	t.env.faux.setResponses([call("codemode", { code: script }), t.noting]);
+	await t.say("ログインして");
+	assert.equal(t.results[0]?.isError, false);
+	assert.equal(t.browsers.values.get("pass"), SECRET);
+	assert.ok(t.results[0]?.text.includes("本文"));
 	assert.ok(!everything(t.requests[0]!).includes(SECRET));
 });
 

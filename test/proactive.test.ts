@@ -13,7 +13,7 @@ const at = (local: string) => localToEpoch(local, "Asia/Tokyo");
 
 async function setup(config: Record<string, unknown> = {}) {
 	let now = at("2026-11-17T10:00");
-	const env = await agentEnv({ config, souls: { "butler.md": "執事" }, extensions: ({ db }) => [createProactiveExtension({ db, tz: "Asia/Tokyo" })], now: () => now });
+	const env = await agentEnv({ config, souls: { "butler.md": "執事" }, extensions: ({ db }) => [createProactiveExtension({ db, tz: "Asia/Tokyo" })], now: () => now, codemode: {} });
 	const bridge = env.bridge();
 	const proactive = new Proactive({ harness: env.harness, db: env.db, rooms: bridge, context, now: () => now, log: () => {} });
 	let n = 0;
@@ -80,6 +80,23 @@ test("a tool that writes is refused while a check is weighed, and does nothing",
 	const requests: Request[] = [];
 	t.env.faux.setResponses([
 		call("timer_add", { at: "2026-11-17T20:00", note: "夜に聞く" }),
+		(request) => {
+			requests.push(request);
+			return call("stay_silent", {});
+		},
+	]);
+	await t.check();
+	const result = lastToolResult(requests[0]!);
+	assert.equal(result.isError, true);
+	assert.ok(result.text.includes(WEIGHING_REFUSAL));
+	assert.deepEqual(t.env.db.timers(), []);
+});
+
+test("a script that writes is refused while a check is weighed, and does nothing", async () => {
+	await using t = await setup();
+	const requests: Request[] = [];
+	t.env.faux.setResponses([
+		call("codemode", { code: 'await tools.timer_add({ at: "2026-11-17T20:00", note: "夜に聞く" });' }),
 		(request) => {
 			requests.push(request);
 			return call("stay_silent", {});

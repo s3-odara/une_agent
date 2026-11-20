@@ -1,4 +1,21 @@
-import { defineExtension, defineTool, type Extension, type Registry } from "@earendil-works/pi-durable";
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { defineExtension, defineTool, type Extension, type Registry, section } from "@earendil-works/pi-durable";
+import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
+import {
+	type CallToolResult,
+	createMcpToolName,
+	limitMcpContent,
+	mcpNamespace,
+	McpClient,
+	type McpOutputSaver,
+	McpSessionExpiredError,
+	normalizeMcpInputSchema,
+	StreamableHttpTransport,
+	type Tool,
+	toLlmContent,
+} from "@earendil-works/pi-mcp";
 import type { McpServerConfig } from "./config.ts";
 import { errorMessage } from "./errors.ts";
 import { fromServer } from "./untrusted.ts";
@@ -19,237 +36,176 @@ export function serversFromConfig(servers: Readonly<Record<string, McpServerConf
 					headers: { ...server.headers, ...Object.fromEntries(fromEnv) },
 					...(server.tools === undefined ? {} : { tools: server.tools }),
 					replay: server.replay,
+					exposure: server.exposure,
+					...(server.description === undefined ? {} : { description: server.description }),
 				},
 			];
 		}),
 	);
 }
 
-export type McpTool = { readonly name: string; readonly description?: string; readonly inputSchema?: object };
-
-type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
-
 export class McpError extends Error {}
 
-/** The session ended on the server's side: initialize again and resend. */
-class SessionGone extends Error {}
-
-const PROTOCOL_VERSION = "2025-06-18";
-const REQUEST_TIMEOUT_MS = 30_000;
-
-type JsonRpcResponse = { jsonrpc: "2.0"; id?: number | string; result?: unknown; error?: { code: number; message: string } };
-
 /**
- * Only what the agent uses: it does not take requests from the server (sampling, elicitation) and does not listen for
- * notifications, so a server whose tools change is read again at the next start.
+ * pi-mcp reports a session the server forgot but keeps the client, so a new client starts a new session and the request
+ * is sent once more.
  */
-export class McpHttpClient {
+class McpSession {
 	readonly #url: string;
 	readonly #headers: Readonly<Record<string, string>>;
-	#nextId = 1;
-	#session: Promise<{ id: string | undefined; version: string }> | undefined;
+	#client: Promise<McpClient> | undefined;
 
 	constructor(url: string, headers: Readonly<Record<string, string>>) {
 		this.#url = url;
 		this.#headers = headers;
 	}
 
-	async listTools(signal?: AbortSignal): Promise<McpTool[]> {
-		const tools: McpTool[] = [];
-		let cursor: string | undefined;
-		do {
-			const page = (await this.#request("tools/list", cursor === undefined ? {} : { cursor }, signal)) as { tools?: McpTool[]; nextCursor?: string };
-			tools.push(...(page.tools ?? []));
-			cursor = page.nextCursor;
-		} while (cursor !== undefined && cursor !== "");
-		return tools;
+	listTools(): Promise<Tool[]> {
+		return this.#use((client) => client.listTools());
 	}
 
-	async callTool(name: string, args: unknown, signal?: AbortSignal): Promise<Content[]> {
-		const result = (await this.#request("tools/call", { name, arguments: args ?? {} }, signal)) as {
-			content?: { type: string; text?: string; data?: string; mimeType?: string; resource?: { text?: string; uri?: string } }[];
-			structuredContent?: unknown;
-			isError?: boolean;
-		};
-		const content: Content[] = [];
-		for (const item of result.content ?? []) {
-			if (item.type === "text" && typeof item.text === "string") content.push({ type: "text", text: item.text });
-			else if (item.type === "image" && typeof item.data === "string" && typeof item.mimeType === "string") content.push({ type: "image", data: item.data, mimeType: item.mimeType });
-			else if (item.type === "resource" && typeof item.resource?.text === "string") content.push({ type: "text", text: item.resource.text });
-			else if (item.type === "resource_link" && typeof item.resource?.uri === "string") content.push({ type: "text", text: item.resource.uri });
-		}
-		if (content.length === 0 && result.structuredContent !== undefined) content.push({ type: "text", text: JSON.stringify(result.structuredContent) });
-		if (result.isError === true) {
-			throw new McpError(content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n") || `${name} が失敗しました。`);
-		}
-		return content;
+	callTool(name: string, args: Record<string, unknown>, signal: AbortSignal | undefined): Promise<CallToolResult> {
+		return this.#use((client) => client.callTool(name, args, signal === undefined ? {} : { signal }));
 	}
 
 	async close(): Promise<void> {
-		const session = await this.#session?.catch(() => undefined);
-		this.#session = undefined;
-		if (session?.id === undefined) return;
-		await fetch(this.#url, { method: "DELETE", headers: { ...this.#headers, "mcp-session-id": session.id }, signal: AbortSignal.timeout(5_000) }).catch(() => {});
+		const client = await this.#client?.catch(() => undefined);
+		this.#client = undefined;
+		await client?.close();
 	}
 
-	async #request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
+	async #use<T>(request: (client: McpClient) => Promise<T>): Promise<T> {
 		for (let attempt = 0; ; attempt++) {
-			const session = await this.#connect(signal);
+			const opening = this.#open();
+			const client = await opening;
 			try {
-				return await this.#send(session, { jsonrpc: "2.0", id: this.#nextId++, method, params }, signal);
+				return await request(client);
 			} catch (error) {
-				if (!(error instanceof SessionGone) || attempt > 0) throw error;
-				this.#session = undefined;
+				if (!(error instanceof McpSessionExpiredError) || attempt > 0) throw error;
+				if (this.#client === opening) this.#client = undefined;
+				void client.close().catch(() => {});
 			}
 		}
 	}
 
-	#connect(signal?: AbortSignal): Promise<{ id: string | undefined; version: string }> {
-		if (this.#session === undefined) {
-			const connecting = this.#initialize(signal);
-			this.#session = connecting;
-			connecting.catch(() => {
-				if (this.#session === connecting) this.#session = undefined;
+	#open(): Promise<McpClient> {
+		if (this.#client === undefined) {
+			const client = new McpClient({ name: "agent", version: "1.0.0" });
+			// Without the server-to-client stream: nothing the server could send there is acted on.
+			const transport = new StreamableHttpTransport({ url: this.#url, headers: { ...this.#headers }, openGetStream: false });
+			const opening = client.connect(transport).then(
+				() => client,
+				async (error: unknown) => {
+					await client.close().catch(() => {});
+					throw error;
+				},
+			);
+			this.#client = opening;
+			opening.catch(() => {
+				if (this.#client === opening) this.#client = undefined;
 			});
 		}
-		return this.#session;
-	}
-
-	async #initialize(signal?: AbortSignal): Promise<{ id: string | undefined; version: string }> {
-		const pending = { id: undefined as string | undefined, version: PROTOCOL_VERSION };
-		const result = (await this.#send(
-			pending,
-			{
-				jsonrpc: "2.0",
-				id: this.#nextId++,
-				method: "initialize",
-				params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "agent", version: "1.0.0" } },
-			},
-			signal,
-			(id) => (pending.id = id),
-		)) as { protocolVersion?: string };
-		const session = { id: pending.id, version: result.protocolVersion ?? PROTOCOL_VERSION };
-		await this.#send(session, { jsonrpc: "2.0", method: "notifications/initialized" }, signal);
-		return session;
-	}
-
-	async #send(
-		session: { id: string | undefined; version: string },
-		message: { jsonrpc: "2.0"; id?: number; method: string; params?: unknown },
-		signal?: AbortSignal,
-		onSession?: (id: string) => void,
-	): Promise<unknown> {
-		const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-		const response = await fetch(this.#url, {
-			method: "POST",
-			headers: {
-				...this.#headers,
-				"content-type": "application/json",
-				accept: "application/json, text/event-stream",
-				// Sent once the version is agreed, so not with `initialize`.
-				...(onSession === undefined ? { "mcp-protocol-version": session.version } : {}),
-				...(session.id === undefined ? {} : { "mcp-session-id": session.id }),
-			},
-			body: JSON.stringify(message),
-			signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
-		});
-		if (response.status === 404 && session.id !== undefined) {
-			await response.body?.cancel();
-			throw new SessionGone();
-		}
-		if (!response.ok) {
-			await response.body?.cancel();
-			throw new McpError(`MCP サーバーが HTTP ${response.status} を返しました。`);
-		}
-		const sessionId = response.headers.get("mcp-session-id");
-		if (sessionId !== null) onSession?.(sessionId);
-		if (message.id === undefined) {
-			await response.body?.cancel();
-			return undefined;
-		}
-		const type = response.headers.get("content-type") ?? "";
-		const reply = type.includes("text/event-stream") ? await fromEventStream(response, message.id) : ((await response.json()) as JsonRpcResponse);
-		if (reply.error !== undefined) throw new McpError(reply.error.message);
-		return reply.result;
+		return this.#client;
 	}
 }
 
-async function fromEventStream(response: Response, id: number): Promise<JsonRpcResponse> {
-	const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
-	if (reader === undefined) throw new McpError("MCP サーバーの応答が空でした。");
-	let buffer = "";
-	try {
-		for (;;) {
-			const { value, done } = await reader.read();
-			if (done) break;
-			buffer += value.replace(/\r\n?/g, "\n");
-			let end: number;
-			while ((end = buffer.indexOf("\n\n")) !== -1) {
-				const event = buffer.slice(0, end);
-				buffer = buffer.slice(end + 2);
-				const data = event
-					.split("\n")
-					.filter((line) => line.startsWith("data:"))
-					.map((line) => line.slice(5).replace(/^ /, ""))
-					.join("\n");
-				if (data === "") continue;
-				let parsed: JsonRpcResponse;
-				try {
-					parsed = JSON.parse(data) as JsonRpcResponse;
-				} catch {
-					continue;
-				}
-				if (parsed.id === id && ("result" in parsed || "error" in parsed)) return parsed;
-			}
+const KEEP_MS = 60 * 60_000;
+
+/** Where the model reads the whole of a result cut to fit, for as long as `web_extract` keeps a page. */
+function keepFullOutput(dir: string, now: () => number): McpOutputSaver {
+	return async (data, extension) => {
+		await mkdir(dir, { recursive: true });
+		for (const name of await readdir(dir)) {
+			const path = join(dir, name);
+			const kept = await stat(path).catch(() => undefined);
+			if (kept !== undefined && now() - kept.mtimeMs >= KEEP_MS) await rm(path, { force: true });
 		}
-	} finally {
-		await reader.cancel().catch(() => {});
-	}
-	throw new McpError("MCP サーバーが応答を返さずにストリームを閉じました。");
+		const path = join(dir, `${randomUUID()}${extension}`);
+		await writeFile(path, data);
+		return path;
+	};
 }
 
-/** The model's API accepts only letters, digits, `_` and `-`, up to 64 characters. */
-function toolName(server: string, tool: string): string {
-	return `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+/** How codemode groups each server's tools, for `searchTools()` and `describeNamespace()`. */
+export function mcpNamespaces(servers: Readonly<Record<string, McpServer>>): CodemodeNamespace[] {
+	return Object.entries(servers).map(([name, server]) => ({
+		name: mcpNamespace(name),
+		prefix: `${mcpNamespace(name)}__`,
+		...(server.description === undefined ? {} : { description: server.description }),
+	}));
 }
 
+/**
+ * Names the servers whose tools no request offers, so the model knows to look for them. From the config alone, so it
+ * stays the same while servers connect.
+ */
+export function createMcpSectionExtension(servers: Readonly<Record<string, McpServer>>): Extension {
+	const hidden = Object.entries(servers).filter(([, server]) => server.exposure === "codemode");
+	return defineExtension({
+		name: "mcp-servers",
+		sections:
+			hidden.length === 0
+				? []
+				: [
+						section("mcp_servers", () =>
+							[
+								"次の MCP サーバーのツールは一覧に無い。codemode のスクリプトから searchTools() で探して呼ぶか、tool_search で読み込んで呼ぶ。",
+								...hidden.map(([name, server]) => `- ${mcpNamespace(name)}${server.description === undefined ? "" : `: ${server.description}`}`),
+							].join("\n"),
+						),
+					],
+	});
+}
 
-export function createMcpExtension(server: string, client: McpHttpClient, tools: readonly McpTool[], replay: "safe" | "unsafe"): Extension {
+function createMcpExtension(server: string, session: McpSession, tools: readonly Tool[], options: McpServer, save: McpOutputSaver): Extension {
+	const names = new Set<string>();
 	return defineExtension({
 		name: `mcp-${server}`,
-		tools: tools.map((tool) =>
-			defineTool({
-				name: toolName(server, tool.name),
+		tools: tools.map((tool) => {
+			const name = createMcpToolName(server, tool.name, (taken) => names.has(taken));
+			names.add(name);
+			return defineTool({
+				name,
 				description: tool.description ?? tool.name,
-				parameters: (tool.inputSchema ?? { type: "object" }) as { type: "object" },
-				replay,
+				parameters: normalizeMcpInputSchema(tool.inputSchema) as { type: "object" },
+				replay: options.replay,
+				...(options.exposure === "codemode" ? { deferred: true as const } : {}),
 				execute: async (args, _api, context) => {
-					const content = await client.callTool(tool.name, args, context.abortSignal);
+					const result = await session.callTool(tool.name, args as Record<string, unknown>, context.abortSignal);
+					const { content } = await limitMcpContent(toLlmContent(result), save);
+					if (result.isError === true) {
+						throw new McpError(content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n") || `${tool.name} が失敗しました。`);
+					}
 					return { output: [{ type: "text" as const, text: fromServer(server) }, ...content] };
 				},
-			}),
-		),
+			});
+		}),
 	});
 }
 
 export type McpServersOptions = {
 	readonly servers: Readonly<Record<string, McpServer>>;
 	readonly registry: Pick<Registry, "install">;
+	/** Where the whole of a result too long for the model is kept. */
+	readonly outputDir: string;
 	readonly retryDelaysMs?: readonly number[];
 	readonly log?: (message: string) => void;
+	readonly now?: () => number;
 };
 
 /** The agent does not wait for them: a server that is down is tried again in the background, and its tools appear when it answers. */
 export class McpServers {
 	readonly #options: McpServersOptions;
-	readonly #clients = new Map<string, McpHttpClient>();
+	readonly #sessions = new Map<string, McpSession>();
 	readonly #timers = new Set<NodeJS.Timeout>();
 	readonly #log: (message: string) => void;
+	readonly #save: McpOutputSaver;
 	#stopped = false;
 
 	constructor(options: McpServersOptions) {
 		this.#options = options;
 		this.#log = options.log ?? ((message) => console.error(message));
+		this.#save = keepFullOutput(options.outputDir, options.now ?? Date.now);
 	}
 
 	start(): Promise<void> {
@@ -259,18 +215,19 @@ export class McpServers {
 	async #connect(name: string, attempt: number): Promise<void> {
 		if (this.#stopped) return;
 		const server = this.#options.servers[name] as McpServer;
-		const client = new McpHttpClient(server.url, server.headers);
+		const session = new McpSession(server.url, server.headers);
 		try {
-			const listed = await client.listTools();
-			if (this.#stopped) return void (await client.close());
+			const listed = await session.listTools();
+			if (this.#stopped) return void (await session.close());
 			const offered = server.tools === undefined ? listed : listed.filter((tool) => server.tools?.includes(tool.name));
 			for (const missing of (server.tools ?? []).filter((wanted) => !listed.some((tool) => tool.name === wanted))) {
 				this.#log(`mcp ${name}: the server has no tool ${missing}`);
 			}
-			this.#clients.set(name, client);
-			this.#options.registry.install(createMcpExtension(name, client, offered, server.replay));
+			this.#sessions.set(name, session);
+			this.#options.registry.install(createMcpExtension(name, session, offered, server, this.#save));
 			this.#log(`mcp ${name}: ${offered.length} tools installed`);
 		} catch (error) {
+			await session.close().catch(() => {});
 			const delays = this.#options.retryDelaysMs ?? [10_000, 60_000, 300_000];
 			const delay = delays[Math.min(attempt, delays.length - 1)] as number;
 			this.#log(`mcp ${name}: could not list its tools (${errorMessage(error)}); trying again in ${delay / 1000} s`);
@@ -287,7 +244,7 @@ export class McpServers {
 		this.#stopped = true;
 		for (const timer of this.#timers) clearTimeout(timer);
 		this.#timers.clear();
-		await Promise.all([...this.#clients.values()].map((client) => client.close()));
-		this.#clients.clear();
+		await Promise.all([...this.#sessions.values()].map((session) => session.close()));
+		this.#sessions.clear();
 	}
 }
