@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import type { ReadPage } from "./extract.ts";
 import { SANDBOX_BIN } from "./sandbox.ts";
-import { IMAGE_EDGE, ReadError, type Crop, type ReadImage, type ReadPdf } from "./web-assets.ts";
+import { IMAGE_EDGE, ReadError, type BinarySource, type Crop, type Image } from "./web-assets.ts";
 
 export type PdfMode = "text" | "layout" | "image";
 
@@ -12,7 +12,7 @@ const MAX_VIRTUAL_EDGE = 16_384;
 const MAX_OUTPUT = 4 * 1024 * 1024;
 const TIMEOUT_MS = 15_000;
 
-export async function readPdf(document: ReadPdf, mode: PdfMode, page: number | undefined, signal?: AbortSignal, crop?: Crop): Promise<ReadPage | ReadImage> {
+export async function readPdf(document: BinarySource, mode: PdfMode, page: number | undefined, signal?: AbortSignal, crop?: Crop): Promise<ReadPage | Image> {
 	const bin = process.env.AGENT_POPPLER_BIN;
 	if (!bin) throw new ReadError("PDF の抽出器が設定されていません（AGENT_POPPLER_BIN）。");
 	const timeout = AbortSignal.timeout(TIMEOUT_MS);
@@ -38,7 +38,7 @@ export async function readPdf(document: ReadPdf, mode: PdfMode, page: number | u
 			return reject(new ReadError("PDF を読めませんでした（ファイルが壊れている、暗号化されている、または抽出器を起動できない可能性があります）。"));
 		});
 		child.stdin?.on("error", () => {});
-		child.stdin?.end(document.pdf);
+		child.stdin?.end(document.body);
 	});
 	function interrupted(): ReadError {
 		return new ReadError(signal?.aborted ? "PDF の処理を中止しました。" : "PDF の処理が時間内に終わりませんでした。");
@@ -57,7 +57,7 @@ export async function readPdf(document: ReadPdf, mode: PdfMode, page: number | u
 			: pdfCrop((await run("pdfinfo", [...range, "-box", "-"])).toString("utf8"), crop);
 		const rendered = await run("pdftoppm", [...range, "-cropbox", ...sizing, "-singlefile", "-jpeg", "-"]);
 		if (rendered.length < 4 || rendered.readUInt16BE(0) !== 0xffd8 || rendered.readUInt16BE(rendered.length - 2) !== 0xffd9) throw new ReadError(`PDF の ${first} ページ目を画像にできませんでした。`);
-		return { url, status, image: { data: rendered.toString("base64"), mimeType: "image/jpeg" } };
+		return { data: rendered.toString("base64"), mimeType: "image/jpeg" };
 	}
 	const extracted = await run("pdftotext", ["-enc", "UTF-8", ...range, ...(mode === "layout" ? ["-layout"] : []), "-", "-"]);
 	const parts = extracted.toString("utf8").split("\f");

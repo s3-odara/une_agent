@@ -182,7 +182,7 @@ test("an image URL redirect is read as an image, not a page", async (t) => {
 	if (r === undefined) return;
 	const result = await r.reader.read(`${r.base}/diagram`, false);
 	assert.equal(result.url, `${r.base}/asset`);
-	assert.ok("imageSource" in result);
+	assert.ok("kind" in result && result.kind === "image");
 	const full = await r.reader.renderImage(result);
 	const crop = await r.reader.renderImage(result, { x: 0.5, y: 0.5, width: 0.125, height: 0.125 });
 	for (const [image, size] of [[full, [1568, 1045]], [crop, [750, 500]]] as const) {
@@ -197,7 +197,7 @@ test("large assets and images with excessive dimensions are refused", async (t) 
 	if (r === undefined) return;
 	await assert.rejects(r.reader.read(`${r.base}/large`, false), /上限 5 MiB/);
 	const wide = await r.reader.read(`${r.base}/wide`, false);
-	assert.ok("imageSource" in wide);
+	assert.ok("kind" in wide && wide.kind === "image");
 	await assert.rejects(r.reader.renderImage(wide), /画像の寸法/);
 });
 
@@ -205,8 +205,8 @@ test("an attached PDF is fetched intact without a browser download", async (t) =
 	await using r = await realReader(t);
 	if (r === undefined) return;
 	const result = await r.reader.read(`${r.base}/document`, false);
-	assert.ok("pdf" in result);
-	assert.deepEqual(result.pdf, samplePdf());
+	assert.ok("kind" in result && result.kind === "pdf");
+	assert.deepEqual(result.body, samplePdf());
 });
 
 test("a download is refused", async (t) => {

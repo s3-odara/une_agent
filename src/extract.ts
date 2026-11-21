@@ -4,7 +4,7 @@ import { errorMessage } from "./errors.ts";
 import { IdleChromium, launchSandboxed } from "./sandbox.ts";
 import { extractFrom, settle } from "./page.ts";
 import { httpUrl } from "./urls.ts";
-import { decodeText, interceptAsset, ReadError, readImage, type Crop, type ImageSource, type ReadImage, type ReadPdf } from "./web-assets.ts";
+import { decodeText, interceptAsset, ReadError, readImage, type BinarySource, type Crop, type Image } from "./web-assets.ts";
 
 export { ReadError };
 
@@ -17,11 +17,11 @@ export type ReadPage = {
 	readonly mediaType?: string;
 };
 
-export type ReadResource = ReadPage | ImageSource | ReadPdf;
+export type ReadResource = ReadPage | BinarySource;
 
 export interface PageReader {
 	read(url: string, whole: boolean, signal?: AbortSignal): Promise<ReadResource>;
-	renderImage(source: ImageSource, crop?: Crop, signal?: AbortSignal): Promise<ReadImage["image"]>;
+	renderImage(source: BinarySource, crop?: Crop, signal?: AbortSignal): Promise<Image>;
 	close(): Promise<void>;
 }
 
@@ -77,8 +77,9 @@ export class PlaywrightReader implements PageReader {
 			if (intercepted !== undefined) {
 				const { body, url, status, mediaType, contentType } = intercepted;
 				const meta = { url, ...(status >= 200 && status < 300 ? {} : { status }) };
-				if (mediaType === "application/pdf") return { ...meta, pdf: body };
-				if (mediaType.startsWith("image/")) return { ...meta, imageSource: body, mediaType };
+				if (mediaType === "application/pdf" || mediaType.startsWith("image/")) {
+					return { ...meta, kind: mediaType === "application/pdf" ? "pdf" : "image", body, mediaType };
+				}
 				return { ...meta, title: "", markdown: decodeText(body, contentType), scope: "page", mediaType };
 			}
 			await settle(page);
@@ -87,7 +88,7 @@ export class PlaywrightReader implements PageReader {
 		});
 	}
 
-	renderImage(source: ImageSource, crop?: Crop, signal?: AbortSignal): Promise<ReadImage["image"]> {
+	renderImage(source: BinarySource, crop?: Crop, signal?: AbortSignal): Promise<Image> {
 		return this.#withPage(signal, (page) => readImage(page, source, crop));
 	}
 

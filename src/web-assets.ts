@@ -3,18 +3,17 @@ import { errorMessage } from "./errors.ts";
 
 export class ReadError extends Error {}
 
-export type ReadImage = {
+export type Image = { readonly data: string; readonly mimeType: string };
+export type Crop = { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+export type BinarySource = {
+	readonly kind: "image" | "pdf";
 	readonly url: string;
 	readonly status?: number;
-	readonly image: { readonly data: string; readonly mimeType: string };
+	readonly body: Buffer;
+	readonly mediaType: string;
 };
 
-export type Crop = { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
-export type ImageSource = { readonly url: string; readonly status?: number; readonly imageSource: Buffer; readonly mediaType: string };
-
 export const IMAGE_EDGE = 1568;
-
-export type ReadPdf = { readonly url: string; readonly status?: number; readonly pdf: Buffer };
 
 const MIB = 1024 * 1024;
 const TEXT = /^(text\/(plain|csv|xml|tab-separated-values)|application\/(json|csv|xml|[^/;]+\+(json|xml)))$/;
@@ -42,7 +41,7 @@ export async function interceptAsset(cdp: CDPSession): Promise<() => Promise<Ass
 			const { stream } = await cdp.send("Fetch.takeResponseBodyAsStream", { requestId });
 			return { body: await readBody(cdp, stream, maxMiB), url: request.url, status, mediaType, contentType };
 		})().catch((error: unknown) => error instanceof ReadError ? error : new ReadError(`ファイルを読めませんでした: ${errorMessage(error).split("\n")[0]}`));
-		// Prevent downloads and give the image decoder a document with no site scripts.
+		// Finish navigation without executing or downloading the intercepted response.
 		void result.then(() => cdp.send("Fetch.fulfillRequest", {
 			requestId, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: "",
 		})).catch(() => {});
@@ -101,7 +100,7 @@ type Canvas = {
 	toDataURL(type: string, quality?: number): string;
 };
 
-export async function readImage(page: Page, source: ImageSource, crop?: Crop): Promise<ReadImage["image"]> {
+export async function readImage(page: Page, source: BinarySource, crop?: Crop): Promise<Image> {
 	const result = await page.evaluate(async ({ mediaType, data, crop, edge }) => {
 		const { Image, document } = globalThis as unknown as { Image: new () => BrowserImage; document: { createElement(tag: "canvas"): Canvas } };
 		const blob = new Blob([Uint8Array.fromBase64(data)], { type: mediaType });
@@ -134,7 +133,7 @@ export async function readImage(page: Page, source: ImageSource, crop?: Crop): P
 		} finally {
 			URL.revokeObjectURL(url);
 		}
-	}, { mediaType: source.mediaType, data: source.imageSource.toString("base64"), crop, edge: IMAGE_EDGE });
+	}, { mediaType: source.mediaType, data: source.body.toString("base64"), crop, edge: IMAGE_EDGE });
 	if (result.error !== undefined) throw new ReadError(result.error);
 	return result;
 }
