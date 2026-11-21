@@ -269,7 +269,7 @@ impl Player {
                         clip.position += take;
                         if clip.position >= clip.samples.len() {
                             let clip = queue.pop_front().expect("the front clip");
-                            let _ = o.send(spoken(&r, &clip));
+                            let _ = o.send(spoken(&r, clip.id));
                         }
                     }
                     if !data.is_empty() {
@@ -288,22 +288,24 @@ impl Player {
         Self { queue, audible_until, room_id, out, _task: Arc::new(AbortOnDrop(task)) }
     }
 
+    /// Deaf from now, not from the next tick: the tick keeps it so while the clip plays.
     fn enqueue(&self, id: String, samples: Vec<i16>) {
+        self.audible_until.store(now_ms() + ECHO_TAIL_MS, Ordering::Relaxed);
         self.queue.lock().unwrap().push_back(Clip { id, samples, position: 0 });
     }
 
     fn refuse(&self, id: String, why: &str) {
         warn!("cannot play {id}: {why}");
-        let _ = self.out.send(spoken(&self.room_id, &Clip { id, samples: Vec::new(), position: 0 }));
+        let _ = self.out.send(spoken(&self.room_id, id));
     }
 
     fn audible(&self) -> bool {
-        !self.queue.lock().unwrap().is_empty() || now_ms() < self.audible_until.load(Ordering::Relaxed)
+        now_ms() < self.audible_until.load(Ordering::Relaxed)
     }
 }
 
-fn spoken(room_id: &str, clip: &Clip) -> Event {
-    Event::CallSpoken { room_id: room_id.to_owned(), id: clip.id.clone() }
+fn spoken(room_id: &str, id: String) -> Event {
+    Event::CallSpoken { room_id: room_id.to_owned(), id }
 }
 
 /// Memberships carry a deadline, so the rooms are also looked at again every half minute.

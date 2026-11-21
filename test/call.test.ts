@@ -5,11 +5,21 @@ import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { Calls, OVERTAKEN } from "../src/call.ts";
 import type { GatewayEvent } from "../src/gateway.ts";
+import type { Transcriber } from "../src/stt.ts";
 import { readWav, type Synthesizer, toSpeech } from "../src/tts.ts";
 import { agentEnv, ME } from "./env.ts";
 import { answer, lastInput, message, type Request } from "./fakes.ts";
 
 const ROOM = "!call:example.org";
+
+class FakeTranscriber implements Transcriber {
+	readonly texts = new Map<string, string>();
+	transcribing = () => {};
+	async transcribe(path: string): Promise<string> {
+		this.transcribing();
+		return this.texts.get(path) ?? "";
+	}
+}
 
 class FakeSynthesizer implements Synthesizer {
 	readonly made: { text: string; speaker: number; sampleRate: number }[] = [];
@@ -35,18 +45,12 @@ async function setup(call: { chime?: boolean; transcript?: boolean } = {}) {
 		},
 	});
 	const bridge = env.bridge();
-	const transcripts = new Map<string, string>();
+	const transcriber = new FakeTranscriber();
 	const synthesizer = new FakeSynthesizer();
-	const hooks = { transcribing: () => {} };
 	const calls = new Calls({
 		link: env.link,
 		config: env.config,
-		transcriber: {
-			transcribe: async (path) => {
-				hooks.transcribing();
-				return transcripts.get(path) ?? "";
-			},
-		},
+		transcriber,
 		synthesizer,
 		ask: (roomId, key, content) => bridge.ask(roomId, key, content),
 		notice: (roomId, key, body) => bridge.notice(roomId, key, body),
@@ -63,7 +67,7 @@ async function setup(call: { chime?: boolean; transcript?: boolean } = {}) {
 	const utterance = (text: string): Extract<GatewayEvent, { type: "callUtterance" }> => {
 		const path = join(env.dir, `call-${++n}.wav`);
 		writeFileSync(path, "RIFF");
-		transcripts.set(path, text);
+		transcriber.texts.set(path, text);
 		return { type: "callUtterance", roomId: ROOM, path, startedAt: Date.UTC(2026, 10, 18, 3, 0) };
 	};
 	const settle = async () => {
@@ -73,8 +77,8 @@ async function setup(call: { chime?: boolean; transcript?: boolean } = {}) {
 	return {
 		env,
 		link: env.link,
+		transcriber,
 		synthesizer,
-		hooks,
 		played,
 		utterance,
 		settle,
@@ -246,7 +250,7 @@ test("once an utterance is recognized, a chime plays in the call before the answ
 test("no chime plays once the user has started speaking again", async () => {
 	await using t = await setup({ chime: true });
 	t.env.faux.setResponses([fauxAssistantMessage("晴れです。")]);
-	t.hooks.transcribing = () => t.link.emit({ type: "callSpeech", roomId: ROOM });
+	t.transcriber.transcribing = () => t.link.emit({ type: "callSpeech", roomId: ROOM });
 	t.inCall();
 	await t.say("明日の天気は？");
 	assert.deepEqual(t.link.of("callSpeak"), []);

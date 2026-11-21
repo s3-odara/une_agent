@@ -29,7 +29,8 @@ type RoomCall = {
 	/** Goes up whenever the user starts speaking: an answer to an older turn is not spoken any more. */
 	turn: number;
 	tail: Promise<void>;
-	note: string | undefined;
+	/** The last answer was not spoken because the user went on speaking; the next utterance tells the persona so. */
+	overtaken: boolean;
 	readonly spoken: Map<string, () => void>;
 };
 
@@ -60,7 +61,7 @@ export class Calls {
 			case "callMembers": {
 				const room = this.#rooms.get(event.roomId);
 				if (event.userIds.length > 0 && room === undefined) {
-					this.#rooms.set(event.roomId, { joined: false, turn: 0, tail: Promise.resolve(), note: undefined, spoken: new Map() });
+					this.#rooms.set(event.roomId, { joined: false, turn: 0, tail: Promise.resolve(), overtaken: false, spoken: new Map() });
 					link.send({ type: "joinCall", roomId: event.roomId, vad: (config.voice?.call ?? fail()).vad });
 				} else if (event.userIds.length === 0 && room !== undefined) {
 					link.send({ type: "leaveCall", roomId: event.roomId });
@@ -134,8 +135,8 @@ export class Calls {
 		}
 		if (call.transcript) this.#track(notice(roomId, `callheard:${key}`, `🎤 ${text}`));
 
-		const note = room.note === undefined ? "" : `（${room.note}）`;
-		room.note = undefined;
+		const note = room.overtaken ? `（${OVERTAKEN}）` : "";
+		room.overtaken = false;
 		const content = `[${formatStamp(utterance.startedAt, config.timezone)} 通話] ${note}${text}`;
 		// The file name is unique per utterance; the same key again would get the same answer back.
 		const answer = await this.#options.ask(roomId, `call:${key}`, content);
@@ -146,10 +147,7 @@ export class Calls {
 		}
 		// Written even when it is not spoken: the room keeps what the persona answered.
 		if (call.transcript) this.#track(notice(roomId, `callanswer:${key}`, answer.text));
-		if (room.turn !== turn) {
-			room.note = OVERTAKEN;
-			return;
-		}
+		if (this.#overtaken(room, turn)) return;
 		await this.#speak(roomId, room, turn, answer.text);
 	}
 
@@ -206,17 +204,18 @@ export class Calls {
 			);
 			return;
 		}
-		if (this.#rooms.get(roomId) !== room) return;
-		if (room.turn !== turn) {
-			room.note = OVERTAKEN;
-			return;
-		}
+		if (this.#rooms.get(roomId) !== room || this.#overtaken(room, turn)) return;
 		await this.#play(roomId, room, wav);
+	}
+
+	#overtaken(room: RoomCall, turn: number): boolean {
+		if (room.turn === turn) return false;
+		room.overtaken = true;
+		return true;
 	}
 }
 
 export const OVERTAKEN = "直前の返答は、読み上げる前にユーザーが話し始めたので伝わっていません";
-
 
 function fail(): never {
 	throw new Error("calls need voice.call and voice.tts in config.json");

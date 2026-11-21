@@ -54,9 +54,7 @@ impl Segmenter {
 
     /// Whatever was heard so far is dropped, the start of an utterance too.
     pub fn deafen(&mut self) {
-        self.recent.clear();
-        self.voiced_run = 0;
-        self.open = None;
+        *self = Self::new(self.config);
     }
 
     pub fn push(&mut self, frame: &[i16], speech: bool) -> Option<Cut> {
@@ -151,12 +149,12 @@ impl<D: FnMut(&[i16]) -> bool> Cutter<D> {
     /// While `deaf` (the bot is talking), nothing is cut: its own voice and the chime come back through the listener's
     /// microphone, and the two take turns.
     pub fn push(&mut self, samples: &[i16], deaf: bool) -> Vec<Cut> {
-        self.pending.extend(self.decimator.push(samples));
         if deaf {
             self.pending.clear();
             self.segmenter.deafen();
             return Vec::new();
         }
+        self.pending.extend(self.decimator.push(samples));
         let mut cuts = Vec::new();
         while self.pending.len() >= FRAME_SAMPLES {
             let frame = &self.pending[..FRAME_SAMPLES];
