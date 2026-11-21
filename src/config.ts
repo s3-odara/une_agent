@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import { arr, bool, compile, int, map, nullable, num, obj, oneOf, opt, type Schema, type Static, str, type ValidationError } from "@earendil-works/pi-schema";
+import { sttModelPaths } from "./stt-paths.ts";
 import { isTimeZone } from "./time.ts";
 
 /**
@@ -11,7 +12,7 @@ import { isTimeZone } from "./time.ts";
 const PARTS = {
 	gatewayBin: process.env.AGENT_GATEWAY_BIN ?? "gateway/target/release/matrix-gateway",
 	whisperServer: process.env.AGENT_WHISPER_SERVER ?? "stt/whisper.cpp/build/bin/whisper-server",
-	sttModels: process.env.AGENT_STT_MODELS ?? "stt/models",
+	...sttModelPaths(),
 };
 
 const text = (options: { default?: string; pattern?: string; description?: string } = {}) => str({ minLength: 1, ...options });
@@ -108,8 +109,8 @@ const ConfigSchema = obj({
 			stt: section(
 				obj({
 					server: text({ default: PARTS.whisperServer }),
-					model: text({ default: `${PARTS.sttModels}/ggml-large-v3-turbo-q8_0.bin` }),
-					vadModel: text({ default: `${PARTS.sttModels}/ggml-silero-v5.1.2.bin` }),
+					model: text({ default: PARTS.model }),
+					vadModel: text({ default: PARTS.vadModel }),
 					threads: count(6),
 					beamSize: count(5),
 					language: text({ default: "ja" }),

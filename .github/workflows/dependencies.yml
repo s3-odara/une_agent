@@ -1,0 +1,144 @@
+name: Dependency maintenance
+
+on:
+  schedule:
+    - cron: '19 5 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: dependency-maintenance
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.patch.outputs.changed }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
+        with:
+          extra_nix_config: access-tokens = github.com=${{ github.token }}
+      - run: nix flake update
+      - name: Update npm, Cargo, and speech recognition dependencies
+        run: |
+          nix shell --inputs-from . nixpkgs#nodejs_26 nixpkgs#cargo nixpkgs#rustc nixpkgs#prefetch-npm-deps \
+            -c python3 .github/scripts/update-dependencies.py
+      - name: Save dependency patch
+        id: patch
+        run: |
+          git diff --check
+          git diff HEAD -- flake.lock package.json package-lock.json nix/agent-unwrapped.nix \
+            gateway/Cargo.lock sandbox/Cargo.lock nix/stt-models.nix nix/whisper-server.nix > "${RUNNER_TEMP}/dependencies.patch"
+          if [[ -s "${RUNNER_TEMP}/dependencies.patch" ]]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.patch.outputs.changed == 'true'
+        with:
+          name: dependency-patch
+          path: ${{ runner.temp }}/dependencies.patch
+
+  verify:
+    needs: update
+    if: needs.update.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: dependency-patch
+          path: ${{ runner.temp }}
+      - run: git apply "${RUNNER_TEMP}/dependencies.patch"
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
+        with:
+          extra_nix_config: access-tokens = github.com=${{ github.token }}
+      - run: nix develop -c npm ci --ignore-scripts --no-audit --no-fund
+      - run: nix develop -c just check
+      - run: nix build --no-link .#agent
+      - name: Transcribe synthetic speech with the updated server or models
+        run: |
+          if git diff --quiet -- nix/stt-models.nix nix/whisper-server.nix; then
+            exit 0
+          fi
+          audio="${RUNNER_TEMP}/speech.wav"
+          script="${RUNNER_TEMP}/speech.txt"
+          printf '%s\n' 'The weather today is sunny.' > "$script"
+          nix shell --inputs-from . nixpkgs#espeak-ng -c espeak-ng -v en-us -f "$script" -w "$audio"
+          STT_TEST_LANGUAGE=en nix develop -c just test-stt "$audio" "$script"
+
+  propose:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: dependency-patch
+          path: ${{ runner.temp }}
+      - name: Open a PR without overwriting one under review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          prefix='automation/dependencies/'
+          existing=$(gh pr list --base "$BASE" --state open --json headRefName \
+            --jq '.[] | select(.headRefName | startswith("automation/dependencies/")) | .headRefName')
+          if [[ -n "$existing" ]]; then
+            echo "An update is already under review: $existing"
+            exit 0
+          fi
+
+          branch="${prefix}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch -c "$branch"
+          git apply --index --include=flake.lock --include=package.json --include=package-lock.json \
+            --include=nix/agent-unwrapped.nix --include=gateway/Cargo.lock --include=sandbox/Cargo.lock \
+            --include=nix/stt-models.nix --include=nix/whisper-server.nix \
+            "${RUNNER_TEMP}/dependencies.patch"
+          git -c user.name=github-actions[bot] -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+            commit -m '依存を更新する'
+          gh auth setup-git
+          git push origin "HEAD:refs/heads/$branch"
+          gh pr create --base "$BASE" --head "$branch" --title '依存を更新する' \
+            --body "自動生成した更新です。検証結果: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          マージ前に検証結果とリリースノート（特に pi-durable の保存形式）を確認してください。Matrix 通話系の固定は自動更新しません。"
+
+  notify-pins:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check pinned dependencies without updating them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/pinned_dependencies.py

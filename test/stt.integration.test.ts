@@ -7,26 +7,25 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { sttModelPaths } from "../src/stt-paths.ts";
 import { WhisperServer, type WhisperServerOptions } from "../src/stt.ts";
 import { tempDir } from "./env.ts";
 
 const root = resolve(import.meta.dirname, "..");
-// Where `just test-stt` puts what nix built, as the packaged agent does.
-const models = process.env.AGENT_STT_MODELS ?? join(root, "stt/models");
 const built: Omit<WhisperServerOptions, "socketPath"> = {
 	server: process.env.AGENT_WHISPER_SERVER ?? join(root, "stt/whisper.cpp/build/bin/whisper-server"),
-	model: join(models, "ggml-large-v3-turbo-q8_0.bin"),
-	vadModel: join(models, "ggml-silero-v5.1.2.bin"),
+	...sttModelPaths(join(root, "stt/models")),
 	threads: 6,
 	beamSize: 5,
-	language: "ja",
+	language: process.env.STT_TEST_LANGUAGE ?? "ja",
 	vadSpeechPadMs: 0,
 	idleMs: 60_000,
 };
 const haveServer = [built.server, built.model, built.vadModel].every((path) => existsSync(path));
 const audio = process.env.STT_TEST_AUDIO?.split(":").filter((path) => path !== "") ?? [];
 const texts = process.env.STT_TEST_TEXT?.split(":").filter((path) => path !== "") ?? [];
-const needsRecordings = { skip: !haveServer || audio.length === 0 ? "the server is not built, or STT_TEST_AUDIO is not set" : false };
+if (audio.length > 0 && !haveServer) throw new Error("STT_TEST_AUDIO is set but the server or a model is missing");
+const needsRecordings = { skip: audio.length === 0 ? "STT_TEST_AUDIO is not set" : false };
 
 function overlap(script: string, transcript: string): number {
 	const normalize = (text: string) => [...text.normalize("NFKC").replace(/[\s\p{P}\p{S}]/gu, "")];

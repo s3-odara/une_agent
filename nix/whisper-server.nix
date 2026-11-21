@@ -1,5 +1,3 @@
-# whisper.cpp's server at the commit that was measured (HANDOFF.md, step 5), with Vulkan. Bump deliberately.
-#
 # The CPU code is built for several CPU generations and picked at start, so the build does not depend on the machine it
 # ran on. The GPU is reached through nixpkgs' Mesa, whose AMD driver speaks virtio native context in a VM; set
 # VK_ICD_FILENAMES to use another driver. The host's implicit Vulkan layers are left out: they are built against the

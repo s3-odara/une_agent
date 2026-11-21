@@ -430,10 +430,12 @@ Chromium と Playwright の出どころ:
 
 - `just install` はチェックアウトしているコミットをビルドして `~/.local/state/agent/current` にリンクする。未コミットの変更があれば止まる
   （動いているものをコミットとして `just status` で見せるため）。`deployed-*` は `current` のコマンドを使う
-- **定期的に `nix flake update`**（Playwright と Chromium を含む）。そのあと `just check`、コミット、`just install`
+- 依存更新の Actions を使うには、GitHub の Settings → Actions → General で PR 作成を許可し、リポジトリの Issues を有効にする。
+  Landlock ABI 10 未満のランナーではブラウザーと sandbox の統合テストはスキップされる。関連変更は対応カーネル上の `just check` でも確認する。
+  通話系を更新したら、暗号化ルームへの通話参加と双方向の音声を実機で確認する。
 - パッケージは環境変数（`AGENT_GATEWAY_BIN`、`AGENT_WHISPER_SERVER`、`AGENT_STT_MODELS`、`AGENT_CHROMIUM`、`AGENT_SANDBOX_BIN`）で
   部品の場所を渡す。npm のビルドは `agent-unwrapped` に分けてあり、部品が変わってもやり直さない
-- whisper-server は測定したコミットに固定し、Vulkan つきで CPU 向けコードは世代別に作る。GPU は nixpkgs の Mesa
+- whisper-server は Vulkan つきで CPU 向けコードは世代別に作る。GPU は nixpkgs の Mesa
   （AMD の native context に対応）を使い、ホストのドライバーは読まない
 - VOICEVOX の onnxruntime は unfree 扱い。flake は名前が `voicevox` で始まるものだけ許可している
 

@@ -110,11 +110,13 @@ fn last_error(what: &str) -> String {
 	format!("{what}: {}", io::Error::last_os_error())
 }
 
-fn require_abi() -> Result<(), String> {
+fn landlock_abi() -> io::Result<libc::c_long> {
 	let abi = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, std::ptr::null::<u8>(), 0usize, landlock::CREATE_RULESET_VERSION) };
-	if abi < 0 {
-		return Err(last_error("Landlock is not available"));
-	}
+	if abi < 0 { Err(io::Error::last_os_error()) } else { Ok(abi) }
+}
+
+fn require_abi() -> Result<(), String> {
+	let abi = landlock_abi().map_err(|error| format!("Landlock is not available: {error}"))?;
 	if abi < 10 {
 		return Err(format!("Landlock ABI {abi} is older than 10, which controls UNIX sockets and UDP"));
 	}
@@ -211,6 +213,22 @@ fn run() -> Result<Infallible, String> {
 }
 
 fn main() -> ExitCode {
+	if env::args_os().nth(1).as_deref() == Some(OsStr::new("--landlock-abi")) {
+		return match landlock_abi() {
+			Ok(abi) => {
+				println!("{abi}");
+				ExitCode::SUCCESS
+			}
+			Err(error) if matches!(error.raw_os_error(), Some(libc::ENOSYS | libc::EOPNOTSUPP)) => {
+				println!("0");
+				ExitCode::SUCCESS
+			}
+			Err(error) => {
+				eprintln!("agent-sandbox: checking Landlock ABI: {error}");
+				ExitCode::from(126)
+			}
+		};
+	}
 	match run() {
 		Ok(never) => match never {},
 		Err(message) => {

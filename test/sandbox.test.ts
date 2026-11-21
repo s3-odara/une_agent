@@ -4,10 +4,14 @@ import { createSocket } from "node:dgram";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type ChromiumSandbox, sandboxedChromium } from "../src/sandbox.ts";
 import { listen, tempDir } from "./env.ts";
+import { noLandlock } from "./landlock.ts";
+
+const skip = noLandlock();
+const sandboxTest = (name: string, fn: (t: TestContext) => Promise<void>) => test(name, { skip }, fn);
 
 /**
  * Node stands in for Chromium: it runs under the same policy, and tries what a browser broken into would. The sandbox
@@ -30,14 +34,14 @@ async function asBrowser(sandbox: Partial<ChromiumSandbox>, body: string, args: 
 const connect = (to: string | number) =>
 	`await new Promise((resolve, reject) => { const socket = require("node:net").connect(${JSON.stringify(to)}).on("connect", () => resolve(socket.destroy())).on("error", reject); })`;
 
-test("the browser cannot read the user's files", async () => {
+sandboxTest("the browser cannot read the user's files", async () => {
 	const userFile = fileURLToPath(new URL("../package.json", import.meta.url));
 	assert.equal(await asBrowser({}, `require("node:fs").readFileSync(${JSON.stringify(userFile)})`), "refused");
 });
 
 const writeIn = (dir: string) => `require("node:fs").writeFileSync(require("node:path").join(${dir}, "f"), "x")`;
 
-test("the browser writes in its own temporary directory and its profile, and nowhere else", async () => {
+sandboxTest("the browser writes in its own temporary directory and its profile, and nowhere else", async () => {
 	using temp = tempDir();
 	const profile = join(temp.path, "profile");
 	const other = join(temp.path, "other");
@@ -50,7 +54,7 @@ test("the browser writes in its own temporary directory and its profile, and now
 	]);
 });
 
-test("the browser can neither read nor write the agent's temporary directory", async () => {
+sandboxTest("the browser can neither read nor write the agent's temporary directory", async () => {
 	using agents = tempDir();
 	writeFileSync(join(agents.path, "agent-file"), "the agent's");
 	const read = asBrowser({}, `require("node:fs").readFileSync(${JSON.stringify(join(agents.path, "agent-file"))})`);
@@ -58,7 +62,7 @@ test("the browser can neither read nor write the agent's temporary directory", a
 	assert.deepEqual(await Promise.all([read, write]), ["refused", "refused"]);
 });
 
-test("the browser does not get the agent's environment, nor read it from the agent's process", async (t) => {
+sandboxTest("the browser does not get the agent's environment, nor read it from the agent's process", async (t) => {
 	process.env.AGENT_TEST_SECRET = "s3cret";
 	t.after(() => delete process.env.AGENT_TEST_SECRET);
 	const inEnvironment = asBrowser({}, `if (process.env.AGENT_TEST_SECRET === undefined) throw 0`);
@@ -66,11 +70,11 @@ test("the browser does not get the agent's environment, nor read it from the age
 	assert.deepEqual(await Promise.all([inEnvironment, fromProcess]), ["refused", "refused"]);
 });
 
-test("the browser cannot signal the agent", async () => {
+sandboxTest("the browser cannot signal the agent", async () => {
 	assert.equal(await asBrowser({}, "process.kill(process.ppid, 0)"), "refused");
 });
 
-test("the browser connects only to its proxy", async (t) => {
+sandboxTest("the browser connects only to its proxy", async (t) => {
 	const proxyServer = createServer();
 	const otherServer = createServer();
 	t.after(() => {
@@ -82,7 +86,7 @@ test("the browser connects only to its proxy", async (t) => {
 	assert.deepEqual(await Promise.all([asBrowser(sandbox, connect(proxy)), asBrowser(sandbox, connect(other))]), ["allowed", "refused"]);
 });
 
-test("the browser sends no UDP", async (t) => {
+sandboxTest("the browser sends no UDP", async (t) => {
 	const server = createSocket("udp4");
 	await new Promise<void>((resolve) => server.bind(0, "127.0.0.1", resolve));
 	t.after(() => server.close());
@@ -90,7 +94,7 @@ test("the browser sends no UDP", async (t) => {
 	assert.equal(await asBrowser({}, send), "refused");
 });
 
-test("the browser cannot reach a UNIX socket outside, such as the user's D-Bus", async (t) => {
+sandboxTest("the browser cannot reach a UNIX socket outside, such as the user's D-Bus", async (t) => {
 	using temp = tempDir();
 	const path = join(temp.path, "bus");
 	const server = createServer();

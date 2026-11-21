@@ -13,7 +13,7 @@ export type ChromiumSandbox = {
 	readonly executablePath?: string;
 };
 
-const SANDBOX_BIN = process.env.AGENT_SANDBOX_BIN ?? fileURLToPath(new URL("../sandbox/target/release/agent-sandbox", import.meta.url));
+export const SANDBOX_BIN = process.env.AGENT_SANDBOX_BIN ?? fileURLToPath(new URL("../sandbox/target/release/agent-sandbox", import.meta.url));
 
 const READ = ["/nix/store", "/nix/var/nix/profiles", "/etc", "/usr", "/var/cache/fontconfig", "/run/systemd/resolve", "/sys"];
 // /proc: Chromium's own sandbox writes the uid_map of the processes it starts. Landlock keeps it from the /proc files
