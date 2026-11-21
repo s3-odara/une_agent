@@ -19,7 +19,7 @@ buildNpmPackage {
     ];
   };
   nodejs = nodejs_26;
-  npmDepsHash = "sha256-zn5/+oRVQpBZh05k+++ean3XaeqCS92ZihmoomXf1b0=";
+  npmDepsHash = "sha256-MKsQ8WCt/U/uLtvMSsVX72DNGXR/0u9vaBJvQ66mKpw=";
   dontNpmBuild = true;
   installPhase = ''
     runHook preInstall
