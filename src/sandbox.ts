@@ -40,6 +40,7 @@ export function sandboxedChromium(sandbox: ChromiumSandbox & { readonly home: st
 	for (const [name, value] of Object.entries(process.env)) {
 		if (value !== undefined && (PASSED.has(name) || name.startsWith("LC_"))) env[name] = value;
 	}
+	if (process.env.AGENT_CHROMIUM_FONTCONFIG) env.FONTCONFIG_FILE = process.env.AGENT_CHROMIUM_FONTCONFIG;
 	env.AGENT_SANDBOX_EXEC = program;
 	env.AGENT_SANDBOX_READ = [...READ, dirname(realpathSync(program))].join("\n");
 	env.AGENT_SANDBOX_WRITE = [sandbox.home, ...WRITE].join("\n");

@@ -7,7 +7,7 @@
   ffmpeg-headless,
   chromium,
   poppler-utils,
-  pdfFontConfig,
+  fontConfig,
   agent-unwrapped,
   gateway,
   sandbox,
@@ -33,8 +33,9 @@ runCommand "agent-0.1.0"
         --set-default AGENT_WHISPER_SERVER ${lib.getExe whisper-server} \
         --set-default AGENT_STT_MODELS ${stt-models} \
         --set-default AGENT_POPPLER_BIN ${poppler-utils}/bin \
-        --set-default AGENT_PDF_FONTCONFIG ${pdfFontConfig} \
+        --set-default AGENT_PDF_FONTCONFIG ${fontConfig} \
         --set-default AGENT_CHROMIUM ${lib.getExe chromium} \
+        --set-default AGENT_CHROMIUM_FONTCONFIG ${fontConfig} \
         --prefix PATH : ${lib.makeBinPath [ ffmpeg-headless ]}
     done
   ''

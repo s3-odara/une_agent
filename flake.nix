@@ -26,7 +26,7 @@
       sandbox = pkgs.callPackage ./nix/sandbox.nix { inherit craneLib; };
       whisper-server = pkgs.callPackage ./nix/whisper-server.nix { };
       stt-models = pkgs.callPackage ./nix/stt-models.nix { };
-      pdfFontConfig = pkgs.writeText "agent-pdf-fonts.conf" ''
+      fontConfig = pkgs.writeText "agent-fonts.conf" ''
         <fontconfig>
           <dir>${pkgs.noto-fonts-cjk-sans}/share/fonts</dir>
           <dir>${pkgs.dejavu_fonts}/share/fonts</dir>
@@ -36,7 +36,7 @@
       agent = pkgs.callPackage ./nix/agent.nix {
         inherit
           agent-unwrapped
-          pdfFontConfig
+          fontConfig
           gateway
           sandbox
           whisper-server
@@ -93,8 +93,9 @@
         ];
         LK_CUSTOM_WEBRTC = libwebrtc;
         AGENT_POPPLER_BIN = "${pkgs.poppler-utils}/bin";
-        AGENT_PDF_FONTCONFIG = pdfFontConfig;
+        AGENT_PDF_FONTCONFIG = fontConfig;
         AGENT_CHROMIUM = pkgs.lib.getExe pkgs.chromium;
+        AGENT_CHROMIUM_FONTCONFIG = fontConfig;
         # playwright-core is nixpkgs', not npm's (see nix/agent.nix); `npm install` takes the link away, entering the
         # shell again puts it back.
         shellHook = ''

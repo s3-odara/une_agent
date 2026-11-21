@@ -7,3 +7,4 @@ stt/whisper.cpp/
 stt/models/
 result*
 .direnv/
+/.agents/
