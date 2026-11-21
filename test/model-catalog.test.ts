@@ -3,12 +3,13 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
+import { getClientVersion } from "@earendil-works/pi-ai/utils/identity";
 import { createAgentModels, prepareModels } from "../src/harness.ts";
 
 const NEW = { provider: "openai-codex", modelId: "gpt-9-test" };
 const newModel = { id: NEW.modelId, name: "Test", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100, type: "chat" };
 
-/** Stands in for pi.dev: a Codex catalog with one model pi-ai 1.5.2 does not know. */
+/** Stands in for pi.dev: a Codex catalog with one model the bundled catalog does not know. */
 function piDev(t: TestContext, answer: () => Promise<Response> = async () => Response.json([newModel])) {
 	const seen: Request[] = [];
 	t.mock.method(globalThis, "fetch", async (input: string, init?: RequestInit) => {
@@ -36,7 +37,7 @@ test("a model newer than pi-ai's built-in catalog is usable once the start has f
 		seen.map((request) => request.url),
 		["https://pi.dev/api/models/providers/openai-codex?types=chat,image,classifier"],
 	);
-	assert.match(seen[0]?.headers.get("user-agent") ?? "", /^pi\/1\.5\.2 /);
+	assert.equal(seen[0]?.headers.get("user-agent")?.split(" ")[0], `pi/${getClientVersion()}`);
 });
 
 test("a later start without pi.dev uses the catalog saved last time, and does not wait for it", async (t) => {

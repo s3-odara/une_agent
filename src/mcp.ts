@@ -1,7 +1,7 @@
 import type { Context } from "@earendil-works/chord/context";
-import { defineExtension, defineTool, type Extension, type Registry, section } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type Extension, type Registry } from "@earendil-works/pi-durable";
 import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode";
-import { type CodemodeNamespace, createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { type ExecutionEnv, getOrThrow } from "@earendil-works/pi-durable/env";
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import {
@@ -111,70 +111,49 @@ function saveIn(env: ExecutionEnv | undefined, context: Context): McpOutputSaver
 
 const prefixOf = (server: string) => `${mcpNamespace(server)}__`;
 
-function mcpNamespaces(servers: Readonly<Record<string, McpServer>>): CodemodeNamespace[] {
-	return Object.entries(servers).map(([name, server]) => ({
-		name: mcpNamespace(name),
-		prefix: prefixOf(name),
-		...(server.description === undefined ? {} : { description: server.description }),
-	}));
-}
-
 /** Whether a tool is one of a server the config says only reads (`replay: "safe"`). */
 export function mcpReads(servers: Readonly<Record<string, McpServer>>): (tool: string) => boolean {
 	const prefixes = Object.entries(servers).flatMap(([name, server]) => (server.replay === "safe" ? [prefixOf(name)] : []));
 	return (tool) => prefixes.some((prefix) => tool.startsWith(prefix));
 }
 
-/** `codemode`, `tool_search`, and the names of the servers that only they reach: the agent always has all three. */
 export function createToolAccessExtensions(sandbox: CodemodeSandboxBase, servers: Readonly<Record<string, McpServer>>): Extension[] {
-	return [createCodemodeExtension({ sandbox, namespaces: mcpNamespaces(servers) }), createToolSearchExtension(), createMcpSectionExtension(servers)];
+	return [
+		createCodemodeExtension({ sandbox }),
+		createToolSearchExtension(),
+		// Keep the cached prompt stable when deferred tools arrive.
+		...Object.entries(servers).map(([name, server]) => createMcpExtension(name, server)),
+	];
 }
 
-/**
- * Names the servers whose tools no request offers, so the model knows to look for them. From the config alone, so it
- * stays the same while servers connect.
- */
-function createMcpSectionExtension(servers: Readonly<Record<string, McpServer>>): Extension {
-	const hidden = Object.entries(servers).filter(([, server]) => server.exposure === "codemode");
+function createMcpExtension(name: string, server: McpServer, tools: Extension["tools"] = []): Extension {
 	return defineExtension({
-		name: "mcp-servers",
-		sections:
-			hidden.length === 0
-				? []
-				: [
-						section("mcp_servers", () =>
-							[
-								"次の MCP サーバーのツールは一覧に無い。codemode のスクリプトから searchTools() で探して呼ぶか、tool_search で読み込んで呼ぶ。",
-								...hidden.map(([name, server]) => `- ${mcpNamespace(name)}${server.description === undefined ? "" : `: ${server.description}`}`),
-							].join("\n"),
-						),
-					],
+		name: `mcp-${name}`,
+		namespace: { name: mcpNamespace(name), description: server.description ?? `MCP: ${name}` },
+		tools,
 	});
 }
 
-function createMcpExtension(server: string, session: McpSession, tools: readonly Tool[], options: McpServer): Extension {
+function createMcpTools(server: string, session: McpSession, tools: readonly Tool[], options: McpServer) {
 	const names = new Set<string>();
-	return defineExtension({
-		name: `mcp-${server}`,
-		tools: tools.map((tool) => {
-			const name = createMcpToolName(server, tool.name, (taken) => names.has(taken));
-			names.add(name);
-			return defineTool({
-				name,
-				description: tool.description ?? tool.name,
-				parameters: normalizeMcpInputSchema(tool.inputSchema) as { type: "object" },
-				replay: options.replay,
-				...(options.exposure === "codemode" ? { deferred: true as const } : {}),
-				execute: async (args, api, context) => {
-					const result = await session.callTool(tool.name, args as Record<string, unknown>, context.abortSignal);
-					const { content } = await limitMcpContent(toLlmContent(result), saveIn(api.env, context));
-					if (result.isError === true) {
-						throw new Error(content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n") || `${tool.name} が失敗しました。`);
-					}
-					return { output: [{ type: "text" as const, text: fromServer(server) }, ...content] };
-				},
-			});
-		}),
+	return tools.map((tool) => {
+		const name = createMcpToolName(server, tool.name, (taken) => names.has(taken));
+		names.add(name);
+		return defineTool({
+			name,
+			description: tool.description ?? tool.name,
+			parameters: normalizeMcpInputSchema(tool.inputSchema) as { type: "object" },
+			replay: options.replay,
+			...(options.exposure === "codemode" ? { deferred: true as const } : {}),
+			execute: async (args, api, context) => {
+				const result = await session.callTool(tool.name, args as Record<string, unknown>, context.abortSignal);
+				const { content } = await limitMcpContent(toLlmContent(result), saveIn(api.env, context));
+				if (result.isError === true) {
+					throw new Error(content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n") || `${tool.name} が失敗しました。`);
+				}
+				return { output: [{ type: "text" as const, text: fromServer(server) }, ...content] };
+			},
+		});
 	});
 }
 
@@ -214,7 +193,8 @@ export class McpServers {
 				this.#log(`mcp ${name}: the server has no tool ${missing}`);
 			}
 			this.#sessions.set(name, session);
-			this.#options.registry.install(createMcpExtension(name, session, offered, server));
+			const tools = createMcpTools(name, session, offered, server);
+			this.#options.registry.install(createMcpExtension(name, server, tools));
 			this.#log(`mcp ${name}: ${offered.length} tools installed`);
 		} catch (error) {
 			await session.close().catch(() => {});

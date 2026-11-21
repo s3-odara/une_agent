@@ -158,14 +158,22 @@ test("a call stopped by !new is called off on the server", async () => {
 	await t.server.cancelled.promise;
 });
 
-test("a server left to codemode is named in the instructions with what it is for, and its tools are not offered", async () => {
-	await using t = await setup({ exposure: "codemode" });
+test("a server left to codemode is announced before connecting without changing the prompt on connection", async () => {
+	await using t = await setup({ down: true, exposure: "codemode" });
 	const requests: Request[] = [];
 	t.env.faux.setResponses([noting([], requests)]);
 	await t.say("調べて");
-	assert.ok(instructionsOf(requests[0]!).includes("Web を検索する"));
-	assert.ok(!offered(requests[0]!).includes("mcp__keenable__search_web_pages"));
-	assert.ok(offered(requests[0]!).includes("codemode"));
+	const before = instructionsOf(requests[0]!);
+	assert.ok(before.includes("mcp__keenable"));
+	assert.ok(before.includes("Web を検索する"));
+
+	t.server.down = false;
+	await t.installed;
+	t.env.faux.setResponses([noting([], requests)]);
+	await t.say("もう一度調べて");
+	assert.equal(instructionsOf(requests[1]!), before);
+	assert.ok(!offered(requests[1]!).includes("mcp__keenable__search_web_pages"));
+	assert.ok(offered(requests[1]!).includes("codemode"));
 });
 
 test("a script calls a tool of a server left to codemode, and gets its result marked as from outside", async () => {

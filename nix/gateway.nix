@@ -6,6 +6,10 @@
   glib,
 }:
 let
+  # libwebrtc is built against Chromium's libc++, which needs clang (21 or later).
+  clangCrane = craneLib.overrideScope (_: _: {
+    stdenvSelector = pkgs: pkgs.clangStdenv;
+  });
   src = lib.fileset.toSource {
     root = ../gateway;
     fileset = lib.fileset.unions [
@@ -17,16 +21,14 @@ let
   common = {
     inherit src;
     strictDeps = true;
-    # libwebrtc is built against Chromium's libc++, which needs clang (21 or later) for the C++ that binds to it.
-    stdenv = p: p.clangStdenv;
     nativeBuildInputs = [ pkg-config ];
     # webrtc-sys compiles against glib's headers only.
     buildInputs = [ glib ];
     LK_CUSTOM_WEBRTC = libwebrtc;
   };
-  cargoArtifacts = craneLib.buildDepsOnly common;
+  cargoArtifacts = clangCrane.buildDepsOnly common;
 in
-craneLib.buildPackage (
+clangCrane.buildPackage (
   common
   // {
     inherit cargoArtifacts;

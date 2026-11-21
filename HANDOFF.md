@@ -14,7 +14,7 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 
 ## 決定（ユーザー明言）
 
-- 基盤は **pi-durable**（`@earendil-works/pi-durable` 1.5.2 に固定）。実験的で API が変わるので、上げるときは現行の
+- 基盤は **pi-durable**（`@earendil-works/pi-durable` 1.6.0 に固定）。実験的で API が変わるので、上げるときは現行の
   ドキュメントを確かめる
 - Matrix は **matrix-rust-sdk**、通話は **matrix-rust-rtc**（element-hq、v0.5.0）。**最初から E2EE ルームに対応**
 - 人格は **bot アカウント1つ、ルームごとに人格**。人格は口調（SOUL ファイル）、専用メモの有無、モデルを別々に指定する
@@ -248,8 +248,8 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - サーバーからの GET ストリームは開かない（`tools/list_changed` に対応しない）。ツールが変わるとプロンプトキャッシュが切れ、Keenable は
   ツールを変えない。ツールは起動時に読むだけ。stdio のサーバーと OAuth も、要るまで入れない
 - `exposure: "codemode"` のツールは `deferred` にする。どのリクエストにも載らないので、サーバーが遅れてつながってもツールの一覧が
-  変わらない。そういうサーバーは設定の `description` と一緒に `mcp_servers` セクションに名前を出す（設定だけから作るので変わらない）。
-  サーバーの `instructions` を使わないのは上と同じ理由。ツールが少なくよく使うサーバーは `direct` にする（`tool_search` を挟むと往復が1回増える）
+  変わらない。サーバーの名前と設定の `description` は pi-durable の名前空間として接続前から `codemode` セクションに載せ、接続後も変えない。
+  ツールが少なくよく使うサーバーは `direct` にする（`tool_search` を挟むと往復が1回増える）
 - 20KB を超える結果は中ほどを削り（`limitMcpContent`）、全文は `bash` や `codemode` の長い出力と同じく pi-durable の一時ファイル
   （OS の一時ディレクトリ）に置いて、モデルが `read` で読めるようにする（pi 本体も一時ファイル）。片付けは systemd-tmpfiles 任せ
   （このマシンの `/tmp` は10日）で、溜まるならツールの出力全体の問題として扱う
@@ -399,7 +399,7 @@ Chromium と Playwright の出どころ:
 - モデルは `"プロバイダー/モデル"` の文字列。区切るのは最初の `/` だけ（OpenRouter のモデル名に `/` があるため）
 - pi-ai の既定の認証情報ストアはメモリだけなので、`dataDir/auth.json`（pi-ai の CLI と同じ形）を読み書きする。
   OAuth の更新トークンは使うたびに変わるので書き戻す。OpenAI に送るインストールの ID は `dataDir/device-id` に保存する
-- pi-ai 1.5.2 に組み込みのカタログは古い（`gpt-6.2-sol` が無い）。pi 本体と同じく pi.dev のカタログを重ね、`dataDir/model-catalog.json`
+- pi-ai に組み込みのカタログだけでは新しいモデルを使えないことがある。pi 本体と同じく pi.dev のカタログを重ね、`dataDir/model-catalog.json`
   に pi-ai の版と一緒に保存する（版が変われば捨てる）。pi.dev は User-Agent の版で絞る（`pi/1.0.0` では 6.2 が出ない）ので pi-ai 自身のものを送る
 - 起動時は、設定のモデルが保存したカタログに全部あればそのまま起動して更新は裏で行う。無いときだけ pi.dev を最大15秒待つ
 
@@ -425,6 +425,8 @@ Chromium と Playwright の出どころ:
 4. `just vulkan` で GPU を確かめる（`AMD …（RADV …）` が出ればよい。llvmpipe だけなら CPU で動く）
 5. `just install`。更新は `git pull` してもう一度。ログは `just logs`
 6. VOICEVOX は `voicevox.service` が nixpkgs のものを起動する
+
+- pi-durable 1.5.2 → 1.6.0 では保存タスクの形式が変わる。旧版へ戻せるよう、更新前にサービスを止めて `session.sqlite` をバックアップする。
 
 - `just install` はチェックアウトしているコミットをビルドして `~/.local/state/agent/current` にリンクする。未コミットの変更があれば止まる
   （動いているものをコミットとして `just status` で見せるため）。`deployed-*` は `current` のコマンドを使う

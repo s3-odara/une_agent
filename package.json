@@ -6,16 +6,16 @@
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
-		"@earendil-works/chord": "1.5.2",
-		"@earendil-works/pi-ai": "1.5.2",
-		"@earendil-works/pi-codemode": "1.5.2",
-		"@earendil-works/pi-durable": "1.5.2",
-		"@earendil-works/pi-mcp": "1.5.2",
-		"@earendil-works/pi-schema": "1.5.2",
+		"@earendil-works/chord": "1.6.0",
+		"@earendil-works/pi-ai": "1.6.0",
+		"@earendil-works/pi-codemode": "1.6.0",
+		"@earendil-works/pi-durable": "1.6.0",
+		"@earendil-works/pi-mcp": "1.6.0",
+		"@earendil-works/pi-schema": "1.6.0",
 		"@mozilla/readability": "0.6.0",
 		"ical.js": "2.2.1",
-		"tsdav": "2.5.0",
-		"turndown": "7.2.4"
+		"tsdav": "2.5.1",
+		"turndown": "7.2.5"
 	},
 	"devDependencies": {
 		"@types/node": "26.6.6",
