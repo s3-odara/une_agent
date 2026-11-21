@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type TestContext, test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { type BrowserPage, PlaywrightBrowsers, VIEWPORT } from "../src/browser.ts";
+import { type BrowserPage, PlaywrightBrowsers } from "../src/browser.ts";
 import { createBrowserExtension, pngSize } from "../src/browser-tools.ts";
 import { Credentials } from "../src/credentials.ts";
 import { beacon, egressTo, noChromium, rendererRoots } from "./chromium.ts";
@@ -52,7 +52,7 @@ function site(beacon: string): Server {
 			html('<form method="post" action="/login"><input name="username" aria-label="ユーザー名"><input type="password" name="password" aria-label="パスワード"><button>ログイン</button></form>');
 		} else if (url.pathname === "/canvas") {
 			// Drawn, not built of elements: nothing in it has a ref.
-			html('<canvas width="1024" height="768" style="position:fixed;left:0;top:0"></canvas><p id="hit">まだ</p><script>document.querySelector("canvas").addEventListener("click", (e) => { document.getElementById("hit").textContent = "押された位置 " + e.clientX + "," + e.clientY; });</script>');
+			html('<canvas width="1280" height="800" style="position:fixed;left:0;top:0"></canvas><p id="hit">まだ</p><script>document.querySelector("canvas").addEventListener("click", (e) => { document.getElementById("hit").textContent = "押された位置 " + e.clientX + "," + e.clientY; });</script>');
 		} else if (url.pathname === "/account") {
 			html((request.headers.cookie ?? "").includes("session=ok") ? "<p>ようこそ、me さん</p>" : "<p>ログインしていません</p>");
 		} else {
@@ -235,7 +235,7 @@ test("a screenshot is of the window at the size of its CSS pixels, or of the who
 	if (b === undefined) return;
 	const tab = await b.open("/login");
 	const shot = await tab.screenshot({ format: "png" });
-	assert.deepEqual(pngSize(shot), VIEWPORT);
+	assert.deepEqual(pngSize(shot), { width: 1280, height: 800 });
 	assert.ok(pngSize(await tab.screenshot({ format: "png", fullPage: true })).height >= 1);
 });
 
@@ -243,7 +243,7 @@ test("a click at a point of the window reaches what is drawn there, though it ha
 	await using b = await realBrowser(t);
 	if (b === undefined) return;
 	const tab = await b.open("/canvas");
-	await tab.screenshot({ format: "jpeg", mark: { x: 300, y: 200 } });
-	await tab.clickAt(300, 200);
-	assert.match(await textOf(tab), /押された位置 300,200/);
+	await tab.screenshot({ format: "jpeg", mark: { x: 1100, y: 780 } });
+	await tab.clickAt(1100, 780);
+	assert.match(await textOf(tab), /押された位置 1100,780/);
 });

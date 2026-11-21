@@ -185,14 +185,16 @@ test("a large image is cropped at source resolution", async (t) => {
 	const result = await r.reader.read(`${r.base}/diagram`, false);
 	assert.ok("kind" in result && result.kind === "image");
 
+	const full = await r.reader.renderImage(result);
 	const crop = await r.reader.renderImage(result, { x: 0.5, y: 0.5, width: 0.125, height: 0.125 });
 
-	const decoded = spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", "pipe:0"], {
-		input: Buffer.from(crop.data, "base64"),
-		encoding: "utf8",
-	});
-	assert.equal(decoded.status, 0, decoded.stderr);
-	assert.deepEqual(decoded.stdout.trim().split(",").map(Number), [750, 500]);
+	for (const [image, dimensions] of [[full, [1280, 853]], [crop, [750, 500]]] as const) {
+		const decoded = spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", "pipe:0"], {
+			input: Buffer.from(image.data, "base64"), encoding: "utf8",
+		});
+		assert.equal(decoded.status, 0, decoded.stderr);
+		assert.deepEqual(decoded.stdout.trim().split(",").map(Number), dimensions);
+	}
 });
 
 test("large assets and images with excessive dimensions are refused", async (t) => {

@@ -15,12 +15,7 @@ export type FieldInfo = {
 
 export type PageSnapshot = { readonly url: string; readonly title: string; readonly tree: string };
 
-/**
- * The size of the page and of a screenshot of it, in CSS pixels. Small enough that no model provider shrinks the image
- * (OpenAI scales the short side down to 768, Anthropic the long side to 1568), so a point on the image is the same point
- * on the page.
- */
-export const VIEWPORT = { width: 1024, height: 768 } as const;
+export const VIEWPORT = { width: 1280, height: 800 } as const;
 
 export type ScreenshotOptions = {
 	readonly fullPage?: boolean;

@@ -13,7 +13,7 @@ export type BinarySource = {
 	readonly mediaType: string;
 };
 
-export const IMAGE_EDGE = 1568;
+export const IMAGE_EDGE = 1280;
 
 const MIB = 1024 * 1024;
 const TEXT = /^(text\/(plain|csv|xml|tab-separated-values)|application\/(json|csv|xml|[^/;]+\+(json|xml)))$/;
@@ -93,6 +93,7 @@ type Canvas = {
 	height: number;
 	getContext(kind: "2d"): {
 		drawImage(image: BrowserImage, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
+		imageSmoothingQuality: "high";
 		globalCompositeOperation: string;
 		fillStyle: string;
 		fillRect(x: number, y: number, width: number, height: number): void;
@@ -122,6 +123,7 @@ export async function readImage(page: Page, source: BinarySource, crop?: Crop): 
 			canvas.height = Math.max(1, Math.round(h * scale));
 			const ctx = canvas.getContext("2d");
 			if (ctx === null) return { error: "画像を描画できませんでした。" };
+			if (scale < 1) ctx.imageSmoothingQuality = "high";
 			ctx.drawImage(image, x, y, w, h, 0, 0, canvas.width, canvas.height);
 			const png = canvas.toDataURL("image/png");
 			if (png.length <= 5_000_000) return { data: png.slice(png.indexOf(",") + 1), mimeType: "image/png" };
