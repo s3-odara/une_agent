@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { Calls, OVERTAKEN } from "../src/call.ts";
 import type { GatewayEvent } from "../src/gateway.ts";
-import { readWav, type Synthesizer, sentences, toSpeech } from "../src/tts.ts";
+import { readWav, type Synthesizer, toSpeech } from "../src/tts.ts";
 import { agentEnv, ME } from "./env.ts";
 import { answer, lastInput, message, type Request } from "./fakes.ts";
 
@@ -14,11 +14,13 @@ const ROOM = "!call:example.org";
 class FakeSynthesizer implements Synthesizer {
 	readonly made: { text: string; speaker: number; sampleRate: number }[] = [];
 	fail = false;
+	making = () => {};
 	async synthesize(): Promise<never> {
 		throw new Error("calls do not send voice messages");
 	}
 	async wav(text: string, speaker: number, sampleRate: number): Promise<Buffer> {
 		if (this.fail) throw new Error("engine down");
+		this.making();
 		this.made.push({ text, speaker, sampleRate });
 		return Buffer.from(`RIFF ${text}`);
 	}
@@ -111,7 +113,7 @@ test("what is said in a call goes to the room's conversation, marked as said in 
 	assert.match(lastInput(requests[0]!), /通話\] 明日の天気は？$/);
 });
 
-test("the answer is spoken a sentence at a time, in the persona's voice; with transcripts off nothing is written to the room", async () => {
+test("the answer is spoken whole, in the persona's voice; with transcripts off nothing is written to the room", async () => {
 	await using t = await setup();
 	const text = "**明日**は晴れです。傘はいりません。";
 	t.env.faux.setResponses([fauxAssistantMessage(text)]);
@@ -120,9 +122,9 @@ test("the answer is spoken a sentence at a time, in the persona's voice; with tr
 
 	assert.deepEqual(
 		t.synthesizer.made,
-		sentences(toSpeech(text, t.env.config.voice!.call!.maxChars)).map((sentence) => ({ text: sentence, speaker: 8, sampleRate: 48_000 })),
+		[{ text: toSpeech(text, t.env.config.voice!.call!.maxChars), speaker: 8, sampleRate: 48_000 }],
 	);
-	assert.equal(t.link.of("callSpeak").length, 2);
+	assert.equal(t.link.of("callSpeak").length, 1);
 	assert.deepEqual(t.link.of("send"), []);
 });
 
@@ -135,35 +137,6 @@ test("the utterance and the speech files are deleted once done with", async () =
 	await t.settle();
 	assert.equal(existsSync(utterance.path), false);
 	assert.ok(t.link.of("callSpeak").every((command) => !existsSync(command.path)));
-});
-
-async function speechBetweenSentences(t: Awaited<ReturnType<typeof setup>>, requests: Request[]) {
-	t.env.faux.setResponses([fauxAssistantMessage("一つ目です。二つ目です。三つ目です。"), answer("はい。", requests)]);
-	let played = 0;
-	t.link.speak = (command) => {
-		if (++played === 2) t.link.emit({ type: "callSpeech", roomId: ROOM });
-		return { type: "callSpoken", roomId: command.roomId, id: command.id };
-	};
-	t.inCall();
-	await t.say("三つ言って");
-}
-
-test("the user speaking between the bot's sentences stops the rest of its answer", async () => {
-	await using t = await setup();
-	await speechBetweenSentences(t, []);
-	assert.equal(t.link.of("callSpeak").length, 2);
-});
-
-test("after being stopped between sentences, the persona is told with the next utterance how far its answer got", async () => {
-	await using t = await setup();
-	const requests: Request[] = [];
-	await speechBetweenSentences(t, requests);
-	await t.say("ちょっと待って");
-
-	const next = lastInput(requests[0]!);
-	assert.match(next, /一つ目です。二つ目です。/);
-	assert.doesNotMatch(next, /三つ目/);
-	assert.match(next, /ちょっと待って$/);
 });
 
 test("an answer overtaken by the user speaking again is not spoken, and the persona is told it did not get across", async () => {
@@ -186,6 +159,22 @@ test("an answer overtaken by the user speaking again is not spoken, and the pers
 		t.synthesizer.made.map((made) => made.text),
 		["新しい答えです。"],
 	);
+	assert.ok(lastInput(requests[0]!).includes(OVERTAKEN));
+});
+
+test("an answer overtaken while its voice is being made is not spoken, and the persona is told it did not get across", async () => {
+	await using t = await setup();
+	const requests: Request[] = [];
+	t.env.faux.setResponses([fauxAssistantMessage("古い答えです。"), answer("新しい答えです。", requests)]);
+	t.synthesizer.making = () => {
+		t.synthesizer.making = () => {};
+		t.link.emit({ type: "callSpeech", roomId: ROOM });
+	};
+	t.inCall();
+	await t.say("最初の話");
+	assert.deepEqual(t.link.of("callSpeak"), []);
+
+	await t.say("続きの話");
 	assert.ok(lastInput(requests[0]!).includes(OVERTAKEN));
 });
 

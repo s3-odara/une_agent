@@ -8,7 +8,7 @@ import type { GatewayEvent } from "../src/gateway.ts";
 import { HostDb } from "../src/hostdb.ts";
 import type { VoiceOptions } from "../src/rooms.ts";
 import type { Transcriber } from "../src/stt.ts";
-import { readWav, type Synthesizer, sentences, toSpeech, waveform } from "../src/tts.ts";
+import { readWav, type Synthesizer, toSpeech, waveform } from "../src/tts.ts";
 import { agentEnv, tempDir } from "./env.ts";
 import { answer, lastInput, type Request, wav } from "./fakes.ts";
 
@@ -30,10 +30,6 @@ test("a long answer is read up to the end of the sentence that fits, and says th
 	const spoken = toSpeech("一つ目です。二つ目です。三つ目です。", 12);
 	assert.ok(spoken.startsWith("一つ目です。二つ目です。"), spoken);
 	assert.ok(!spoken.includes("三つ目"), spoken);
-});
-
-test("speech is cut into sentences at their ends, whatever the mark", () => {
-	assert.deepEqual(sentences("明日は晴れです。傘はいりません！本当？"), ["明日は晴れです。", "傘はいりません！", "本当？"]);
 });
 
 test("a WAV file is read as its rate and samples", () => {

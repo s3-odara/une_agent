@@ -134,11 +134,6 @@ export function toSpeech(markdown: string, maxChars: number): string {
 	return limitSpeech(speakable(markdown), maxChars);
 }
 
-/** So the first sentence can play while the rest is still being made. */
-export function sentences(speech: string): string[] {
-	return speech.split(/(?<=[。！？!?])/).map((sentence) => sentence.trim()).filter((sentence) => sentence !== "");
-}
-
 function speakable(markdown: string): string {
 	let text = markdown
 		.replace(/```[\s\S]*?```/g, "（コードは文字で送りました）")

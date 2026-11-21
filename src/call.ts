@@ -8,7 +8,7 @@ import { errorMessage } from "./errors.ts";
 import type { GatewayEvent, GatewayLink } from "./gateway.ts";
 import type { Transcriber } from "./stt.ts";
 import { formatStamp } from "./time.ts";
-import { type Synthesizer, sentences, toSpeech } from "./tts.ts";
+import { type Synthesizer, toSpeech } from "./tts.ts";
 
 /** What the gateway plays into a call. */
 const CALL_SAMPLE_RATE = 48_000;
@@ -183,52 +183,40 @@ export class Calls {
 		}
 	}
 
+	/**
+	 * Made whole before it plays: sentence by sentence, a gap where making the next one fell behind would read as the
+	 * end of the bot's turn, and the gateway would listen again in the middle of it.
+	 */
 	async #speak(roomId: string, room: RoomCall, turn: number, answer: string): Promise<void> {
 		const { config, synthesizer } = this.#options;
 		const call = config.voice?.call ?? fail();
-		const parts = sentences(toSpeech(answer, call.maxChars));
+		const speech = toSpeech(answer, call.maxChars);
+		if (speech === "") return;
 		const speaker = persona(config, personaFor(config, roomId)).voice ?? config.voice?.tts?.speaker ?? fail();
-		const current = () => room.turn === turn && this.#rooms.get(roomId) === room;
-
-		// Each sentence is made after the one before, and only while it is still wanted.
-		let previous: Promise<Buffer | undefined> = Promise.resolve(undefined);
-		const made = parts.map((part) => {
-			previous = previous.then(() => (current() ? synthesizer.wav(part, speaker, CALL_SAMPLE_RATE) : undefined));
-			return previous;
-		});
-		// After a failure every later one fails too, and is never awaited.
-		for (const promise of made) promise.catch(() => {});
-		const said: string[] = [];
-		for (const [i, part] of parts.entries()) {
-			let wav: Buffer | undefined;
-			try {
-				wav = await made[i];
-			} catch (error) {
-				// The listener hears nothing more; the room gets the answer in text instead.
-				const reason = errorMessage(error);
-				this.#log(`making speech for a call in ${roomId} failed: ${reason}`);
-				await this.#options.notice(
-					roomId,
-					`callvoice:${randomUUID()}`,
-					call.transcript ? `音声を作れませんでした（${reason}）。` : `音声を作れなかったので文字で送ります（${reason}）。\n\n${answer}`,
-				);
-				return;
-			}
-			if (wav === undefined || !current()) {
-				if (this.#rooms.get(roomId) === room) room.note = interrupted(said.join(""));
-				return;
-			}
-			await this.#play(roomId, room, wav);
-			said.push(part);
+		let wav: Buffer;
+		try {
+			wav = await synthesizer.wav(speech, speaker, CALL_SAMPLE_RATE);
+		} catch (error) {
+			const reason = errorMessage(error);
+			this.#log(`making speech for a call in ${roomId} failed: ${reason}`);
+			await this.#options.notice(
+				roomId,
+				`callvoice:${randomUUID()}`,
+				call.transcript ? `音声を作れませんでした（${reason}）。` : `音声を作れなかったので文字で送ります（${reason}）。\n\n${answer}`,
+			);
+			return;
 		}
+		if (this.#rooms.get(roomId) !== room) return;
+		if (room.turn !== turn) {
+			room.note = OVERTAKEN;
+			return;
+		}
+		await this.#play(roomId, room, wav);
 	}
 }
 
 export const OVERTAKEN = "直前の返答は、読み上げる前にユーザーが話し始めたので伝わっていません";
 
-function interrupted(heard: string): string {
-	return heard === "" ? "直前の返答は、話し始める前に遮られました" : `直前の返答は「${heard}」まで話したところで遮られました`;
-}
 
 function fail(): never {
 	throw new Error("calls need voice.call and voice.tts in config.json");

@@ -30,8 +30,8 @@ use crate::ipc::{Event, Outbox};
 const MEMBER_EVENT_TYPE: &str = "org.matrix.msc3401.call.member";
 /// What Element Call assumes when a membership states no lifetime.
 const DEFAULT_EXPIRES_MS: u64 = 4 * 60 * 60 * 1000;
-/// Playback is pushed in 10 ms frames, paced by a timer, so stopping it takes effect at once instead of after the
-/// second of audio the source would otherwise queue.
+/// Playback is pushed in 10 ms frames, paced by a timer, so the listeners are deaf for as long as it is actually heard
+/// instead of until the source has queued it.
 const PLAY_FRAME: usize = (SAMPLE_RATE / 100) as usize;
 /// How long after the bot's last sound the listeners stay deaf: its voice comes back through their microphones after
 /// the round trip through the SFU and their jitter buffers.
