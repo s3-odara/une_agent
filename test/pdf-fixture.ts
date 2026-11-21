@@ -1,12 +1,14 @@
 export function samplePdf(label = "Original"): Buffer {
 	const twoColumns = `BT /F1 12 Tf 50 700 Td (${label} left column) Tj ET\nBT /F1 12 Tf 280 700 Td (${label} right column) Tj ET`;
+	const colors = "1 0 0 rg 10 20 400 400 re f 0 0 1 rg 10 420 400 400 re f";
 	const objects = [
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>",
 		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>",
-		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /CropBox [10 20 410 820] /Rotate 90 /Contents 7 0 R >>",
 		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
 		`<< /Length ${Buffer.byteLength(twoColumns)} >>\nstream\n${twoColumns}\nendstream`,
+		`<< /Length ${Buffer.byteLength(colors)} >>\nstream\n${colors}\nendstream`,
 	];
 	let pdf = "%PDF-1.4\n";
 	const offsets = objects.map((object, i) => {

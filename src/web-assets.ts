@@ -9,6 +9,11 @@ export type ReadImage = {
 	readonly image: { readonly data: string; readonly mimeType: string };
 };
 
+export type Crop = { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+export type ImageSource = { readonly url: string; readonly status?: number; readonly imageSource: Buffer; readonly mediaType: string };
+
+export const IMAGE_EDGE = 1568;
+
 export type ReadPdf = { readonly url: string; readonly status?: number; readonly pdf: Buffer };
 
 const MIB = 1024 * 1024;
@@ -32,7 +37,7 @@ export async function interceptAsset(cdp: CDPSession): Promise<() => Promise<Ass
 		result = (async () => {
 			const pdf = mediaType === "application/pdf";
 			if (!pdf && !mediaType.startsWith("image/") && !TEXT.test(mediaType)) return new ReadError(`この形式は読めません（${mediaType}）。`);
-			const maxMiB = pdf ? 20 : 5;
+			const maxMiB = pdf || mediaType.startsWith("image/") ? 20 : 5;
 			if (Number(header("content-length")) > maxMiB * MIB) throw oversized(maxMiB);
 			const { stream } = await cdp.send("Fetch.takeResponseBodyAsStream", { requestId });
 			return { body: await readBody(cdp, stream, maxMiB), url: request.url, status, mediaType, contentType };
@@ -88,7 +93,7 @@ type Canvas = {
 	width: number;
 	height: number;
 	getContext(kind: "2d"): {
-		drawImage(image: BrowserImage, x: number, y: number, width: number, height: number): void;
+		drawImage(image: BrowserImage, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
 		globalCompositeOperation: string;
 		fillStyle: string;
 		fillRect(x: number, y: number, width: number, height: number): void;
@@ -96,8 +101,8 @@ type Canvas = {
 	toDataURL(type: string, quality?: number): string;
 };
 
-export async function readImage(page: Page, mediaType: string, body: Buffer): Promise<ReadImage["image"]> {
-	const result = await page.evaluate(async ({ mediaType, data }) => {
+export async function readImage(page: Page, source: ImageSource, crop?: Crop): Promise<ReadImage["image"]> {
+	const result = await page.evaluate(async ({ mediaType, data, crop, edge }) => {
 		const { Image, document } = globalThis as unknown as { Image: new () => BrowserImage; document: { createElement(tag: "canvas"): Canvas } };
 		const blob = new Blob([Uint8Array.fromBase64(data)], { type: mediaType });
 		const url = URL.createObjectURL(blob);
@@ -107,14 +112,18 @@ export async function readImage(page: Page, mediaType: string, body: Buffer): Pr
 			if (!(await image.decode().then(() => true, () => false))) return { error: "画像を読み込めませんでした。" };
 			const { naturalWidth: width, naturalHeight: height } = image;
 			if (width === 0 || height === 0) return { error: "画像を読み込めませんでした。" };
-			if (width > 8192 || height > 8192 || width * height > 16_000_000) return { error: "画像の寸法が大きすぎます。" };
+			if (width > 12_000 || height > 12_000 || width * height > 50_000_000) return { error: "画像の寸法が大きすぎます。" };
+			const x = Math.min(width - 1, Math.floor((crop?.x ?? 0) * width));
+			const y = Math.min(height - 1, Math.floor((crop?.y ?? 0) * height));
+			const w = crop === undefined ? width : Math.min(width - x, Math.max(1, Math.ceil((crop.x + crop.width) * width) - x));
+			const h = crop === undefined ? height : Math.min(height - y, Math.max(1, Math.ceil((crop.y + crop.height) * height) - y));
 			const canvas = document.createElement("canvas");
-			const scale = Math.min(1, 1568 / Math.max(width, height));
-			canvas.width = Math.max(1, Math.round(width * scale));
-			canvas.height = Math.max(1, Math.round(height * scale));
+			const scale = Math.min(1, edge / Math.max(w, h));
+			canvas.width = Math.max(1, Math.round(w * scale));
+			canvas.height = Math.max(1, Math.round(h * scale));
 			const ctx = canvas.getContext("2d");
 			if (ctx === null) return { error: "画像を描画できませんでした。" };
-			ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+			ctx.drawImage(image, x, y, w, h, 0, 0, canvas.width, canvas.height);
 			const png = canvas.toDataURL("image/png");
 			if (png.length <= 5_000_000) return { data: png.slice(png.indexOf(",") + 1), mimeType: "image/png" };
 			ctx.globalCompositeOperation = "destination-over";
@@ -125,7 +134,7 @@ export async function readImage(page: Page, mediaType: string, body: Buffer): Pr
 		} finally {
 			URL.revokeObjectURL(url);
 		}
-	}, { mediaType, data: body.toString("base64") });
+	}, { mediaType: source.mediaType, data: source.imageSource.toString("base64"), crop, edge: IMAGE_EDGE });
 	if (result.error !== undefined) throw new ReadError(result.error);
 	return result;
 }

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { UNTRUSTED } from "../src/untrusted.ts";
 import { type PageReader, type ReadPage, type ReadResource, ReadError } from "../src/extract.ts";
+import type { ImageSource } from "../src/web-assets.ts";
 import { createWebExtension } from "../src/web-tools.ts";
 import { agentEnv } from "./env.ts";
 import { noLandlock } from "./landlock.ts";
@@ -22,6 +24,9 @@ class FakeReader implements PageReader {
 		if (page === undefined) throw new ReadError("ページを開けませんでした。");
 		if (page instanceof Error) throw page;
 		return page;
+	}
+	async renderImage(source: ImageSource) {
+		return { data: source.imageSource.toString("base64"), mimeType: source.mediaType };
 	}
 	async close(): Promise<void> {}
 }
@@ -65,12 +70,28 @@ test("a page comes to the model marked as content, not as instructions", async (
 test("a direct image URL reaches the model as an image with its source marked untrusted", async () => {
 	const url = "https://example.com/figure";
 	const image = { data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==", mimeType: "image/png" };
-	await using t = await setup({ [url]: { url, image } });
+	const source = { url, imageSource: Buffer.from(image.data, "base64"), mediaType: image.mimeType };
+	const files = { [url]: source };
+	let now = 0;
+	await using t = await setup(files, () => now);
 	t.env.faux.setResponses([call("web_extract", { url }), t.noting]);
 	await t.say("図を見て");
 	assert.deepEqual(imagesIn(t.requests[0]!), [{ type: "image", ...image }]);
 	assert.ok(t.results[0]?.text.includes(url));
 	assert.ok(t.results[0]?.text.includes(UNTRUSTED));
+	files[url] = { ...source, imageSource: Buffer.from("replacement") };
+	const crop = { x: 0, y: 0.5, width: 1, height: 0.5 };
+	const zoom = async () => {
+		t.env.faux.setResponses([call("web_extract", { url, crop }), t.noting]);
+		await t.say("下半分も見て");
+	};
+	await zoom();
+	assert.deepEqual(t.reader.opened, [url]);
+	assert.deepEqual(imagesIn(t.requests.at(-1)!), [{ type: "image", ...image }]);
+	now += 60 * 60_000;
+	await zoom();
+	assert.deepEqual(t.reader.opened, [url, url]);
+	assert.match(t.results.at(-1)!.text, /以前と同じ版とは限りません/);
 });
 
 const noPoppler = process.env.AGENT_POPPLER_BIN ? noLandlock() : "AGENT_POPPLER_BIN is not set (the dev shell sets it)";
@@ -80,7 +101,7 @@ test("PDF text, layout and images use the same PDF until its cache expires", { s
 	const files = { [url]: { url, pdf: samplePdf() } };
 	let now = 0;
 	await using t = await setup(files, () => now, 110);
-	const read = async (args: Record<string, string | number> = {}) => {
+	const read = async (args: Parameters<typeof call>[1] = {}) => {
 		t.env.faux.setResponses([call("web_extract", { url, ...args }), t.noting]);
 		await t.say("PDF を読んで");
 		return t.results.at(-1)!;
@@ -94,7 +115,7 @@ test("PDF text, layout and images use the same PDF until its cache expires", { s
 	assert.match((await read({ offset })).text, /文字を抽出できませんでした/);
 	const layout = await read({ page: 1, pdfMode: "layout" });
 	assert.match(layout.text, /Original left column {3,}Original right column/);
-	const image = await read({ page: 2, pdfMode: "image" });
+	const image = await read({ page: 2, pdfMode: "image", crop: { x: 0.5, y: 0, width: 0.5, height: 1 } });
 	assert.match(image.text, /PDF 2 ページ目/);
 	assert.equal(imagesIn(t.requests.at(-1)!)[0]?.mimeType, "image/jpeg");
 	assert.deepEqual(t.reader.opened, [url]);
@@ -105,6 +126,29 @@ test("PDF text, layout and images use the same PDF until its cache expires", { s
 	assert.match(reloaded.text, /以前と同じ版とは限りません/);
 	assert.match(reloaded.text, /Updated left column {3,}Updated right column/);
 	assert.deepEqual(t.reader.opened, [url, url]);
+});
+
+test("PDF crop uses the visible sides of a rotated page", { skip: noPoppler ?? (spawnSync("ffmpeg", ["-version"]).status === 0 ? false : "ffmpeg is not installed") }, async () => {
+	const url = "https://example.com/rotated";
+	await using t = await setup({ [url]: { url, pdf: samplePdf() } });
+	for (const [x, channel] of [[0, 0], [0.5, 2]] as const) {
+		t.env.faux.setResponses([call("web_extract", { url, page: 2, pdfMode: "image", crop: { x, y: 0, width: 0.5, height: 1 } }), t.noting]);
+		await t.say("回転したページを拡大して");
+		const image = imagesIn(t.requests.at(-1)!)[0];
+		assert.ok(image);
+		const decoded = spawnSync("ffmpeg", ["-v", "error", "-i", "pipe:0", "-vf", "scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { input: Buffer.from(image.data, "base64") });
+		assert.equal(decoded.status, 0, decoded.stderr.toString());
+		assert.ok((decoded.stdout[channel] ?? 0) > 240);
+		assert.ok((decoded.stdout[2 - channel] ?? 255) < 15);
+	}
+});
+
+test("crop rejects an out-of-bounds rectangle without fetching the URL", async () => {
+	await using t = await setup({});
+	t.env.faux.setResponses([call("web_extract", { url: "https://example.com/image", crop: { x: 0.9, y: 0, width: 0.2, height: 1 } }), t.noting]);
+	await t.say("拡大して");
+	assert.match(t.results[0]?.text ?? "", /元画像の範囲内/);
+	assert.deepEqual(t.reader.opened, []);
 });
 
 test("PDF layout and image modes require a page before touching the URL", async () => {

@@ -1,8 +1,8 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { bool, int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { bool, int, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { ReadError, type PageReader, type ReadPage } from "./extract.ts";
 import { readPdf } from "./pdf.ts";
-import type { ReadPdf } from "./web-assets.ts";
+import type { ImageSource, ReadPdf } from "./web-assets.ts";
 import { UNTRUSTED } from "./untrusted.ts";
 import { httpUrl } from "./urls.ts";
 import { onCharacter } from "./text.ts";
@@ -16,8 +16,9 @@ export type WebToolsOptions = {
 const KEEP_MS = 60 * 60_000;
 const KEEP_PAGES = 20;
 const MAX_STORED = 500_000;
-const PDF_CACHE_BYTES = 40 * 1024 * 1024;
-const PDF_CACHE_ENTRIES = 20;
+const ASSET_CACHE_BYTES = 40 * 1024 * 1024;
+const ASSET_CACHE_ENTRIES = 20;
+const fraction = num({ minimum: 0, maximum: 1 });
 
 type Kept = ReadPage & { readonly at: number };
 
@@ -59,33 +60,35 @@ export function createWebExtension(options: WebToolsOptions) {
 	const { reader, maxChars } = options;
 	const now = options.now ?? Date.now;
 	const kept = new Map<string, Kept>();
-	const documents = new Map<string, { readonly file: ReadPdf; readonly at: number; readonly id: number; readonly expiry: NodeJS.Timeout }>();
-	let pdfBytes = 0;
-	let pdfId = 0;
-	const dropPdf = (url: string) => {
-		const entry = documents.get(url);
+	const assets = new Map<string, { readonly file: ReadPdf | ImageSource; readonly size: number; readonly at: number; readonly id: number; readonly expiry: NodeJS.Timeout }>();
+	let assetBytes = 0;
+	let assetId = 0;
+	const dropAsset = (url: string) => {
+		const entry = assets.get(url);
 		if (entry === undefined) return;
 		clearTimeout(entry.expiry);
-		pdfBytes -= entry.file.pdf.length;
-		documents.delete(url);
+		assetBytes -= entry.size;
+		assets.delete(url);
 	};
-	const cachedPdf = (url: string) => {
-		const entry = documents.get(url);
+	const cachedAsset = (url: string) => {
+		const entry = assets.get(url);
 		if (entry === undefined || now() - entry.at < KEEP_MS) return entry;
-		dropPdf(url);
+		dropAsset(url);
 		return undefined;
 	};
-	const keepPdf = (url: string, file: ReadPdf) => {
-		const cached = cachedPdf(url);
+	const keepAsset = (url: string, file: ReadPdf | ImageSource) => {
+		const cached = cachedAsset(url);
 		if (cached !== undefined) return cached;
-		for (const key of documents.keys()) cachedPdf(key);
-		while (documents.size > 0 && (documents.size >= PDF_CACHE_ENTRIES || pdfBytes + file.pdf.length > PDF_CACHE_BYTES)) {
-			const oldest = documents.keys().next();
-			if (!oldest.done) dropPdf(oldest.value);
+		const size = ("pdf" in file ? file.pdf : file.imageSource).length;
+		for (const key of assets.keys()) cachedAsset(key);
+		while (assets.size >= ASSET_CACHE_ENTRIES || assetBytes + size > ASSET_CACHE_BYTES) {
+			const oldest = assets.keys().next();
+			if (oldest.done) break;
+			dropAsset(oldest.value);
 		}
-		const entry = { file, at: now(), id: ++pdfId, expiry: setTimeout(() => dropPdf(url), KEEP_MS).unref() };
-		pdfBytes += file.pdf.length;
-		documents.set(url, entry);
+		const entry = { file, size, at: now(), id: ++assetId, expiry: setTimeout(() => dropAsset(url), KEEP_MS).unref() };
+		assetBytes += size;
+		assets.set(url, entry);
 		return entry;
 	};
 
@@ -111,14 +114,19 @@ export function createWebExtension(options: WebToolsOptions) {
 					...readParameters,
 					page: opt(int({ description: "PDF の先頭を 1 とするページ番号。省略時は複数ページのテキストを読む", minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
 					pdfMode: opt(oneOf(["text", "layout", "image"], { description: "PDF のみ。text は既定、layout は配置を保つ。layout / image は page 必須" })),
+					crop: opt(obj({ x: fraction, y: fraction, width: fraction, height: fraction }, { description: "画像 URL または PDF の image モードのみ。元画像全体を基準に左上原点の 0〜1 の割合で切り出す" })),
 				}),
 				replay: "safe",
 				execute: async (args, _api, context) => {
 					const url = httpUrl(args.url).href;
 					const offset = args.offset ?? 0;
 					const whole = args.whole === true;
-					const { page, pdfMode } = args;
+					const { page, pdfMode, crop } = args;
 					const mode = pdfMode ?? "text";
+					if (crop !== undefined && (crop.width <= 0 || crop.height <= 0 || crop.x + crop.width > 1 || crop.y + crop.height > 1)) {
+						throw new ReadError("crop は元画像の範囲内で、幅と高さが 0 より大きい必要があります。");
+					}
+					if (crop !== undefined && offset > 0) throw new ReadError("crop に offset は使えません。");
 					if (mode !== "text" && page === undefined) throw new ReadError(`pdfMode=${mode} には page が必要です。`);
 					if (mode === "image" && offset > 0) throw new ReadError("pdfMode=image に offset は使えません。");
 					const pdfRequested = page !== undefined || pdfMode !== undefined;
@@ -127,33 +135,41 @@ export function createWebExtension(options: WebToolsOptions) {
 						const value = kept.get(key);
 						return offset > 0 && value !== undefined && now() - value.at < KEEP_MS ? value : undefined;
 					};
-					const cached = cachedPdf(url);
-					const previousText = cached === undefined && !pdfRequested ? freshText(key) : undefined;
-					const resource = cached?.file ?? previousText ?? await reader.read(url, whole, context.abortSignal);
+					const cached = cachedAsset(url);
+					const previousText = cached === undefined && !pdfRequested && crop === undefined ? freshText(key) : undefined;
+					const fetched = cached?.file ?? previousText ?? await reader.read(url, whole, context.abortSignal);
+					const entry = "pdf" in fetched || "imageSource" in fetched ? cached ?? keepAsset(url, fetched) : undefined;
+					const resource = entry?.file ?? fetched;
+					const notice = cached === undefined && (crop !== undefined || offset > 0 || pdfRequested)
+						? "（キャッシュになかったため URL から取得しました。以前と同じ版とは限りません。）\n\n" : "";
+					const region = crop === undefined ? "" : `\n切り出し範囲: x=${crop.x}, y=${crop.y}, width=${crop.width}, height=${crop.height}（元画像全体に対する割合）`;
 					if ("pdf" in resource) {
 						kept.delete(`main ${url}`);
 						kept.delete(`whole ${url}`);
-						const document = cached ?? keepPdf(url, resource);
-						const pdfKey = `pdf ${document.id} ${mode} ${page ?? "all"}`;
+						if (crop !== undefined && mode !== "image") throw new ReadError("PDF の crop には page と pdfMode=image が必要です。");
+						const pdfKey = `pdf ${entry?.id} ${mode} ${page ?? "all"}`;
 						const fresh = freshText(pdfKey);
-						const result = fresh ?? await readPdf(document.file, mode, page, context.abortSignal);
-						const notice = cached === undefined && (offset > 0 || pdfRequested) ? "（キャッシュに PDF がなかったため URL から取得しました。以前と同じ版とは限りません。）\n\n" : "";
+						const result = fresh ?? await readPdf(resource, mode, page, context.abortSignal, crop);
 						if ("image" in result) return { output: [
-							{ type: "text" as const, text: `${notice}URL: ${result.url}${result.status === undefined ? "" : `\nHTTP ステータス: ${result.status}`}\nPDF ${page} ページ目\n\n${UNTRUSTED}` },
+							{ type: "text" as const, text: `${notice}URL: ${result.url}${result.status === undefined ? "" : `\nHTTP ステータス: ${result.status}`}\nPDF ${page} ページ目${region}\n\n${UNTRUSTED}` },
 							{ type: "image" as const, ...result.image },
 						] };
 						const again = (next: number) => `web_extract を同じ url${page === undefined ? "" : `、page=${page}`}${mode === "text" ? "" : `、pdfMode=${mode}`}、offset=${next} で呼ぶ`;
 						return { output: [{ type: "text" as const, text: notice + renderPart(fresh ?? keep(pdfKey, result), false, offset, maxChars, again) }] };
 					}
 					if (pdfRequested) throw new ReadError("page と pdfMode は PDF にだけ使えます。");
-					if ("image" in resource) {
-						kept.delete(key);
+					if ("imageSource" in resource) {
+						kept.delete(`main ${url}`);
+						kept.delete(`whole ${url}`);
+						if (offset > 0) throw new ReadError("画像に offset は使えません。");
+						const image = await reader.renderImage(resource, crop, context.abortSignal);
 						const status = resource.status === undefined ? "" : `\nHTTP ステータス: ${resource.status}`;
 						return { output: [
-							{ type: "text" as const, text: `URL: ${resource.url}${status}\n\n${UNTRUSTED}` },
-							{ type: "image" as const, ...resource.image },
+							{ type: "text" as const, text: `${notice}URL: ${resource.url}${status}${region}\n\n${UNTRUSTED}` },
+							{ type: "image" as const, ...image },
 						] };
 					}
+					if (crop !== undefined) throw new ReadError("crop は画像 URL または PDF の画像モードにだけ使えます。");
 					const again = (next: number) => `web_extract を同じ url${whole ? "、whole=true" : ""}、offset=${next} で呼ぶ`;
 					return { output: [{ type: "text" as const, text: renderPart(previousText ?? keep(key, resource), whole, offset, maxChars, again) }] };
 				},

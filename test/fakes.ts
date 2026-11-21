@@ -178,7 +178,7 @@ export function imagesIn(request: Request): { readonly data: string; readonly mi
 	return Array.isArray(result?.content) ? result.content.filter((block: { type: string }) => block.type === "image") : [];
 }
 
-export const call = (name: string, args: Record<string, string | boolean | number>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
+export const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
 export type ToolResult = ReturnType<typeof lastToolResult>;
 export const noting =
 	(results: ToolResult[], requests: Request[] = []) =>

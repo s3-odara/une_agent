@@ -1,10 +1,10 @@
-import type { Browser } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import { EgressError, type EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
 import { IdleChromium, launchSandboxed } from "./sandbox.ts";
 import { extractFrom, settle } from "./page.ts";
 import { httpUrl } from "./urls.ts";
-import { decodeText, interceptAsset, ReadError, readImage, type ReadImage, type ReadPdf } from "./web-assets.ts";
+import { decodeText, interceptAsset, ReadError, readImage, type Crop, type ImageSource, type ReadImage, type ReadPdf } from "./web-assets.ts";
 
 export { ReadError };
 
@@ -17,10 +17,11 @@ export type ReadPage = {
 	readonly mediaType?: string;
 };
 
-export type ReadResource = ReadPage | ReadImage | ReadPdf;
+export type ReadResource = ReadPage | ImageSource | ReadPdf;
 
 export interface PageReader {
 	read(url: string, whole: boolean, signal?: AbortSignal): Promise<ReadResource>;
+	renderImage(source: ImageSource, crop?: Crop, signal?: AbortSignal): Promise<ReadImage["image"]>;
 	close(): Promise<void>;
 }
 
@@ -62,24 +63,8 @@ export class PlaywrightReader implements PageReader {
 			throw error;
 		}
 
-		// Not kept from closing for idleness while it reads: a read ends within its timeout, well under the shortest idle time.
-		const browser = await this.#chromium.get();
-		const context = await browser.newContext({
-			locale: "ja-JP",
-			timezoneId: this.#options.timezone,
-			viewport: { width: 1280, height: 800 },
-			serviceWorkers: "block",
-			acceptDownloads: false,
-			// The extraction runs in the page; a page's Content-Security-Policy must not stop it.
-			bypassCSP: true,
-		});
-		const stop = () => void context.close().catch(() => {});
-		const timer = setTimeout(stop, this.#timeoutMs);
-		signal?.addEventListener("abort", stop, { once: true });
-		try {
-			if (signal?.aborted) throw new ReadError("読み込みを中止しました。");
-			const page = await context.newPage();
-			const cdp = await context.newCDPSession(page);
+		return this.#withPage(signal, async (page) => {
+			const cdp = await page.context().newCDPSession(page);
 			const asset = await interceptAsset(cdp);
 			let response: Awaited<ReturnType<typeof page.goto>>;
 			try {
@@ -93,12 +78,35 @@ export class PlaywrightReader implements PageReader {
 				const { body, url, status, mediaType, contentType } = intercepted;
 				const meta = { url, ...(status >= 200 && status < 300 ? {} : { status }) };
 				if (mediaType === "application/pdf") return { ...meta, pdf: body };
-				if (mediaType.startsWith("image/")) return { ...meta, image: await readImage(page, mediaType, body) };
+				if (mediaType.startsWith("image/")) return { ...meta, imageSource: body, mediaType };
 				return { ...meta, title: "", markdown: decodeText(body, contentType), scope: "page", mediaType };
 			}
 			await settle(page);
 			const status = response === null || response.ok() ? {} : { status: response.status() };
 			return { url: page.url(), ...(await extractFrom(page, whole)), ...status };
+		});
+	}
+
+	renderImage(source: ImageSource, crop?: Crop, signal?: AbortSignal): Promise<ReadImage["image"]> {
+		return this.#withPage(signal, (page) => readImage(page, source, crop));
+	}
+
+	async #withPage<T>(signal: AbortSignal | undefined, use: (page: Page) => Promise<T>): Promise<T> {
+		const context = await (await this.#chromium.get()).newContext({
+			locale: "ja-JP",
+			timezoneId: this.#options.timezone,
+			viewport: { width: 1280, height: 800 },
+			serviceWorkers: "block",
+			acceptDownloads: false,
+			// The extraction runs in the page; a page's Content-Security-Policy must not stop it.
+			bypassCSP: true,
+		});
+		const stop = () => void context.close().catch(() => {});
+		const timer = setTimeout(stop, this.#timeoutMs);
+		signal?.addEventListener("abort", stop, { once: true });
+		try {
+			if (signal?.aborted) throw new ReadError("読み込みを中止しました。");
+			return await use(await context.newPage());
 		} catch (error) {
 			if (signal?.aborted === true) throw new ReadError("読み込みを中止しました。");
 			if (error instanceof ReadError) throw error;

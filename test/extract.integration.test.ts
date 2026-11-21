@@ -55,9 +55,9 @@ function site(beacon: string): Server {
 			case "/diagram":
 				return void response.writeHead(302, { location: "/asset", "content-type": "text/plain" }).end("redirect");
 			case "/asset":
-				return void response.writeHead(200, { "content-type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="30" height="20"><rect width="30" height="20" fill="red"/></svg>');
+				return void response.writeHead(200, { "content-type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="6000" height="4000"><rect width="6000" height="4000" fill="red"/></svg>');
 			case "/wide":
-				return void response.writeHead(200, { "content-type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="8193" height="20"/>');
+				return void response.writeHead(200, { "content-type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="12001" height="20"/>');
 			case "/large":
 				response.writeHead(200, { "content-type": "application/json" });
 				response.write('"');
@@ -182,17 +182,23 @@ test("an image URL redirect is read as an image, not a page", async (t) => {
 	if (r === undefined) return;
 	const result = await r.reader.read(`${r.base}/diagram`, false);
 	assert.equal(result.url, `${r.base}/asset`);
-	assert.ok("image" in result);
-	assert.equal(result.image.mimeType, "image/png");
-	const png = Buffer.from(result.image.data, "base64");
-	assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [30, 20]);
+	assert.ok("imageSource" in result);
+	const full = await r.reader.renderImage(result);
+	const crop = await r.reader.renderImage(result, { x: 0.5, y: 0.5, width: 0.125, height: 0.125 });
+	for (const [image, size] of [[full, [1568, 1045]], [crop, [750, 500]]] as const) {
+		assert.equal(image.mimeType, "image/png");
+		const png = Buffer.from(image.data, "base64");
+		assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], size);
+	}
 });
 
 test("large assets and images with excessive dimensions are refused", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
 	await assert.rejects(r.reader.read(`${r.base}/large`, false), /上限 5 MiB/);
-	await assert.rejects(r.reader.read(`${r.base}/wide`, false), /画像の寸法/);
+	const wide = await r.reader.read(`${r.base}/wide`, false);
+	assert.ok("imageSource" in wide);
+	await assert.rejects(r.reader.renderImage(wide), /画像の寸法/);
 });
 
 test("an attached PDF is fetched intact without a browser download", async (t) => {
