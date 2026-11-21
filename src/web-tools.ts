@@ -24,7 +24,9 @@ const REFETCHED = "（キャッシュになかったため URL から取得し�
 function imageOutput(source: BinarySource, image: Image, notice: string, crop: Crop | undefined, page?: number) {
 	const status = source.status === undefined ? "" : `\nHTTP ステータス: ${source.status}`;
 	const label = page === undefined ? "" : `\nPDF ${page} ページ目`;
-	const region = crop === undefined ? "" : `\n切り出し範囲: x=${crop.x}, y=${crop.y}, width=${crop.width}, height=${crop.height}（元画像全体に対する割合）`;
+	const region = crop === undefined
+		? `\n細部が読めなければ、同じ url${page === undefined ? "" : `、page=${page}、pdfMode=image`} に crop を指定して、元画像から必要な範囲を切り出せます。`
+		: `\n切り出し範囲: x=${crop.x}, y=${crop.y}, width=${crop.width}, height=${crop.height}（元画像全体に対する割合）`;
 	return { output: [
 		{ type: "text" as const, text: `${notice}URL: ${source.url}${status}${label}${region}\n\n${UNTRUSTED}` },
 		{ type: "image" as const, ...image },

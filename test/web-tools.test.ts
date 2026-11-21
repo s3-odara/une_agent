@@ -79,6 +79,7 @@ test("a direct image URL reaches the model as an image with its source marked un
 	assert.deepEqual(imagesIn(t.requests[0]!), [{ type: "image", ...image }]);
 	assert.ok(t.results[0]?.text.includes(url));
 	assert.ok(t.results[0]?.text.includes(UNTRUSTED));
+	assert.match(t.results[0]!.text, /\bcrop\b/);
 	const updated = { ...image, data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC" };
 	files[url] = { ...source, body: Buffer.from(updated.data, "base64") };
 	const crop = { x: 0, y: 0.5, width: 1, height: 0.5 };
@@ -87,6 +88,7 @@ test("a direct image URL reaches the model as an image with its source marked un
 		await t.say("下半分も見て");
 	};
 	await zoom();
+	assert.doesNotMatch(t.results.at(-1)!.text, /\bcrop\b/);
 	assert.deepEqual(t.reader.opened, [url]);
 	assert.deepEqual(imagesIn(t.requests.at(-1)!), [{ type: "image", ...image }]);
 	now += 60 * 60_000;
@@ -119,6 +121,10 @@ test("PDF text, layout and images use the same PDF until its cache expires", { s
 	assert.match((await read({ offset })).text, /文字を抽出できませんでした/);
 	const layout = await read({ page: 1, pdfMode: "layout" });
 	assert.match(layout.text, /Original left column[ \t]+Original right column/);
+	const fullImage = await read({ page: 2, pdfMode: "image" });
+	assert.match(fullImage.text, /\bcrop\b/);
+	assert.match(fullImage.text, /\bpage=2\b/);
+	assert.match(fullImage.text, /\bpdfMode=image\b/);
 	const image = await read({ page: 2, pdfMode: "image", crop: { x: 0.5, y: 0, width: 0.5, height: 1 } });
 	assert.match(image.text, /PDF 2 ページ目/);
 	assert.ok(imagesIn(t.requests.at(-1)!)[0]);
