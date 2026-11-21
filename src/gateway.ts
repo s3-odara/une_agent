@@ -25,17 +25,18 @@ export type GatewayEvent =
 	| { readonly type: "callJoined"; readonly roomId: string }
 	/** Out of the call: `reason` is empty when it left as asked or because everyone else did. */
 	| { readonly type: "callLeft"; readonly roomId: string; readonly reason: string }
-	/** Somebody started speaking; the gateway has already stopped whatever the bot was saying. */
+	/** Somebody started speaking. Never while the bot talks: the gateway does not listen then. */
 	| { readonly type: "callSpeech"; readonly roomId: string }
 	/** One utterance as a 16 kHz mono WAV file. Delete it once done. */
 	| { readonly type: "callUtterance"; readonly roomId: string; readonly path: string; readonly startedAt: number }
-	| { readonly type: "callSpoken"; readonly roomId: string; readonly id: string; readonly playedMs: number; readonly interrupted: boolean };
+	/** Played to the end, or not played at all because it could not be. */
+	| { readonly type: "callSpoken"; readonly roomId: string; readonly id: string };
 
 /** Keep in step with `VadConfig` in `gateway/src/audio.rs`. */
 export type CallVad = {
 	/** The VAD's score (0 to 1) from which a 16 ms frame counts as speech. */
 	readonly threshold: number;
-	/** Speech must last this long to start an utterance, and to stop the bot talking. */
+	/** Speech must last this long to start an utterance. */
 	readonly startMs: number;
 	readonly endSilenceMs: number;
 	readonly minSpeechMs: number;

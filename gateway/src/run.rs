@@ -278,7 +278,7 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
             }
             Command::CallSpeak { room_id, id, path } => {
                 if let Err(error) = shared.calls.control(&room_id, Control::Speak { id: id.clone(), path }) {
-                    shared.emit(Event::CallSpoken { room_id, id, played_ms: 0, interrupted: true });
+                    shared.emit(Event::CallSpoken { room_id, id });
                     warn!("{error:#}");
                 }
             }

@@ -30,12 +30,10 @@ type RoomCall = {
 	turn: number;
 	tail: Promise<void>;
 	note: string | undefined;
-	readonly spoken: Map<string, (spoken: Spoken) => void>;
+	readonly spoken: Map<string, () => void>;
 };
 
-type Spoken = { readonly playedMs: number; readonly interrupted: boolean };
-
-/** Talking over the bot stops it: the gateway does that at once, not this code. */
+/** The bot and the user take turns: the gateway does not listen while the bot talks, so the bot is never talked over. */
 export class Calls {
 	readonly #options: CallsOptions;
 	readonly #log: (message: string) => void;
@@ -78,7 +76,7 @@ export class Calls {
 			case "callLeft": {
 				const room = this.#rooms.get(event.roomId);
 				this.#rooms.delete(event.roomId);
-				for (const resolve of room?.spoken.values() ?? []) resolve({ playedMs: 0, interrupted: true });
+				for (const resolve of room?.spoken.values() ?? []) resolve();
 				if (event.reason === "") return this.#log(`left the call in ${event.roomId}`);
 				this.#log(`left the call in ${event.roomId}: ${event.reason}`);
 				this.#track(this.#options.notice(event.roomId, `callleft:${randomUUID()}`, `通話から抜けました（${event.reason}）。`));
@@ -101,7 +99,7 @@ export class Calls {
 				return;
 			}
 			case "callSpoken":
-				this.#rooms.get(event.roomId)?.spoken.get(event.id)?.({ playedMs: event.playedMs, interrupted: event.interrupted });
+				this.#rooms.get(event.roomId)?.spoken.get(event.id)?.();
 				return;
 		}
 	}
@@ -125,7 +123,8 @@ export class Calls {
 			await rm(utterance.path, { force: true });
 		}
 		if (text === "") return;
-		if (call.chime && this.#rooms.get(roomId) === room) {
+		// Not into the user's next utterance: the gateway would stop listening to it.
+		if (call.chime && this.#rooms.get(roomId) === room && room.turn === turn) {
 			try {
 				// Nobody waits for it to finish, so `callSpoken` for it finds no listener and the file is kept for next time.
 				this.#options.link.send({ type: "callSpeak", roomId, id: randomUUID(), path: await this.#chimeFile() });
@@ -168,13 +167,13 @@ export class Calls {
 		return this.#chime;
 	}
 
-	async #play(roomId: string, room: RoomCall, wav: Buffer): Promise<Spoken> {
+	async #play(roomId: string, room: RoomCall, wav: Buffer): Promise<void> {
 		const { outDir } = this.#options;
 		await mkdir(outDir, { recursive: true });
 		const id = randomUUID();
 		const path = join(outDir, `call-${id}.wav`);
 		await writeFile(path, wav);
-		const spoken = new Promise<Spoken>((resolve) => room.spoken.set(id, resolve));
+		const spoken = new Promise<void>((resolve) => room.spoken.set(id, resolve));
 		try {
 			this.#options.link.send({ type: "callSpeak", roomId, id, path });
 			return await spoken;
@@ -219,11 +218,7 @@ export class Calls {
 				if (this.#rooms.get(roomId) === room) room.note = interrupted(said.join(""));
 				return;
 			}
-			const result = await this.#play(roomId, room, wav);
-			if (result.interrupted) {
-				if (this.#rooms.get(roomId) === room) room.note = interrupted([...said, result.playedMs > 0 ? `${part}（の途中）` : ""].join(""));
-				return;
-			}
+			await this.#play(roomId, room, wav);
 			said.push(part);
 		}
 	}

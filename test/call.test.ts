@@ -35,10 +35,16 @@ async function setup(call: { chime?: boolean; transcript?: boolean } = {}) {
 	const bridge = env.bridge();
 	const transcripts = new Map<string, string>();
 	const synthesizer = new FakeSynthesizer();
+	const hooks = { transcribing: () => {} };
 	const calls = new Calls({
 		link: env.link,
 		config: env.config,
-		transcriber: { transcribe: async (path) => transcripts.get(path) ?? "" },
+		transcriber: {
+			transcribe: async (path) => {
+				hooks.transcribing();
+				return transcripts.get(path) ?? "";
+			},
+		},
 		synthesizer,
 		ask: (roomId, key, content) => bridge.ask(roomId, key, content),
 		notice: (roomId, key, body) => bridge.notice(roomId, key, body),
@@ -49,7 +55,7 @@ async function setup(call: { chime?: boolean; transcript?: boolean } = {}) {
 	const played: Buffer[] = [];
 	env.link.speak = (command) => {
 		played.push(readFileSync(command.path));
-		return { type: "callSpoken", roomId: command.roomId, id: command.id, playedMs: 900, interrupted: false };
+		return { type: "callSpoken", roomId: command.roomId, id: command.id };
 	};
 	let n = 0;
 	const utterance = (text: string): Extract<GatewayEvent, { type: "callUtterance" }> => {
@@ -66,6 +72,7 @@ async function setup(call: { chime?: boolean; transcript?: boolean } = {}) {
 		env,
 		link: env.link,
 		synthesizer,
+		hooks,
 		played,
 		utterance,
 		settle,
@@ -130,24 +137,27 @@ test("the utterance and the speech files are deleted once done with", async () =
 	assert.ok(t.link.of("callSpeak").every((command) => !existsSync(command.path)));
 });
 
-async function talkedOver(t: Awaited<ReturnType<typeof setup>>, requests: Request[]) {
+async function speechBetweenSentences(t: Awaited<ReturnType<typeof setup>>, requests: Request[]) {
 	t.env.faux.setResponses([fauxAssistantMessage("一つ目です。二つ目です。三つ目です。"), answer("はい。", requests)]);
 	let played = 0;
-	t.link.speak = (command) => ({ type: "callSpoken", roomId: command.roomId, id: command.id, playedMs: 400, interrupted: ++played === 2 });
+	t.link.speak = (command) => {
+		if (++played === 2) t.link.emit({ type: "callSpeech", roomId: ROOM });
+		return { type: "callSpoken", roomId: command.roomId, id: command.id };
+	};
 	t.inCall();
 	await t.say("三つ言って");
 }
 
-test("talking over the bot stops it: the rest of its answer is not played", async () => {
+test("the user speaking between the bot's sentences stops the rest of its answer", async () => {
 	await using t = await setup();
-	await talkedOver(t, []);
+	await speechBetweenSentences(t, []);
 	assert.equal(t.link.of("callSpeak").length, 2);
 });
 
-test("after being talked over, the persona is told with the next utterance how far its answer got", async () => {
+test("after being stopped between sentences, the persona is told with the next utterance how far its answer got", async () => {
 	await using t = await setup();
 	const requests: Request[] = [];
-	await talkedOver(t, requests);
+	await speechBetweenSentences(t, requests);
 	await t.say("ちょっと待って");
 
 	const next = lastInput(requests[0]!);
@@ -242,6 +252,15 @@ test("once an utterance is recognized, a chime plays in the call before the answ
 		speech.map(String),
 		["RIFF 晴れです。"],
 	);
+});
+
+test("no chime plays once the user has started speaking again", async () => {
+	await using t = await setup({ chime: true });
+	t.env.faux.setResponses([fauxAssistantMessage("晴れです。")]);
+	t.hooks.transcribing = () => t.link.emit({ type: "callSpeech", roomId: ROOM });
+	t.inCall();
+	await t.say("明日の天気は？");
+	assert.deepEqual(t.link.of("callSpeak"), []);
 });
 
 test("silence plays no chime", async () => {

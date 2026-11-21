@@ -52,6 +52,13 @@ impl Segmenter {
         Self { config, recent: VecDeque::new(), voiced_run: 0, open: None }
     }
 
+    /// Whatever was heard so far is dropped, the start of an utterance too.
+    pub fn deafen(&mut self) {
+        self.recent.clear();
+        self.voiced_run = 0;
+        self.open = None;
+    }
+
     pub fn push(&mut self, frame: &[i16], speech: bool) -> Option<Cut> {
         let config = self.config;
         let Some(open) = &mut self.open else {
@@ -141,8 +148,15 @@ impl<D: FnMut(&[i16]) -> bool> Cutter<D> {
         Self { decimator: Decimator::new(), pending: Vec::with_capacity(FRAME_SAMPLES * 2), is_speech, segmenter: Segmenter::new(config) }
     }
 
-    pub fn push(&mut self, samples: &[i16]) -> Vec<Cut> {
+    /// While `deaf` (the bot is talking), nothing is cut: its own voice and the chime come back through the listener's
+    /// microphone, and the two take turns.
+    pub fn push(&mut self, samples: &[i16], deaf: bool) -> Vec<Cut> {
         self.pending.extend(self.decimator.push(samples));
+        if deaf {
+            self.pending.clear();
+            self.segmenter.deafen();
+            return Vec::new();
+        }
         let mut cuts = Vec::new();
         while self.pending.len() >= FRAME_SAMPLES {
             let frame = &self.pending[..FRAME_SAMPLES];
@@ -214,7 +228,11 @@ mod tests {
         let mut cuts = Vec::new();
         for (i, c) in pattern.chars().enumerate() {
             let frame = vec![i as i16; FRAME_SAMPLES];
-            cuts.extend(segmenter.push(&frame, c == 's'));
+            if c == 'x' {
+                segmenter.deafen();
+            } else {
+                cuts.extend(segmenter.push(&frame, c == 's'));
+            }
         }
         cuts
     }
@@ -254,6 +272,17 @@ mod tests {
     }
 
     #[test]
+    fn deafened_mid_utterance_it_is_dropped_and_what_follows_starts_afresh() {
+        let mut segmenter = Segmenter::new(config());
+        let cuts = feed(&mut segmenter, "..ssssssxxxxssssss..........");
+        assert_eq!(cuts.len(), 3);
+        assert_eq!(cuts[0], Cut::SpeechStarted);
+        assert_eq!(cuts[1], Cut::SpeechStarted);
+        // No pre-roll from before the deafness.
+        assert_eq!(frames_of(&cuts[2]), (12..28).collect::<Vec<i16>>());
+    }
+
+    #[test]
     fn a_long_utterance_is_passed_on_in_parts() {
         let mut segmenter = Segmenter::new(config());
         // max 1.6 s = 100 frames.
@@ -282,7 +311,7 @@ mod tests {
         let stream: Vec<i16> = silence(200).into_iter().chain(tone).chain(silence(500)).collect();
         let mut cutter = Cutter::new(config(), |frame: &[i16]| frame.iter().any(|s| s.unsigned_abs() > 5_000));
         // Uneven pieces, as a network delivers them.
-        let cuts: Vec<Cut> = stream.chunks(487).flat_map(|piece| cutter.push(piece)).collect();
+        let cuts: Vec<Cut> = stream.chunks(487).flat_map(|piece| cutter.push(piece, false)).collect();
 
         assert_eq!(cuts.len(), 2);
         assert_eq!(cuts[0], Cut::SpeechStarted);

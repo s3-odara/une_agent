@@ -33,6 +33,9 @@ const DEFAULT_EXPIRES_MS: u64 = 4 * 60 * 60 * 1000;
 /// Playback is pushed in 10 ms frames, paced by a timer, so stopping it takes effect at once instead of after the
 /// second of audio the source would otherwise queue.
 const PLAY_FRAME: usize = (SAMPLE_RATE / 100) as usize;
+/// How long after the bot's last sound the listeners stay deaf: its voice comes back through their microphones after
+/// the round trip through the SFU and their jitter buffers.
+const ECHO_TAIL_MS: u64 = 500;
 
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -209,11 +212,9 @@ struct Utterances {
 
 impl Utterances {
     fn push(&mut self, samples: &[i16]) {
-        for cut in self.cutter.push(samples) {
+        for cut in self.cutter.push(samples, self.player.audible()) {
             match cut {
                 Cut::SpeechStarted => {
-                    // Talking over the bot stops it.
-                    self.player.hush();
                     let _ = self.out.send(Event::CallSpeech { room_id: self.room_id.clone() });
                 }
                 Cut::Utterance(samples) => self.pass_on(&samples),
@@ -236,6 +237,7 @@ impl Utterances {
 #[derive(Clone)]
 struct Player {
     queue: Arc<Mutex<VecDeque<Clip>>>,
+    audible_until: Arc<AtomicU64>,
     room_id: Arc<str>,
     out: Outbox,
     _task: Arc<AbortOnDrop>,
@@ -250,8 +252,9 @@ struct Clip {
 impl Player {
     fn start(mic: Arc<dyn LocalTrackHandle>, room_id: String, out: Outbox) -> Self {
         let queue: Arc<Mutex<VecDeque<Clip>>> = Arc::default();
+        let audible_until: Arc<AtomicU64> = Arc::default();
         let room_id: Arc<str> = room_id.into();
-        let (q, r, o) = (queue.clone(), room_id.clone(), out.clone());
+        let (q, a, r, o) = (queue.clone(), audible_until.clone(), room_id.clone(), out.clone());
         let task = tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(10));
             loop {
@@ -266,8 +269,11 @@ impl Player {
                         clip.position += take;
                         if clip.position >= clip.samples.len() {
                             let clip = queue.pop_front().expect("the front clip");
-                            let _ = o.send(spoken(&r, &clip, false));
+                            let _ = o.send(spoken(&r, &clip));
                         }
+                    }
+                    if !data.is_empty() {
+                        a.store(now_ms() + ECHO_TAIL_MS, Ordering::Relaxed);
                     }
                     data.resize(PLAY_FRAME, 0);
                     data
@@ -279,7 +285,7 @@ impl Player {
                 }
             }
         });
-        Self { queue, room_id, out, _task: Arc::new(AbortOnDrop(task)) }
+        Self { queue, audible_until, room_id, out, _task: Arc::new(AbortOnDrop(task)) }
     }
 
     fn enqueue(&self, id: String, samples: Vec<i16>) {
@@ -288,24 +294,16 @@ impl Player {
 
     fn refuse(&self, id: String, why: &str) {
         warn!("cannot play {id}: {why}");
-        let _ = self.out.send(spoken(&self.room_id, &Clip { id, samples: Vec::new(), position: 0 }, true));
+        let _ = self.out.send(spoken(&self.room_id, &Clip { id, samples: Vec::new(), position: 0 }));
     }
 
-    fn hush(&self) {
-        let dropped: Vec<Clip> = self.queue.lock().unwrap().drain(..).collect();
-        for clip in dropped {
-            let _ = self.out.send(spoken(&self.room_id, &clip, true));
-        }
+    fn audible(&self) -> bool {
+        !self.queue.lock().unwrap().is_empty() || now_ms() < self.audible_until.load(Ordering::Relaxed)
     }
 }
 
-fn spoken(room_id: &str, clip: &Clip, interrupted: bool) -> Event {
-    Event::CallSpoken {
-        room_id: room_id.to_owned(),
-        id: clip.id.clone(),
-        played_ms: clip.position as u64 * 1000 / u64::from(SAMPLE_RATE),
-        interrupted,
-    }
+fn spoken(room_id: &str, clip: &Clip) -> Event {
+    Event::CallSpoken { room_id: room_id.to_owned(), id: clip.id.clone() }
 }
 
 /// Memberships carry a deadline, so the rooms are also looked at again every half minute.

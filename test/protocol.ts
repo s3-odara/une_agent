@@ -32,7 +32,7 @@ export const events: Examples<GatewayEvent> = {
 	callLeft: [{ type: "callLeft", roomId: room, reason: "no LiveKit focus" }],
 	callSpeech: [{ type: "callSpeech", roomId: room }],
 	callUtterance: [{ type: "callUtterance", roomId: room, path: "/d/u.wav", startedAt: 5 }],
-	callSpoken: [{ type: "callSpoken", roomId: room, id: "s1", playedMs: 900, interrupted: true }],
+	callSpoken: [{ type: "callSpoken", roomId: room, id: "s1" }],
 };
 
 export const commands: Examples<GatewayCommand> = {

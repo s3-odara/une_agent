@@ -26,7 +26,8 @@ pub enum Event {
     CallSpeech { room_id: String },
     /// The agent deletes the file once done.
     CallUtterance { room_id: String, path: String, started_at: u64 },
-    CallSpoken { room_id: String, id: String, played_ms: u64, interrupted: bool },
+    /// Played to the end, or not played at all because it could not be.
+    CallSpoken { room_id: String, id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

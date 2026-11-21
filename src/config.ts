@@ -129,7 +129,7 @@ const ConfigSchema = obj({
 						obj({
 							threshold: num({ exclusiveMinimum: 0, exclusiveMaximum: 1, default: 0.5 }),
 							startMs: count(208),
-							endSilenceMs: count(800),
+							endSilenceMs: count(1400),
 							minSpeechMs: count(300),
 							maxMs: count(30_000),
 							preRollMs: amount(300),

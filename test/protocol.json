@@ -97,9 +97,7 @@
 		{
 			"type": "callSpoken",
 			"roomId": "!r:example.org",
-			"id": "s1",
-			"playedMs": 900,
-			"interrupted": true
+			"id": "s1"
 		}
 	],
 	"commands": [
