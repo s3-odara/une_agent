@@ -37,7 +37,7 @@ pub enum Cut {
 pub struct Segmenter {
     config: VadConfig,
     recent: VecDeque<Vec<i16>>,
-    voiced_run: u32,
+    voiced_run_ms: u32,
     open: Option<Open>,
 }
 
@@ -48,7 +48,7 @@ struct Open {
 
 impl Segmenter {
     pub fn new(config: VadConfig) -> Self {
-        Self { config, recent: VecDeque::new(), voiced_run: 0, open: None }
+        Self { config, recent: VecDeque::new(), voiced_run_ms: 0, open: None }
     }
 
     /// Whatever was heard so far is dropped, the start of an utterance too.
@@ -60,17 +60,17 @@ impl Segmenter {
         let config = self.config;
         let Some(open) = &mut self.open else {
             self.recent.push_back(frame.to_vec());
-            self.voiced_run = if speech { self.voiced_run + 1 } else { 0 };
+            self.voiced_run_ms = if speech { self.voiced_run_ms + FRAME_MS } else { 0 };
             let keep = ((config.pre_roll_ms + config.start_ms) / FRAME_MS).max(1) as usize;
             while self.recent.len() > keep {
                 self.recent.pop_front();
             }
-            if self.voiced_run * FRAME_MS < config.start_ms.max(FRAME_MS) {
+            if self.voiced_run_ms < config.start_ms.max(FRAME_MS) {
                 return None;
             }
             let samples: Vec<i16> = self.recent.drain(..).flatten().collect();
             self.open = Some(Open { samples, silence_run_ms: 0 });
-            self.voiced_run = 0;
+            self.voiced_run_ms = 0;
             return Some(Cut::SpeechStarted);
         };
         open.samples.extend_from_slice(frame);
