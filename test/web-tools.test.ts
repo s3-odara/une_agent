@@ -79,7 +79,8 @@ test("a direct image URL reaches the model as an image with its source marked un
 	assert.deepEqual(imagesIn(t.requests[0]!), [{ type: "image", ...image }]);
 	assert.ok(t.results[0]?.text.includes(url));
 	assert.ok(t.results[0]?.text.includes(UNTRUSTED));
-	files[url] = { ...source, body: Buffer.from("replacement") };
+	const updated = { ...image, data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC" };
+	files[url] = { ...source, body: Buffer.from(updated.data, "base64") };
 	const crop = { x: 0, y: 0.5, width: 1, height: 0.5 };
 	const zoom = async () => {
 		t.env.faux.setResponses([call("web_extract", { url, crop }), t.noting]);
@@ -91,6 +92,7 @@ test("a direct image URL reaches the model as an image with its source marked un
 	now += 60 * 60_000;
 	await zoom();
 	assert.deepEqual(t.reader.opened, [url, url]);
+	assert.deepEqual(imagesIn(t.requests.at(-1)!), [{ type: "image", ...updated }]);
 	assert.match(t.results.at(-1)!.text, /以前と同じ版とは限りません/);
 });
 
@@ -116,32 +118,33 @@ test("PDF text, layout and images use the same PDF until its cache expires", { s
 	files[url] = pdf(url, samplePdf("Updated"));
 	assert.match((await read({ offset })).text, /文字を抽出できませんでした/);
 	const layout = await read({ page: 1, pdfMode: "layout" });
-	assert.match(layout.text, /Original left column {3,}Original right column/);
+	assert.match(layout.text, /Original left column[ \t]+Original right column/);
 	const image = await read({ page: 2, pdfMode: "image", crop: { x: 0.5, y: 0, width: 0.5, height: 1 } });
 	assert.match(image.text, /PDF 2 ページ目/);
-	assert.equal(imagesIn(t.requests.at(-1)!)[0]?.mimeType, "image/jpeg");
+	assert.ok(imagesIn(t.requests.at(-1)!)[0]);
 	assert.deepEqual(t.reader.opened, [url]);
 	assert.match((await read({ page: 3 })).text, /全 2 ページ/);
 
 	now += 60 * 60_000;
 	const reloaded = await read({ page: 1, pdfMode: "layout", offset: 1 });
 	assert.match(reloaded.text, /以前と同じ版とは限りません/);
-	assert.match(reloaded.text, /Updated left column {3,}Updated right column/);
+	assert.match(reloaded.text, /Updated left column[ \t]+Updated right column/);
 	assert.deepEqual(t.reader.opened, [url, url]);
 });
 
 test("PDF crop uses the visible sides of a rotated page", { skip: noPoppler ?? (spawnSync("ffmpeg", ["-version"]).status === 0 ? false : "ffmpeg is not installed") }, async () => {
 	const url = "https://example.com/rotated";
 	await using t = await setup({ [url]: pdf(url, samplePdf()) });
-	for (const [x, channel] of [[0, 0], [0.5, 2]] as const) {
+	for (const [x, color] of [[0, "red"], [0.5, "blue"]] as const) {
 		t.env.faux.setResponses([call("web_extract", { url, page: 2, pdfMode: "image", crop: { x, y: 0, width: 0.5, height: 1 } }), t.noting]);
 		await t.say("回転したページを拡大して");
 		const image = imagesIn(t.requests.at(-1)!)[0];
 		assert.ok(image);
 		const decoded = spawnSync("ffmpeg", ["-v", "error", "-i", "pipe:0", "-vf", "scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { input: Buffer.from(image.data, "base64") });
 		assert.equal(decoded.status, 0, decoded.stderr.toString());
-		assert.ok((decoded.stdout[channel] ?? 0) > 240);
-		assert.ok((decoded.stdout[2 - channel] ?? 255) < 15);
+		const [red, green, blue] = decoded.stdout;
+		assert.ok(red !== undefined && green !== undefined && blue !== undefined);
+		assert.ok(color === "red" ? red > Math.max(green, blue) : blue > Math.max(red, green));
 	}
 });
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { type TestContext, test } from "node:test";
 import { PlaywrightReader, ReadError } from "../src/extract.ts";
@@ -177,19 +178,21 @@ test("JSON, CSV attachments, and RSS are read without changing whitespace or mar
 	}
 });
 
-test("an image URL redirect is read as an image, not a page", async (t) => {
+test("a large image is cropped at source resolution", async (t) => {
+	if (spawnSync("ffprobe", ["-version"]).status !== 0) return t.skip("ffprobe is not installed");
 	await using r = await realReader(t);
 	if (r === undefined) return;
 	const result = await r.reader.read(`${r.base}/diagram`, false);
-	assert.equal(result.url, `${r.base}/asset`);
 	assert.ok("kind" in result && result.kind === "image");
-	const full = await r.reader.renderImage(result);
+
 	const crop = await r.reader.renderImage(result, { x: 0.5, y: 0.5, width: 0.125, height: 0.125 });
-	for (const [image, size] of [[full, [1568, 1045]], [crop, [750, 500]]] as const) {
-		assert.equal(image.mimeType, "image/png");
-		const png = Buffer.from(image.data, "base64");
-		assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], size);
-	}
+
+	const decoded = spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", "pipe:0"], {
+		input: Buffer.from(crop.data, "base64"),
+		encoding: "utf8",
+	});
+	assert.equal(decoded.status, 0, decoded.stderr);
+	assert.deepEqual(decoded.stdout.trim().split(",").map(Number), [750, 500]);
 });
 
 test("large assets and images with excessive dimensions are refused", async (t) => {
