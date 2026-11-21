@@ -43,7 +43,7 @@
 			"maxChars": 300,
 			"chime": true,
 			"transcript": true,
-			"vad": { "threshold": 0.5, "startMs": 208, "endSilenceMs": 1400, "minSpeechMs": 300, "maxMs": 30000, "preRollMs": 300 }
+			"vad": { "threshold": 0.5, "startMs": 208, "endSilenceMs": 1400, "maxMs": 30000, "preRollMs": 300 }
 		}
 	},
 	"proactive": {

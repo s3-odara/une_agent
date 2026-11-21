@@ -164,7 +164,6 @@
 				"threshold": 0.5,
 				"startMs": 200,
 				"endSilenceMs": 700,
-				"minSpeechMs": 300,
 				"maxMs": 20000,
 				"preRollMs": 250
 			}

@@ -39,7 +39,6 @@ export type CallVad = {
 	/** Speech must last this long to start an utterance. */
 	readonly startMs: number;
 	readonly endSilenceMs: number;
-	readonly minSpeechMs: number;
 	/** Longer utterances are passed on in parts. */
 	readonly maxMs: number;
 	readonly preRollMs: number;

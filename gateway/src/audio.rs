@@ -17,11 +17,11 @@ pub const FRAME_SAMPLES: usize = (VAD_RATE / 1000 * FRAME_MS) as usize;
 #[serde(rename_all = "camelCase")]
 pub struct VadConfig {
     pub threshold: f32,
-    /// So a cough or a click does not start an utterance, or stop the bot.
+    /// So a cough or a click does not start an utterance.
     pub start_ms: u32,
     pub end_silence_ms: u32,
-    pub min_speech_ms: u32,
-    /// A longer utterance is cut and passed on in parts, so a monologue is not held back.
+    /// A longer utterance is cut and passed on in parts, so a monologue is not held back. Speech going on past the cut
+    /// starts the next part as any utterance starts.
     pub max_ms: u32,
     /// So the first syllable is not lost.
     pub pre_roll_ms: u32,
@@ -43,7 +43,6 @@ pub struct Segmenter {
 
 struct Open {
     samples: Vec<i16>,
-    speech_ms: u32,
     silence_run_ms: u32,
 }
 
@@ -70,26 +69,17 @@ impl Segmenter {
                 return None;
             }
             let samples: Vec<i16> = self.recent.drain(..).flatten().collect();
-            self.open = Some(Open { samples, speech_ms: self.voiced_run * FRAME_MS, silence_run_ms: 0 });
+            self.open = Some(Open { samples, silence_run_ms: 0 });
             self.voiced_run = 0;
             return Some(Cut::SpeechStarted);
         };
         open.samples.extend_from_slice(frame);
-        if speech {
-            open.speech_ms += FRAME_MS;
-            open.silence_run_ms = 0;
-        } else {
-            open.silence_run_ms += FRAME_MS;
-        }
+        open.silence_run_ms = if speech { 0 } else { open.silence_run_ms + FRAME_MS };
         let too_long = open.samples.len() as u64 * 1000 >= u64::from(config.max_ms) * u64::from(VAD_RATE);
         if open.silence_run_ms < config.end_silence_ms && !too_long {
             return None;
         }
-        let open = self.open.take().expect("an open utterance");
-        if too_long && open.silence_run_ms < config.end_silence_ms {
-            self.open = Some(Open { samples: Vec::new(), speech_ms: 0, silence_run_ms: 0 });
-        }
-        (open.speech_ms >= config.min_speech_ms).then_some(Cut::Utterance(open.samples))
+        self.open.take().map(|open| Cut::Utterance(open.samples))
     }
 }
 
@@ -218,7 +208,7 @@ mod tests {
     use super::*;
 
     fn config() -> VadConfig {
-        VadConfig { threshold: 0.5, start_ms: 48, end_silence_ms: 160, min_speech_ms: 80, max_ms: 1_600, pre_roll_ms: 32 }
+        VadConfig { threshold: 0.5, start_ms: 48, end_silence_ms: 160, max_ms: 1_600, pre_roll_ms: 32 }
     }
 
     fn feed(segmenter: &mut Segmenter, pattern: &str) -> Vec<Cut> {
@@ -251,14 +241,10 @@ mod tests {
     }
 
     #[test]
-    fn short_bursts_neither_start_nor_count() {
+    fn bursts_shorter_than_the_start_are_no_utterance() {
         let mut segmenter = Segmenter::new(config());
         // Two frames of speech are under `start_ms`.
-        assert!(feed(&mut segmenter, "ss..ss..ss..").is_empty());
-        // Started, but only 64 ms of speech: under `min_speech_ms`, so dropped at the end.
-        let mut segmenter = Segmenter::new(config());
-        let cuts = feed(&mut segmenter, "ssss..........");
-        assert_eq!(cuts, vec![Cut::SpeechStarted]);
+        assert!(feed(&mut segmenter, "ss..ss..ss..........").is_empty());
     }
 
     #[test]
@@ -285,9 +271,11 @@ mod tests {
         let mut segmenter = Segmenter::new(config());
         // max 1.6 s = 100 frames.
         let cuts = feed(&mut segmenter, &format!("{}{}", "s".repeat(150), ".".repeat(10)));
-        assert_eq!(cuts.len(), 3);
-        assert_eq!(frames_of(&cuts[1]).len(), 100);
-        assert_eq!(frames_of(&cuts[2]).len(), 150 + 10 - 100);
+        assert_eq!(cuts.len(), 4);
+        assert_eq!(cuts[2], Cut::SpeechStarted);
+        assert_eq!(frames_of(&cuts[1]), (0..100).collect::<Vec<i16>>());
+        // Nothing is lost between the parts.
+        assert_eq!(frames_of(&cuts[3]), (100..160).collect::<Vec<i16>>());
     }
 
     #[test]

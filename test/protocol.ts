@@ -10,7 +10,7 @@ type Examples<T extends { type: string }> = { readonly [K in T["type"]]: readonl
 const room = "!r:example.org";
 const me = "@me:example.org";
 // Values a 32-bit float holds exactly, so the gateway writes them back as they were.
-const vad = { threshold: 0.5, startMs: 200, endSilenceMs: 700, minSpeechMs: 300, maxMs: 20_000, preRollMs: 250 };
+const vad = { threshold: 0.5, startMs: 200, endSilenceMs: 700, maxMs: 20_000, preRollMs: 250 };
 
 export const events: Examples<GatewayEvent> = {
 	ready: [{ type: "ready", userId: "@agent:example.org", deviceId: "DEVICE" }],
