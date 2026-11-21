@@ -4,6 +4,7 @@ import { type TestContext, test } from "node:test";
 import { PlaywrightReader, ReadError } from "../src/extract.ts";
 import { beacon, egressTo, noChromium } from "./chromium.ts";
 import { listen } from "./env.ts";
+import { samplePdf } from "./pdf-fixture.ts";
 
 /**
  * Reads pages of a small site served from this process in a real Chromium through `src/extract.ts`. The egress proxy
@@ -61,6 +62,8 @@ function site(beacon: string): Server {
 				response.writeHead(200, { "content-type": "application/json" });
 				response.write('"');
 				return void response.end("x".repeat(5 * 1024 * 1024) + '"');
+			case "/document":
+				return void response.writeHead(200, { "content-type": "application/pdf", "content-disposition": "attachment; filename=document.pdf" }).end(samplePdf());
 			case "/file":
 				return void response.writeHead(200, { "content-type": "application/zip", "content-disposition": "attachment; filename=a.zip" }).end("PK");
 			case "/missing":
@@ -190,6 +193,14 @@ test("large assets and images with excessive dimensions are refused", async (t) 
 	if (r === undefined) return;
 	await assert.rejects(r.reader.read(`${r.base}/large`, false), /上限 5 MiB/);
 	await assert.rejects(r.reader.read(`${r.base}/wide`, false), /画像の寸法/);
+});
+
+test("an attached PDF is fetched intact without a browser download", async (t) => {
+	await using r = await realReader(t);
+	if (r === undefined) return;
+	const result = await r.reader.read(`${r.base}/document`, false);
+	assert.ok("pdf" in result);
+	assert.deepEqual(result.pdf, samplePdf());
 });
 
 test("a download is refused", async (t) => {

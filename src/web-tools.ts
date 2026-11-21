@@ -1,6 +1,8 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
-import type { PageReader, ReadPage } from "./extract.ts";
+import { bool, int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { ReadError, type PageReader, type ReadPage } from "./extract.ts";
+import { readPdf } from "./pdf.ts";
+import type { ReadPdf } from "./web-assets.ts";
 import { UNTRUSTED } from "./untrusted.ts";
 import { httpUrl } from "./urls.ts";
 import { onCharacter } from "./text.ts";
@@ -14,6 +16,8 @@ export type WebToolsOptions = {
 const KEEP_MS = 60 * 60_000;
 const KEEP_PAGES = 20;
 const MAX_STORED = 500_000;
+const PDF_CACHE_BYTES = 40 * 1024 * 1024;
+const PDF_CACHE_ENTRIES = 20;
 
 type Kept = ReadPage & { readonly at: number };
 
@@ -55,6 +59,35 @@ export function createWebExtension(options: WebToolsOptions) {
 	const { reader, maxChars } = options;
 	const now = options.now ?? Date.now;
 	const kept = new Map<string, Kept>();
+	const documents = new Map<string, { readonly file: ReadPdf; readonly at: number; readonly id: number; readonly expiry: NodeJS.Timeout }>();
+	let pdfBytes = 0;
+	let pdfId = 0;
+	const dropPdf = (url: string) => {
+		const entry = documents.get(url);
+		if (entry === undefined) return;
+		clearTimeout(entry.expiry);
+		pdfBytes -= entry.file.pdf.length;
+		documents.delete(url);
+	};
+	const cachedPdf = (url: string) => {
+		const entry = documents.get(url);
+		if (entry === undefined || now() - entry.at < KEEP_MS) return entry;
+		dropPdf(url);
+		return undefined;
+	};
+	const keepPdf = (url: string, file: ReadPdf) => {
+		const cached = cachedPdf(url);
+		if (cached !== undefined) return cached;
+		for (const key of documents.keys()) cachedPdf(key);
+		while (documents.size > 0 && (documents.size >= PDF_CACHE_ENTRIES || pdfBytes + file.pdf.length > PDF_CACHE_BYTES)) {
+			const oldest = documents.keys().next();
+			if (!oldest.done) dropPdf(oldest.value);
+		}
+		const entry = { file, at: now(), id: ++pdfId, expiry: setTimeout(() => dropPdf(url), KEEP_MS).unref() };
+		pdfBytes += file.pdf.length;
+		documents.set(url, entry);
+		return entry;
+	};
 
 	const keep = (key: string, page: ReadPage): Kept => {
 		for (const [key, old] of kept) if (now() - old.at >= KEEP_MS) kept.delete(key);
@@ -72,16 +105,47 @@ export function createWebExtension(options: WebToolsOptions) {
 			defineTool({
 				name: "web_extract",
 				description:
-					"ログインせずに公開 URL を読む。HTML は本文を Markdown で返す（whole=true でページ全体）。JSON、CSV、XML/RSS などは整形せずテキストで返す。画像 URL は画像で返す。長いテキストの続きは offset を付けて呼ぶ。PDF、ログイン、ページ操作には非対応。",
-				parameters: obj({ url: str({ description: "http または https の URL", minLength: 1 }), ...readParameters }),
+					"ログインせずに公開 URL を読む。HTML は本文を Markdown で返す（whole=true でページ全体）。JSON、CSV、XML/RSS は整形せず、画像 URL は画像で返す。PDF はページ番号つきテキスト。表は page と pdfMode=layout、数式・図・スキャンは page と pdfMode=image で確認できる。長いテキストの続きは offset で読む。",
+				parameters: obj({
+					url: str({ description: "http または https の URL", minLength: 1 }),
+					...readParameters,
+					page: opt(int({ description: "PDF の先頭を 1 とするページ番号。省略時は複数ページのテキストを読む", minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+					pdfMode: opt(oneOf(["text", "layout", "image"], { description: "PDF のみ。text は既定、layout は配置を保つ。layout / image は page 必須" })),
+				}),
 				replay: "safe",
 				execute: async (args, _api, context) => {
 					const url = httpUrl(args.url).href;
 					const offset = args.offset ?? 0;
 					const whole = args.whole === true;
+					const { page, pdfMode } = args;
+					const mode = pdfMode ?? "text";
+					if (mode !== "text" && page === undefined) throw new ReadError(`pdfMode=${mode} には page が必要です。`);
+					if (mode === "image" && offset > 0) throw new ReadError("pdfMode=image に offset は使えません。");
+					const pdfRequested = page !== undefined || pdfMode !== undefined;
 					const key = `${whole ? "whole" : "main"} ${url}`;
-					const fresh = kept.get(key);
-					const resource = offset > 0 && fresh !== undefined && now() - fresh.at < KEEP_MS ? fresh : await reader.read(url, whole, context.abortSignal);
+					const freshText = (key: string) => {
+						const value = kept.get(key);
+						return offset > 0 && value !== undefined && now() - value.at < KEEP_MS ? value : undefined;
+					};
+					const cached = cachedPdf(url);
+					const previousText = cached === undefined && !pdfRequested ? freshText(key) : undefined;
+					const resource = cached?.file ?? previousText ?? await reader.read(url, whole, context.abortSignal);
+					if ("pdf" in resource) {
+						kept.delete(`main ${url}`);
+						kept.delete(`whole ${url}`);
+						const document = cached ?? keepPdf(url, resource);
+						const pdfKey = `pdf ${document.id} ${mode} ${page ?? "all"}`;
+						const fresh = freshText(pdfKey);
+						const result = fresh ?? await readPdf(document.file, mode, page, context.abortSignal);
+						const notice = cached === undefined && (offset > 0 || pdfRequested) ? "（キャッシュに PDF がなかったため URL から取得しました。以前と同じ版とは限りません。）\n\n" : "";
+						if ("image" in result) return { output: [
+							{ type: "text" as const, text: `${notice}URL: ${result.url}${result.status === undefined ? "" : `\nHTTP ステータス: ${result.status}`}\nPDF ${page} ページ目\n\n${UNTRUSTED}` },
+							{ type: "image" as const, ...result.image },
+						] };
+						const again = (next: number) => `web_extract を同じ url${page === undefined ? "" : `、page=${page}`}${mode === "text" ? "" : `、pdfMode=${mode}`}、offset=${next} で呼ぶ`;
+						return { output: [{ type: "text" as const, text: notice + renderPart(fresh ?? keep(pdfKey, result), false, offset, maxChars, again) }] };
+					}
+					if (pdfRequested) throw new ReadError("page と pdfMode は PDF にだけ使えます。");
 					if ("image" in resource) {
 						kept.delete(key);
 						const status = resource.status === undefined ? "" : `\nHTTP ステータス: ${resource.status}`;
@@ -90,9 +154,8 @@ export function createWebExtension(options: WebToolsOptions) {
 							{ type: "image" as const, ...resource.image },
 						] };
 					}
-					const page = resource === fresh ? resource : keep(key, resource);
 					const again = (next: number) => `web_extract を同じ url${whole ? "、whole=true" : ""}、offset=${next} で呼ぶ`;
-					return { output: [{ type: "text" as const, text: renderPart(page, whole, offset, maxChars, again) }] };
+					return { output: [{ type: "text" as const, text: renderPart(previousText ?? keep(key, resource), whole, offset, maxChars, again) }] };
 				},
 			}),
 		],

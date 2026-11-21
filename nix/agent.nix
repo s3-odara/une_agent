@@ -6,6 +6,8 @@
   nodejs_26,
   ffmpeg-headless,
   chromium,
+  poppler-utils,
+  pdfFontConfig,
   agent-unwrapped,
   gateway,
   sandbox,
@@ -30,6 +32,8 @@ runCommand "agent-0.1.0"
         --set-default AGENT_SANDBOX_BIN ${lib.getExe sandbox} \
         --set-default AGENT_WHISPER_SERVER ${lib.getExe whisper-server} \
         --set-default AGENT_STT_MODELS ${stt-models} \
+        --set-default AGENT_POPPLER_BIN ${poppler-utils}/bin \
+        --set-default AGENT_PDF_FONTCONFIG ${pdfFontConfig} \
         --set-default AGENT_CHROMIUM ${lib.getExe chromium} \
         --prefix PATH : ${lib.makeBinPath [ ffmpeg-headless ]}
     done

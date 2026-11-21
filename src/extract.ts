@@ -4,7 +4,7 @@ import { errorMessage } from "./errors.ts";
 import { IdleChromium, launchSandboxed } from "./sandbox.ts";
 import { extractFrom, settle } from "./page.ts";
 import { httpUrl } from "./urls.ts";
-import { decodeText, interceptAsset, ReadError, readImage, type ReadImage } from "./web-assets.ts";
+import { decodeText, interceptAsset, ReadError, readImage, type ReadImage, type ReadPdf } from "./web-assets.ts";
 
 export { ReadError };
 
@@ -17,7 +17,7 @@ export type ReadPage = {
 	readonly mediaType?: string;
 };
 
-export type ReadResource = ReadPage | ReadImage;
+export type ReadResource = ReadPage | ReadImage | ReadPdf;
 
 export interface PageReader {
 	read(url: string, whole: boolean, signal?: AbortSignal): Promise<ReadResource>;
@@ -92,6 +92,7 @@ export class PlaywrightReader implements PageReader {
 			if (intercepted !== undefined) {
 				const { body, url, status, mediaType, contentType } = intercepted;
 				const meta = { url, ...(status >= 200 && status < 300 ? {} : { status }) };
+				if (mediaType === "application/pdf") return { ...meta, pdf: body };
 				if (mediaType.startsWith("image/")) return { ...meta, image: await readImage(page, mediaType, body) };
 				return { ...meta, title: "", markdown: decodeText(body, contentType), scope: "page", mediaType };
 			}

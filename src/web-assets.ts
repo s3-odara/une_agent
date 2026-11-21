@@ -9,8 +9,9 @@ export type ReadImage = {
 	readonly image: { readonly data: string; readonly mimeType: string };
 };
 
-const MAX_BYTES = 5 * 1024 * 1024;
-const TOO_LARGE = "ファイルが大きすぎます（上限 5 MiB）。";
+export type ReadPdf = { readonly url: string; readonly status?: number; readonly pdf: Buffer };
+
+const MIB = 1024 * 1024;
 const TEXT = /^(text\/(plain|csv|xml|tab-separated-values)|application\/(json|csv|xml|[^/;]+\+(json|xml)))$/;
 
 type Asset = { body: Buffer; url: string; status: number; mediaType: string; contentType: string };
@@ -29,10 +30,12 @@ export async function interceptAsset(cdp: CDPSession): Promise<() => Promise<Ass
 			return;
 		}
 		result = (async () => {
-			if (!mediaType.startsWith("image/") && !TEXT.test(mediaType)) return new ReadError(`この形式は読めません（${mediaType}）。`);
-			if (Number(header("content-length")) > MAX_BYTES) return new ReadError(TOO_LARGE);
+			const pdf = mediaType === "application/pdf";
+			if (!pdf && !mediaType.startsWith("image/") && !TEXT.test(mediaType)) return new ReadError(`この形式は読めません（${mediaType}）。`);
+			const maxMiB = pdf ? 20 : 5;
+			if (Number(header("content-length")) > maxMiB * MIB) throw oversized(maxMiB);
 			const { stream } = await cdp.send("Fetch.takeResponseBodyAsStream", { requestId });
-			return { body: await readBody(cdp, stream), url: request.url, status, mediaType, contentType };
+			return { body: await readBody(cdp, stream, maxMiB), url: request.url, status, mediaType, contentType };
 		})().catch((error: unknown) => error instanceof ReadError ? error : new ReadError(`ファイルを読めませんでした: ${errorMessage(error).split("\n")[0]}`));
 		// Prevent downloads and give the image decoder a document with no site scripts.
 		void result.then(() => cdp.send("Fetch.fulfillRequest", {
@@ -47,7 +50,11 @@ export async function interceptAsset(cdp: CDPSession): Promise<() => Promise<Ass
 	};
 }
 
-async function readBody(cdp: CDPSession, handle: string): Promise<Buffer> {
+function oversized(maxMiB: number): ReadError {
+	return new ReadError(`ファイルが大きすぎます（上限 ${maxMiB} MiB）。`);
+}
+
+async function readBody(cdp: CDPSession, handle: string, maxMiB: number): Promise<Buffer> {
 	const chunks: Buffer[] = [];
 	let bytes = 0;
 	try {
@@ -55,7 +62,7 @@ async function readBody(cdp: CDPSession, handle: string): Promise<Buffer> {
 			const { data, base64Encoded, eof } = await cdp.send("IO.read", { handle, size: 64 * 1024 });
 			const chunk = Buffer.from(data, base64Encoded === true ? "base64" : "utf8");
 			bytes += chunk.length;
-			if (bytes > MAX_BYTES) throw new ReadError(TOO_LARGE);
+			if (bytes > maxMiB * MIB) throw oversized(maxMiB);
 			chunks.push(chunk);
 			if (eof) return Buffer.concat(chunks, bytes);
 		}
