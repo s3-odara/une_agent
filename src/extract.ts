@@ -2,8 +2,11 @@ import type { Browser } from "playwright-core";
 import { EgressError, type EgressProxy } from "./egress.ts";
 import { errorMessage } from "./errors.ts";
 import { IdleChromium, launchSandboxed } from "./sandbox.ts";
-import { extractFrom, settle, tidy } from "./page.ts";
+import { extractFrom, settle } from "./page.ts";
 import { httpUrl } from "./urls.ts";
+import { decodeText, interceptAsset, ReadError, readImage, type ReadImage } from "./web-assets.ts";
+
+export { ReadError };
 
 export type ReadPage = {
 	readonly url: string;
@@ -11,16 +14,15 @@ export type ReadPage = {
 	readonly markdown: string;
 	readonly scope: "article" | "page";
 	readonly status?: number;
+	readonly mediaType?: string;
 };
 
+export type ReadResource = ReadPage | ReadImage;
+
 export interface PageReader {
-	/** `whole` reads the whole page instead of what looks like its main text. */
-	read(url: string, whole: boolean, signal?: AbortSignal): Promise<ReadPage>;
+	read(url: string, whole: boolean, signal?: AbortSignal): Promise<ReadResource>;
 	close(): Promise<void>;
 }
-
-/** Its message is written for the model. */
-export class ReadError extends Error {}
 
 export type PlaywrightReaderOptions = {
 	readonly egress: EgressProxy;
@@ -45,7 +47,7 @@ export class PlaywrightReader implements PageReader {
 		this.#chromium = new IdleChromium((onClosed) => launchSandboxed({ proxy: options.egress.url, executablePath: options.executablePath }, onClosed), options.idleMs);
 	}
 
-	async read(url: string, whole: boolean, signal?: AbortSignal): Promise<ReadPage> {
+	async read(url: string, whole: boolean, signal?: AbortSignal): Promise<ReadResource> {
 		let target: URL;
 		try {
 			target = httpUrl(url);
@@ -75,24 +77,30 @@ export class PlaywrightReader implements PageReader {
 		const timer = setTimeout(stop, this.#timeoutMs);
 		signal?.addEventListener("abort", stop, { once: true });
 		try {
+			if (signal?.aborted) throw new ReadError("読み込みを中止しました。");
 			const page = await context.newPage();
+			const cdp = await context.newCDPSession(page);
+			const asset = await interceptAsset(cdp);
 			let response: Awaited<ReturnType<typeof page.goto>>;
 			try {
 				response = await page.goto(target.href, { waitUntil: "domcontentloaded", timeout: this.#timeoutMs });
 			} catch (error) {
 				throw new ReadError(openFailure(errorMessage(error)));
 			}
-			await settle(page);
-			const type = (response?.headers()["content-type"] ?? "text/html").toLowerCase();
-			const status = response === null || response.ok() ? {} : { status: response.status() };
-			if (type.startsWith("text/plain")) {
-				return { url: page.url(), title: "", markdown: tidy(await page.locator("body").innerText()), scope: "page", ...status };
+			const intercepted = await asset();
+			await cdp.detach();
+			if (intercepted !== undefined) {
+				const { body, url, status, mediaType, contentType } = intercepted;
+				const meta = { url, ...(status >= 200 && status < 300 ? {} : { status }) };
+				if (mediaType.startsWith("image/")) return { ...meta, image: await readImage(page, mediaType, body) };
+				return { ...meta, title: "", markdown: decodeText(body, contentType), scope: "page", mediaType };
 			}
-			if (!type.includes("html")) throw new ReadError(`HTML とテキスト以外は読めません（${type.split(";")[0]}）。`);
+			await settle(page);
+			const status = response === null || response.ok() ? {} : { status: response.status() };
 			return { url: page.url(), ...(await extractFrom(page, whole)), ...status };
 		} catch (error) {
-			if (error instanceof ReadError) throw error;
 			if (signal?.aborted === true) throw new ReadError("読み込みを中止しました。");
+			if (error instanceof ReadError) throw error;
 			throw new ReadError(`ページを読めませんでした: ${errorMessage(error).split("\n")[0]}`);
 		} finally {
 			clearTimeout(timer);

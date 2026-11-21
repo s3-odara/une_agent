@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { createServer, request, type Server } from "node:http";
 import { connect } from "node:net";
 import { test } from "node:test";
@@ -109,6 +110,29 @@ test("a tunnel to an allowed address is opened, and one to another port of the s
 		await proxy.close();
 		site.server.close();
 		other.server.close();
+	}
+});
+
+test("closing a streamed response also disconnects the upstream HTTP server", async () => {
+	const closed = Promise.withResolvers<void>();
+	const server = createServer((_req, res) => {
+		res.once("close", closed.resolve);
+		res.write("first chunk");
+	});
+	const port = await listen(server);
+	const proxy = await EgressProxy.start({ allow: (_address, to) => to === port });
+	const client = request(proxy.url, { path: `http://127.0.0.1:${port}/` });
+	const signal = AbortSignal.timeout(5000);
+	try {
+		client.end();
+		await once(client, "response", { signal });
+		client.destroy();
+		await Promise.race([closed.promise, once(signal, "abort").then(() => { throw new Error("upstream was not closed"); })]);
+	} finally {
+		client.destroy();
+		await proxy.close();
+		server.closeAllConnections();
+		server.close();
 	}
 });
 

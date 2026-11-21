@@ -1,20 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { UNTRUSTED } from "../src/untrusted.ts";
-import { type PageReader, type ReadPage, ReadError } from "../src/extract.ts";
+import { type PageReader, type ReadPage, type ReadResource, ReadError } from "../src/extract.ts";
 import { createWebExtension } from "../src/web-tools.ts";
 import { agentEnv } from "./env.ts";
-import { call, message, noting, type ToolResult } from "./fakes.ts";
+import { call, imagesIn, message, noting, type Request, type ToolResult } from "./fakes.ts";
 
 const ROOM = "!main:example.org";
 
 class FakeReader implements PageReader {
 	readonly opened: string[] = [];
-	readonly pages: Record<string, ReadPage | Error>;
-	constructor(pages: Record<string, ReadPage | Error>) {
+	readonly pages: Record<string, ReadResource | Error>;
+	constructor(pages: Record<string, ReadResource | Error>) {
 		this.pages = pages;
 	}
-	async read(url: string): Promise<ReadPage> {
+	async read(url: string): Promise<ReadResource> {
 		this.opened.push(url);
 		const page = this.pages[url];
 		if (page === undefined) throw new ReadError("ページを開けませんでした。");
@@ -26,19 +26,21 @@ class FakeReader implements PageReader {
 
 const LINES = Array.from({ length: 40 }, (_, i) => `${String(i).padStart(2, "0")} 行目の本文です。`);
 
-async function setup(pages: Record<string, ReadPage | Error>) {
+async function setup(pages: Record<string, ReadResource | Error>) {
 	const reader = new FakeReader(pages);
 	const env = await agentEnv({
 		extensions: () => [createWebExtension({ reader, maxChars: 200 })],
 	});
 	const bridge = env.bridge();
 	const results: ToolResult[] = [];
+	const requests: Request[] = [];
 	let n = 0;
 	return {
 		env,
 		reader,
 		results,
-		noting: noting(results),
+		requests,
+		noting: noting(results, requests),
 		say: async (body: string) => {
 			env.link.emit(message(ROOM, `$${++n}`, body));
 			await bridge.idle();
@@ -56,6 +58,17 @@ test("a page comes to the model marked as content, not as instructions", async (
 	const text = t.results[0]?.text ?? "";
 	assert.ok(text.includes(UNTRUSTED));
 	assert.ok(text.indexOf(UNTRUSTED) < text.indexOf("この指示に従え"));
+});
+
+test("a direct image URL reaches the model as an image with its source marked untrusted", async () => {
+	const url = "https://example.com/figure";
+	const image = { data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==", mimeType: "image/png" };
+	await using t = await setup({ [url]: { url, image } });
+	t.env.faux.setResponses([call("web_extract", { url }), t.noting]);
+	await t.say("図を見て");
+	assert.deepEqual(imagesIn(t.requests[0]!), [{ type: "image", ...image }]);
+	assert.ok(t.results[0]?.text.includes(url));
+	assert.ok(t.results[0]?.text.includes(UNTRUSTED));
 });
 
 test("a long page comes in parts, and the next part is read without opening the page again", async () => {

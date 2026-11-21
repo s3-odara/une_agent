@@ -38,7 +38,7 @@ export function renderPart(page: ReadPage, whole: boolean, offset: number, maxCh
 		`URL: ${page.url}`,
 		...(page.title === "" ? [] : [`タイトル: ${page.title}`]),
 		...(page.status === undefined ? [] : [`HTTP ステータス: ${page.status}（エラーのページの可能性があります）`]),
-		`範囲: ${scope}`,
+		page.mediaType === undefined ? `範囲: ${scope}` : `形式: ${page.mediaType}`,
 	];
 	const part = text.slice(start, end);
 	const foot =
@@ -72,7 +72,7 @@ export function createWebExtension(options: WebToolsOptions) {
 			defineTool({
 				name: "web_extract",
 				description:
-					"URL のページを、ログインしていない新しいブラウザで開き、本文を Markdown で返す。本文の判定で欲しい部分が落ちたときは whole=true でページ全体を読む。長いページは途中で切れ、続きは offset を付けて呼ぶ（ページを開き直さない）。ログインやページの操作はできない。",
+					"ログインせずに公開 URL を読む。HTML は本文を Markdown で返す（whole=true でページ全体）。JSON、CSV、XML/RSS などは整形せずテキストで返す。画像 URL は画像で返す。長いテキストの続きは offset を付けて呼ぶ。PDF、ログイン、ページ操作には非対応。",
 				parameters: obj({ url: str({ description: "http または https の URL", minLength: 1 }), ...readParameters }),
 				replay: "safe",
 				execute: async (args, _api, context) => {
@@ -81,7 +81,16 @@ export function createWebExtension(options: WebToolsOptions) {
 					const whole = args.whole === true;
 					const key = `${whole ? "whole" : "main"} ${url}`;
 					const fresh = kept.get(key);
-					const page = offset > 0 && fresh !== undefined && now() - fresh.at < KEEP_MS ? fresh : keep(key, await reader.read(url, whole, context.abortSignal));
+					const resource = offset > 0 && fresh !== undefined && now() - fresh.at < KEEP_MS ? fresh : await reader.read(url, whole, context.abortSignal);
+					if ("image" in resource) {
+						kept.delete(key);
+						const status = resource.status === undefined ? "" : `\nHTTP ステータス: ${resource.status}`;
+						return { output: [
+							{ type: "text" as const, text: `URL: ${resource.url}${status}\n\n${UNTRUSTED}` },
+							{ type: "image" as const, ...resource.image },
+						] };
+					}
+					const page = resource === fresh ? resource : keep(key, resource);
 					const again = (next: number) => `web_extract を同じ url${whole ? "、whole=true" : ""}、offset=${next} で呼ぶ`;
 					return { output: [{ type: "text" as const, text: renderPart(page, whole, offset, maxChars, again) }] };
 				},

@@ -11,6 +11,10 @@ import { listen } from "./env.ts";
  * addresses. Skipped outside the dev shell (see `chromium.ts`).
  */
 
+const JSON_TEXT = '{\r\n  "お茶": "緑茶"  \r\n\r\n\r\n}\n';
+const CSV_TEXT = 'name,description\r\n"tea","green, steamed"  \r\n';
+const XML_TEXT = '<?xml version="1.0"?>\n<rss><channel><title>緑茶</title></channel></rss>\n';
+
 const PARAGRAPH = "緑茶は茶葉を摘んだ直後に加熱して発酵を止めた茶で、蒸し製と釜炒り製がある。日本では蒸し製が主流で、煎茶、玉露、かぶせ茶などに分かれる。";
 
 const html = (title: string, body: string, head = "") => `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${title}</title>${head}</head><body>${body}</body></html>`;
@@ -41,6 +45,22 @@ function site(beacon: string): Server {
 				return page(200, html("外へ出るページ", `<p>表の本文</p><img src="${beacon}/img"><script>fetch("${beacon}/fetch").catch(() => {});</script>`));
 			case "/plain":
 				return void response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end("ただのテキスト\n二行目");
+			case "/data":
+				return void response.writeHead(200, { "content-type": "application/problem+json" }).end(JSON_TEXT);
+			case "/csv":
+				return void response.writeHead(200, { "content-type": "text/csv", "content-disposition": "attachment; filename=tea.csv" }).end(CSV_TEXT);
+			case "/feed":
+				return void response.writeHead(200, { "content-type": "application/rss+xml" }).end(XML_TEXT);
+			case "/diagram":
+				return void response.writeHead(302, { location: "/asset", "content-type": "text/plain" }).end("redirect");
+			case "/asset":
+				return void response.writeHead(200, { "content-type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="30" height="20"><rect width="30" height="20" fill="red"/></svg>');
+			case "/wide":
+				return void response.writeHead(200, { "content-type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="8193" height="20"/>');
+			case "/large":
+				response.writeHead(200, { "content-type": "application/json" });
+				response.write('"');
+				return void response.end("x".repeat(5 * 1024 * 1024) + '"');
 			case "/file":
 				return void response.writeHead(200, { "content-type": "application/zip", "content-disposition": "attachment; filename=a.zip" }).end("PK");
 			case "/missing":
@@ -67,13 +87,18 @@ async function realReader(t: TestContext) {
 		server.close();
 		await inside.close();
 	};
-	return { base: `http://127.0.0.1:${port}`, inside: inside.url, reader, hits: inside.hits, [Symbol.asyncDispose]: dispose };
+	const readText = async (url: string, whole = false) => {
+		const result = await reader.read(url, whole);
+		assert.ok("markdown" in result);
+		return result;
+	};
+	return { base: `http://127.0.0.1:${port}`, inside: inside.url, reader, readText, hits: inside.hits, [Symbol.asyncDispose]: dispose };
 }
 
 test("an article is read as its main content in Markdown, without the site's navigation", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/article`, false);
+	const page = await r.readText(`${r.base}/article`);
 	assert.equal(page.scope, "article");
 	assert.ok(page.markdown.includes(PARAGRAPH));
 	assert.ok(!page.markdown.includes("このサイトについて"));
@@ -83,7 +108,7 @@ test("an article is read as its main content in Markdown, without the site's nav
 test("asked for the whole page, what the article leaves out is read too", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/article`, true);
+	const page = await r.readText(`${r.base}/article`, true);
 	assert.equal(page.scope, "page");
 	assert.ok(page.markdown.includes(PARAGRAPH));
 	assert.ok(page.markdown.includes("このサイトについて"));
@@ -92,14 +117,14 @@ test("asked for the whole page, what the article leaves out is read too", async 
 test("links in what is read point to absolute addresses", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/article`, false);
+	const page = await r.readText(`${r.base}/article`);
 	assert.ok(page.markdown.includes(`[続きの記事](${r.base}/more)`), page.markdown);
 });
 
 test("an image is read as its description, not its data", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/article`, false);
+	const page = await r.readText(`${r.base}/article`);
 	assert.ok(page.markdown.includes("茶畑"));
 	assert.ok(!page.markdown.includes("base64"));
 });
@@ -107,7 +132,7 @@ test("an image is read as its description, not its data", async (t) => {
 test("what a page's script writes is read", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/rendered`, false);
+	const page = await r.readText(`${r.base}/rendered`);
 	assert.equal(page.scope, "page");
 	assert.ok(page.markdown.includes("スクリプトが書いた本文"));
 });
@@ -115,14 +140,14 @@ test("what a page's script writes is read", async (t) => {
 test("a page that forbids scripts is still read", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/strict`, false);
+	const page = await r.readText(`${r.base}/strict`);
 	assert.ok(page.markdown.includes(PARAGRAPH));
 });
 
 test("a page cannot make the browser reach another server on this host", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/leak`, false);
+	const page = await r.readText(`${r.base}/leak`);
 	assert.ok(page.markdown.includes("表の本文"));
 	assert.deepEqual(r.hits, []);
 });
@@ -137,8 +162,34 @@ test("an address on this host is refused before opening, with a reason", async (
 test("a plain text page is read as it is", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/plain`, false);
+	const page = await r.readText(`${r.base}/plain`);
 	assert.equal(page.markdown, "ただのテキスト\n二行目");
+});
+
+test("JSON, CSV attachments, and RSS are read without changing whitespace or markup", async (t) => {
+	await using r = await realReader(t);
+	if (r === undefined) return;
+	for (const [path, body] of [["/data", JSON_TEXT], ["/csv", CSV_TEXT], ["/feed", XML_TEXT]] as const) {
+		assert.equal((await r.readText(`${r.base}${path}`)).markdown, body);
+	}
+});
+
+test("an image URL redirect is read as an image, not a page", async (t) => {
+	await using r = await realReader(t);
+	if (r === undefined) return;
+	const result = await r.reader.read(`${r.base}/diagram`, false);
+	assert.equal(result.url, `${r.base}/asset`);
+	assert.ok("image" in result);
+	assert.equal(result.image.mimeType, "image/png");
+	const png = Buffer.from(result.image.data, "base64");
+	assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [30, 20]);
+});
+
+test("large assets and images with excessive dimensions are refused", async (t) => {
+	await using r = await realReader(t);
+	if (r === undefined) return;
+	await assert.rejects(r.reader.read(`${r.base}/large`, false), /上限 5 MiB/);
+	await assert.rejects(r.reader.read(`${r.base}/wide`, false), /画像の寸法/);
 });
 
 test("a download is refused", async (t) => {
@@ -150,7 +201,7 @@ test("a download is refused", async (t) => {
 test("an error page is read with its status", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	const page = await r.reader.read(`${r.base}/missing`, false);
+	const page = await r.readText(`${r.base}/missing`);
 	assert.equal(page.status, 404);
 	assert.ok(page.markdown.includes("ページがありません"));
 });

@@ -170,6 +170,7 @@ export class EgressProxy {
 			const text = error instanceof EgressError ? error.message : "接続が拒否されました。";
 			return void response.writeHead(403, { "content-type": "text/plain; charset=utf-8" }).end(text);
 		}
+		if (response.destroyed) return;
 		const headers = { ...request.headers };
 		delete headers["proxy-connection"];
 		delete headers["proxy-authorization"];
@@ -180,6 +181,9 @@ export class EgressProxy {
 		upstream.on("error", () => {
 			if (!response.headersSent) response.writeHead(502).end();
 			else response.destroy();
+		});
+		response.on("close", () => {
+			if (!response.writableFinished) upstream.destroy();
 		});
 		request.pipe(upstream);
 	}
