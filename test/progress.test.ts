@@ -4,7 +4,7 @@ import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@ear
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { GatewayCommand } from "../src/gateway.ts";
-import { TOOL_DONE, TOOL_FAILED, TOOL_RUNNING } from "../src/progress.ts";
+import { renderProgress, TOOL_DONE, TOOL_FAILED, TOOL_RUNNING } from "../src/progress.ts";
 import { agentEnv } from "./env.ts";
 import { type FakeLink, call, message } from "./fakes.ts";
 
@@ -91,6 +91,15 @@ test("the model's thinking and what it said before calling a tool are shown, and
 	assert.match(shown, /天気を調べる必要がある/);
 	assert.match(shown, /調べてみます/);
 	assert.match(shown, /晴れと答えればよい/);
+	assert.doesNotMatch(shown, /晴れです/);
+});
+
+test("a progress notice shows streamed thinking without the answer text", () => {
+	const { role, api, provider, model, usage, stopReason, timestamp } = fauxAssistantMessage("");
+	const content = [fauxThinking("まず天気を確認する。次に"), fauxText("晴れです。続きは生成中")];
+	const message = { role, api, provider, model, usage, stopReason, timestamp, content };
+	const shown = renderProgress([], { generation: { attempt: 1, message } });
+	assert.match(shown, /まず天気を確認する/);
 	assert.doesNotMatch(shown, /晴れです/);
 });
 

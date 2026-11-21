@@ -79,7 +79,7 @@ function toolLine(call: ToolCall, results: Results, live: LiveState | undefined)
 	].join("\n");
 }
 
-/** What a stream has written so far, up to its last full line or sentence, so a half-written word or Markdown is not shown. */
+/** Avoid showing half-written words or Markdown in the model's thinking. */
 function settledPart(text: string): string {
 	return text.match(/^[\s\S]*(?:[\n。．！？]|[.!?] )/)?.[0] ?? "";
 }
@@ -102,10 +102,9 @@ export function renderProgress(entries: readonly EntryRecord[], live: LiveState 
 		}
 		blocks.push(calls.map((call) => toolLine(call, results, live)).join("\n"));
 	}
-	// Tool calls show once their answer is an entry; until then their arguments may be half written.
-	for (const block of (live?.generation?.message as AssistantMessage | undefined)?.content ?? []) {
+	// Until a tool call is recorded, its preceding text is indistinguishable from the final reply.
+	for (const block of live?.generation?.message?.content ?? []) {
 		if (block.type === "thinking") blocks.push(thinkingBlock(settledPart(block.thinking), block.redacted === true));
-		else if (block.type === "text") blocks.push(settledPart(block.text).trim());
 	}
 	const retry = live?.generation?.retry;
 	if (retry !== undefined) blocks.push(`⚠️ モデルの呼び出しに失敗しました。再試行します（${clipped(retry.error, MAX_ERROR_CHARS)}）`);
