@@ -27,7 +27,7 @@ function body(request: IncomingMessage): Promise<string> {
 	});
 }
 
-function site(beacon: string): Server {
+function site(beacon: string, fontRequested: () => void): Server {
 	const server = createServer(async (request, response) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
 		const html = (text: string) => response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page(text));
@@ -50,6 +50,10 @@ function site(beacon: string): Server {
 			response.writeHead(303, { location: "/account", ...(ok ? { "set-cookie": "session=ok; Max-Age=3600; Path=/" } : {}) }).end();
 		} else if (url.pathname === "/login") {
 			html('<form method="post" action="/login"><input name="username" aria-label="ユーザー名"><input type="password" name="password" aria-label="パスワード"><button>ログイン</button></form>');
+		} else if (url.pathname === "/slow-font") {
+			html(`<style>@font-face { font-family: Stalled; src: url('/slow.woff2'); font-display: swap } p { font-family: Stalled, sans-serif }</style><p>画面の本文</p>`);
+		} else if (url.pathname === "/slow.woff2") {
+			fontRequested();
 		} else if (url.pathname === "/canvas") {
 			// Drawn, not built of elements: nothing in it has a ref.
 			html('<canvas width="1280" height="800" style="position:fixed;left:0;top:0"></canvas><p id="hit">まだ</p><script>document.querySelector("canvas").addEventListener("click", (e) => { document.getElementById("hit").textContent = "押された位置 " + e.clientX + "," + e.clientY; });</script>');
@@ -77,7 +81,10 @@ async function realBrowser(t: TestContext) {
 	}
 	const dir = tempDir();
 	const inside = await beacon();
-	const server = site(inside.url);
+	let fontRequests = 0;
+	const server = site(inside.url, () => {
+		fontRequests++;
+	});
 	const port = await listen(server);
 	const base = `http://127.0.0.1:${port}`;
 	const egress = await egressTo(port);
@@ -95,6 +102,9 @@ async function realBrowser(t: TestContext) {
 		base,
 		beacon: inside.url,
 		hits: inside.hits,
+		get fontRequests() {
+			return fontRequests;
+		},
 		get browsers() {
 			return browsers;
 		},
@@ -228,6 +238,14 @@ test("a login is kept in the profile on disk, for the next browser process", asy
 	await logIn(await b.open("/login"));
 	await b.restart();
 	assert.match(await textOf(await b.open("/account")), /ようこそ、me さん/);
+});
+
+test("a screenshot is returned while a web font request is still pending", async (t) => {
+	await using b = await realBrowser(t);
+	if (b === undefined) return;
+	const tab = await b.open("/slow-font");
+	assert.ok(b.fontRequests > 0);
+	assert.ok((await tab.screenshot({ format: "png" })).length > 0);
 });
 
 test("a screenshot is of the window at the size of its CSS pixels, or of the whole page when asked", async (t) => {

@@ -112,6 +112,8 @@ export class PlaywrightBrowsers implements Browsers {
 
 	constructor(options: BrowserOptions) {
 		this.#options = options;
+		// These screenshots show the current UI, not a test baseline. A stalled font must not prevent capture.
+		process.env.PW_TEST_SCREENSHOT_NO_FONTS_READY = "1";
 	}
 
 	#profile(name: string): Profile {
