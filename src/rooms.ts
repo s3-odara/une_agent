@@ -175,6 +175,9 @@ export class Bridge {
 			link.send({ type: "typing", roomId: message.roomId, on: false });
 			return void (await tell("音声を聞き取れませんでした。"));
 		}
+		this.#track(this.notice(message.roomId, `heard:${message.eventId}`, `🎤 ${text}`).catch((error) => {
+			this.#log(`posting the transcript of ${message.eventId} failed: ${errorMessage(error)}`);
+		}));
 		await this.#submit(message.roomId, message.eventId, `[${time === undefined ? "" : `${time} `}音声] ${text}`, true);
 	}
 
@@ -261,9 +264,11 @@ export class Bridge {
 	 * sent later, by which time the call is over.
 	 */
 	async ask(roomId: string, key: string, content: string): Promise<Answer> {
-		const { harness, context } = this.#options;
 		const submission = await this.#serial(roomId, () => this.#submitToRoom(roomId, key, content));
-		return answerOf(harness, await submission.wait(context), context);
+		const { harness, context } = this.#options;
+		const result = submission.wait(context);
+		this.#track(this.#reportProgress(roomId, key, submission, result));
+		return answerOf(harness, await result, context);
 	}
 
 	#serial<T>(roomId: string, admit: () => Promise<T>): Promise<T> {
@@ -447,9 +452,12 @@ export class Bridge {
 		const submission = await harness.submission(idFromNumber<SubmissionId>(delivery.submissionId), context);
 		if (submission === undefined) return { body: "この発言の記録が見つからず、応答できませんでした。", notice: true };
 
-		const report = await this.#progress(delivery, submission);
-		const settled = await submission.wait(context);
-		const [answer] = await Promise.all([answerOf(harness, settled, context), report?.finish(settled)]);
+		const result = submission.wait(context);
+		const progress = this.#options.db.isUserSubmission(delivery.submissionId)
+			? this.#reportProgress(delivery.roomId, delivery.eventId, submission, result)
+			: undefined;
+		const settled = await result;
+		const [answer] = await Promise.all([answerOf(harness, settled, context), progress]);
 		if ((!answer.ok && answer.stopped) || !(await this.#answers(delivery, settled))) return undefined;
 		if (answer.ok) return { body: answer.text, notice: false };
 		if (answer.empty) return { body: "（空の応答でした）", notice: true };
@@ -467,23 +475,26 @@ export class Bridge {
 		return !inputs.includes(delivery.submissionId) || inputs[0] === delivery.submissionId;
 	}
 
-	async #progress(delivery: Delivery, submission: Submission): Promise<ProgressReport | undefined> {
-		if (!this.#options.db.isUserSubmission(delivery.submissionId)) return undefined;
-		const conversation = await this.#existingConversation(delivery.roomId);
-		if (conversation === undefined) return undefined;
-		const report = new ProgressReport({
-			conversation,
-			submission,
-			// The first send is keyed to the message, so after a restart the run goes on in the same notice. Edits need no
-			// such key: an edit sent twice shows the same thing.
-			send: (body, replaces) =>
-				this.#send(delivery.roomId, replaces === undefined ? `progress:${delivery.eventId}` : `progress:${delivery.eventId}:${randomUUID()}`, body, true, replaces),
-			intervalMs: this.#options.progressIntervalMs ?? 2_000,
-			context: this.#options.context,
-			log: this.#log,
-		});
-		await report.start();
-		return report;
+	async #reportProgress(roomId: string, key: string, submission: Submission, result: Promise<Settled>): Promise<void> {
+		try {
+			const conversation = await this.#existingConversation(roomId);
+			if (conversation === undefined) return;
+			const report = new ProgressReport({
+				conversation,
+				submission,
+				// The first send is keyed to the message, so after a restart the run goes on in the same notice. Edits need no
+				// such key: an edit sent twice shows the same thing.
+				send: (body, replaces) =>
+					this.#send(roomId, replaces === undefined ? `progress:${key}` : `progress:${key}:${randomUUID()}`, body, true, replaces),
+				intervalMs: this.#options.progressIntervalMs ?? 2_000,
+				context: this.#options.context,
+				log: this.#log,
+			});
+			await report.start();
+			await report.finish(await result);
+		} catch (error) {
+			this.#log(`showing the progress failed: ${errorMessage(error)}`);
+		}
 	}
 
 	#send(roomId: string, txnId: string, body: string, notice: boolean, replaces?: string): Promise<string> {

@@ -6,6 +6,7 @@ import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.t
 export class FakeLink implements GatewayLink {
 	readonly commands: GatewayCommand[] = [];
 	failSends = false;
+	beforeSent?: (command: Extract<GatewayCommand, { type: "send" | "sendVoice" | "sendImage" | "react" }>) => Promise<unknown> | undefined;
 	/** The gateway answers a `callSpeak` once it has played (or cut off) the speech. */
 	speak: ((command: Extract<GatewayCommand, { type: "callSpeak" }>) => GatewayEvent | undefined) | undefined;
 	readonly #listeners: ((event: GatewayEvent) => void)[] = [];
@@ -18,7 +19,7 @@ export class FakeLink implements GatewayLink {
 			const reply: GatewayEvent = this.failSends
 				? { type: "error", requestId: command.requestId, message: "the homeserver cannot be reached" }
 				: { type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` };
-			queueMicrotask(() => this.emit(reply));
+			void Promise.resolve(this.beforeSent?.(command)).then(() => this.emit(reply));
 		}
 		if (command.type === "callSpeak" && this.speak !== undefined) {
 			const reply = this.speak(command);

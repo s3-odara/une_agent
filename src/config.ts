@@ -124,7 +124,6 @@ const ConfigSchema = obj({
 				obj({
 					maxChars: count(300),
 					chime: flag(true),
-					transcript: flag(true),
 					vad: section(
 						obj({
 							threshold: num({ exclusiveMinimum: 0, exclusiveMaximum: 1, default: 0.5 }),

@@ -70,7 +70,7 @@ description: このエージェントの設定（人格、ルームの人格、�
 - ほかに `matrix`、`timezone`、`memory`（記憶の上限と整理の時刻）、`caldav`、`weather`、`browser`、`web`、`mcp`、
   `voice` がある。分からない項目は変えない
 - `voice.call.chime`: 通話で発言を聞き取れたときに効果音を鳴らすか（既定 `true`）
-- `voice.call.transcript`: 通話の文字起こしと返答をルームに notice で書くか（既定 `true`）
+- 通話の文字起こし・進捗・返答はルームに notice で書く。旧設定の `voice.call.transcript` が残っている場合は、常に投稿されることを確認してからキーを削除する
 
 ## よくある変更
 

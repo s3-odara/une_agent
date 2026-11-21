@@ -61,6 +61,21 @@ test("the tools a run called are shown in a notice before the answer, with their
 	assert.equal(messages.at(-1)?.body, "最終の答え");
 });
 
+test("a call gets its answer without waiting for its tool progress notice", { timeout: 5_000 }, async () => {
+	await using env = await progressEnv();
+	env.faux.setResponses([call("lookup", { city: "Kyoto" }), fauxAssistantMessage("晴れです")]);
+	const bridge = env.bridge();
+	const ack = Promise.withResolvers<void>();
+	env.link.beforeSent = () => ack.promise;
+	try {
+		assert.deepEqual(await bridge.ask(ROOM, "turn", "天気は?"), { ok: true, text: "晴れです" });
+	} finally {
+		ack.resolve();
+		await bridge.idle();
+	}
+	assert.match(progress(env.link).shown, /lookup/);
+});
+
 test("a tool that failed is shown as failed, with its error", async () => {
 	await using env = await progressEnv(async () => {
 		throw new Error("upstream 503");

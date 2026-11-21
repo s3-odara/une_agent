@@ -36,12 +36,12 @@ class FakeSynthesizer implements Synthesizer {
 	}
 }
 
-async function setup(call: { chime?: boolean; transcript?: boolean } = {}) {
+async function setup(call: { chime?: boolean } = {}) {
 	const env = await agentEnv({
 		config: {
 			personas: { calm: { soul: "soul.md", voice: 8 } },
 			defaultPersona: "calm",
-			voice: { stt: {}, tts: { speaker: 3 }, call: { chime: false, transcript: false, ...call, vad: { endSilenceMs: 700 } } },
+			voice: { stt: {}, tts: { speaker: 3 }, call: { chime: false, ...call, vad: { endSilenceMs: 700 } } },
 		},
 	});
 	const bridge = env.bridge();
@@ -117,7 +117,7 @@ test("what is said in a call goes to the room's conversation, marked as said in 
 	assert.match(lastInput(requests[0]!), /通話\] 明日の天気は？$/);
 });
 
-test("the answer is spoken whole, in the persona's voice; with transcripts off nothing is written to the room", async () => {
+test("the answer is spoken whole, in the persona's voice", async () => {
 	await using t = await setup();
 	const text = "**明日**は晴れです。傘はいりません。";
 	t.env.faux.setResponses([fauxAssistantMessage(text)]);
@@ -129,7 +129,6 @@ test("the answer is spoken whole, in the persona's voice; with transcripts off n
 		[{ text: toSpeech(text, t.env.config.voice!.call!.maxChars), speaker: 8, sampleRate: 48_000 }],
 	);
 	assert.equal(t.link.of("callSpeak").length, 1);
-	assert.deepEqual(t.link.of("send"), []);
 });
 
 test("the utterance and the speech files are deleted once done with", async () => {
@@ -189,20 +188,7 @@ test("silence is not put to the model", async () => {
 	assert.equal(t.env.faux.state.callCount, 0);
 });
 
-test("when speech cannot be made, the room gets the answer in text, with why", async () => {
-	await using t = await setup();
-	t.synthesizer.fail = true;
-	t.env.faux.setResponses([fauxAssistantMessage("答えです。")]);
-	t.inCall();
-	await t.say("聞こえる？");
-
-	const [notice] = t.link.of("send");
-	assert.equal(notice?.notice, true);
-	assert.match(notice?.body ?? "", /engine down/);
-	assert.match(notice?.body ?? "", /答えです。/);
-});
-
-test("an answer stopped by !new is not told to the room as a failure; only !new is answered", async () => {
+test("an answer stopped by !new produces no answer or failure notice", async () => {
 	await using t = await setup();
 	const { promise: writing, resolve: started } = Promise.withResolvers<void>();
 	t.env.faux.setResponses([
@@ -220,7 +206,7 @@ test("an answer stopped by !new is not told to the room as a failure; only !new 
 
 	assert.deepEqual(
 		t.link.of("send").map((send) => send.txnId),
-		["cmd:$1"],
+		["notice:callheard:call-1.wav", "cmd:$1"],
 	);
 	assert.deepEqual(t.link.of("callSpeak"), []);
 });
@@ -264,24 +250,18 @@ test("silence plays no chime", async () => {
 });
 
 test("what was heard and the answer are written to the room as notices, in that order", async () => {
-	await using t = await setup({ transcript: true });
+	await using t = await setup();
 	t.env.faux.setResponses([fauxAssistantMessage("**明日**は晴れです。")]);
 	t.inCall();
 	await t.say("明日の天気は？");
 
 	const sends = t.link.of("send");
 	assert.ok(sends.every((send) => send.notice === true));
-	assert.deepEqual(
-		sends.map((send) => [send.body.includes("明日の天気は？"), send.body.includes("**明日**は晴れです。")]),
-		[
-			[true, false],
-			[false, true],
-		],
-	);
+	assert.deepEqual(sends.map((send) => send.body), ["🎤 明日の天気は？", "**明日**は晴れです。"]);
 });
 
 test("an answer overtaken by the user speaking again is still written to the room", async () => {
-	await using t = await setup({ transcript: true });
+	await using t = await setup();
 	t.env.faux.setResponses([
 		() => {
 			t.link.emit({ type: "callSpeech", roomId: ROOM });
@@ -295,8 +275,8 @@ test("an answer overtaken by the user speaking again is still written to the roo
 	assert.match(t.link.bodyIn(ROOM), /古い答えです。/);
 });
 
-test("when speech cannot be made and the answer is already written, the room is told why without the answer again", async () => {
-	await using t = await setup({ transcript: true });
+test("when speech cannot be made, the room gets the answer once and is told why", async () => {
+	await using t = await setup();
 	t.synthesizer.fail = true;
 	t.env.faux.setResponses([fauxAssistantMessage("答えです。")]);
 	t.inCall();

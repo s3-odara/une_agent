@@ -3,6 +3,10 @@ import { test } from "node:test";
 import { modelFor } from "../src/config.ts";
 import { testConfig } from "./env.ts";
 
+test("a removed call transcript opt-out is rejected instead of silently publishing transcripts", () => {
+	assert.throws(() => testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { transcript: false } } }), /voice\.call\.transcript/);
+});
+
 test("a persona that a room uses but nobody defined is rejected when the config is read", () => {
 	assert.throws(() => testConfig("/nowhere", { rooms: { "!a:example.org": "missing" } }), /missing/);
 });

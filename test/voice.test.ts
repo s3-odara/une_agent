@@ -113,13 +113,15 @@ test("a voice message is put to the model as its transcript, marked as heard rat
 	assert.match(lastInput(requests[0]!), /音声\] 明日の天気は？$/);
 });
 
-test("a voice message is answered in text first, then by voice", async () => {
+test("a voice message gets a text answer then a spoken answer without waiting for the transcript notice", { timeout: 5_000 }, async () => {
 	await using t = await setup();
 	t.env.faux.setResponses([fauxAssistantMessage("晴れです。")]);
+	const { link } = t.env;
+	link.beforeSent = (send) => send.type === "send" && send.notice ? link.waitFor("sendVoice") : undefined;
 	await t.send(t.recording("v"));
 	assert.deepEqual(
-		t.env.link.commands.flatMap((command) => (command.type === "send" ? [`text: ${command.body}`] : command.type === "sendVoice" ? ["voice"] : [])),
-		["text: 晴れです。", "voice"],
+		link.commands.flatMap((command) => command.type === "send" ? [command.body] : command.type === "sendVoice" ? ["voice"] : []),
+		["🎤 明日の天気は？", "晴れです。", "voice"],
 	);
 });
 
@@ -161,7 +163,7 @@ test("a voice message offered again after a lost ack is not transcribed or answe
 	await t.send(again, "!a:example.org", "$v");
 
 	assert.equal(t.transcriber.heard.length, 1);
-	assert.equal(t.env.link.of("send").length, 1);
+	assert.deepEqual(t.env.link.of("send").map((send) => send.body), ["🎤 明日の天気は？", "はい。"]);
 	assert.equal(t.env.link.of("ack").length, 2);
 	assert.equal(existsSync(again), false);
 });
@@ -209,7 +211,7 @@ test("without speech synthesis, a voice message is answered in text only", async
 	await t.send(t.recording("v"));
 	assert.deepEqual(
 		t.env.link.of("send").map((send) => send.body),
-		["文字だけです。"],
+		["🎤 明日の天気は？", "文字だけです。"],
 	);
 	assert.equal(t.env.link.of("sendVoice").length, 0);
 });
@@ -223,10 +225,10 @@ test("when speech cannot be made, the text answer stands, a notice says why, and
 	const sent = t.env.link.of("send");
 	assert.deepEqual(
 		sent.map((send) => send.notice),
-		[false, true],
+		[true, false, true],
 	);
-	assert.equal(sent[0]?.body, "答えです。");
-	assert.match(sent[1]?.body ?? "", /engine down/);
+	assert.equal(sent[1]?.body, "答えです。");
+	assert.match(sent[2]?.body ?? "", /engine down/);
 
 	await t.env.restart();
 	await t.env.bridge().idle();

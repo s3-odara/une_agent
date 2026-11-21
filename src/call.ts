@@ -133,7 +133,7 @@ export class Calls {
 				this.#log(`playing the chime in ${roomId} failed: ${errorMessage(error)}`);
 			}
 		}
-		if (call.transcript) this.#track(notice(roomId, `callheard:${key}`, `🎤 ${text}`));
+		this.#track(notice(roomId, `callheard:${key}`, `🎤 ${text}`));
 
 		const note = room.overtaken ? `（${OVERTAKEN}）` : "";
 		room.overtaken = false;
@@ -146,7 +146,7 @@ export class Calls {
 			return;
 		}
 		// Written even when it is not spoken: the room keeps what the persona answered.
-		if (call.transcript) this.#track(notice(roomId, `callanswer:${key}`, answer.text));
+		this.#track(notice(roomId, `callanswer:${key}`, answer.text));
 		if (this.#overtaken(room, turn)) return;
 		await this.#speak(roomId, room, turn, answer.text);
 	}
@@ -200,7 +200,7 @@ export class Calls {
 			await this.#options.notice(
 				roomId,
 				`callvoice:${randomUUID()}`,
-				call.transcript ? `音声を作れませんでした（${reason}）。` : `音声を作れなかったので文字で送ります（${reason}）。\n\n${answer}`,
+				`音声を作れませんでした（${reason}）。`,
 			);
 			return;
 		}
