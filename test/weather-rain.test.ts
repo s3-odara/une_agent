@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { crc32, deflateSync } from "node:zlib";
-import { jmaRain } from "../src/weather-rain.ts";
+import { jmaRain, jmaRainGrid } from "../src/weather-rain.ts";
 import { createRainExtension } from "../src/weather-tools.ts";
 import { agentEnv } from "./env.ts";
-import { call, message, noting, type ToolResult } from "./fakes.ts";
+import { call, everything, message, noting, offered, type ToolResult } from "./fakes.ts";
 
 const point = { lat: 40.625, lon: 140.03125 };
 const timestamp = (time: string) => `20261122${time}00`;
@@ -15,7 +15,7 @@ const noData = () => collection({
 	geometry: { type: "Polygon", coordinates: [[[139, 40], [141, 40], [141, 41], [139, 41], [139, 40]]] },
 });
 
-function png(rgba?: readonly number[]): Response {
+function png(rgba?: readonly number[], extra: readonly [x: number, y: number, rgba: readonly number[]][] = []): Response {
 	const chunk = (type: string, bytes: Buffer) => {
 		const data = Buffer.concat([Buffer.from(type), bytes]);
 		const length = Buffer.alloc(4);
@@ -30,6 +30,7 @@ function png(rgba?: readonly number[]): Response {
 	header.set([8, 6], 8);
 	const scanlines = Buffer.alloc(256 * 1025);
 	if (rgba !== undefined) scanlines.set(rgba, 85 * 1025 + 1 + 79 * 4);
+	for (const [x, y, color] of extra) scanlines.set(color, y * 1025 + 1 + x * 4);
 	return new Response(new Uint8Array(Buffer.concat([
 		Buffer.from("89504e470d0a1a0a", "hex"), chunk("IHDR", header), chunk("IDAT", deflateSync(scanlines)), chunk("IEND", Buffer.alloc(0)),
 	])));
@@ -102,5 +103,78 @@ test("the 15-hour forecast uses the matching cell from each release, not its rai
 	assert.deepEqual(samples.map(({ reading }) => reading), [
 		{ kind: "amount", mm: 2 }, { kind: "amount", mm: 0 }, { kind: "amount", mm: 0.4 }, { kind: "no-data" }, { kind: "unknown" },
 	]);
-	assert.ok(urls.every((url) => /targetTimes\.json$|\/data\.geojson\?id=rasrf_(?:nd|point)$/.test(url)));
+	const firstRequests = urls.splice(0).sort();
+	const neighbor = await rain({ ...point, lon: 140.09375, horizon: "15h" });
+	assert.deepEqual(neighbor[1]?.reading, { kind: "amount", mm: 10 });
+	assert.deepEqual(urls.sort(), firstRequests);
+});
+
+test("the range forecast keeps adjacent native cells and distinguishes missing coverage from failed frames", async () => {
+	const getGrid = jmaRainGrid(async (input) => {
+		const path = new URL(String(input)).pathname;
+		if (path.endsWith("targetTimes.json")) return Response.json([
+			amountFrame("0600", "0700", "immed"), amountFrame("0600", "1300", "none"), amountFrame("0600", "1400", "none"),
+		]);
+		const valid = path.split("/")[7];
+		if (path.includes("/rasrf_nd/")) return valid === timestamp("1300") ? noData() : collection();
+		if (valid === timestamp("1400")) return new Response(null, { status: 503 });
+		return collection(amount(140.03125, 40.625294, "2.5"), amount(140.09375, 40.625294, "7"));
+	});
+	const result = await getGrid({ ...point, lon: 140.06249, sizeMeters: 1_000, horizon: "15h" });
+	assert.equal(result.unit, "mm");
+	assert.deepEqual(result.frames.map((frame) => frame.status === "available" ? frame.rows : frame.status), [[[2.5, 7]], [[null, null]], "unavailable"]);
+	assert.equal(result.frames[0]?.startAt, "2026-11-22T15:00:00+09:00");
+	assert.equal(result.frames[0]?.validAt, "2026-11-22T16:00:00+09:00");
+	const gridForFrame = (index: number) => {
+		const grid = result.grids.find(({ id }) => id === result.frames[index]?.gridId);
+		assert.ok(grid);
+		assert.ok(grid.longitudeEdges[0]! < result.bounds.west);
+		assert.ok(grid.longitudeEdges.at(-1)! > result.bounds.east);
+		return (grid.latitudeEdges[0]! + grid.latitudeEdges[1]!) / 2;
+	};
+	assert.ok(Math.abs(gridForFrame(0) - 40.625294) < 0.00001);
+	assert.ok(Math.abs(gridForFrame(1) - 40.625) < 0.00001);
+});
+
+test("codemode receives every 10 km nowcast frame with rain preserved and uncertain dry cells marked unknown, without exposing the grid to the model", async () => {
+	const getGrid = jmaRainGrid(async (input) => {
+		const path = new URL(String(input)).pathname;
+		if (path.endsWith("targetTimes_N1.json")) return Response.json([nowFrame("0600")]);
+		if (path.endsWith("targetTimes_N2.json")) return Response.json(["0605", "0610", "0615", "0620", "0625", "0630", "0635", "0640", "0645", "0650", "0655", "0700"].map((valid) => nowFrame(valid)));
+		if (path.includes("/hrpns_nd/")) return collection();
+		if (path.endsWith("/10/910/385.png")) return png([33, 140, 255, 255], [
+			[78, 85, [255, 40, 0, 255]], [79, 84, [1, 2, 3, 255]], [80, 85, [1, 2, 3, 255]],
+		]);
+		return new Response(null, { status: 404 });
+	});
+	const results: ToolResult[] = [];
+	await using env = await agentEnv({ extensions: () => [createRainExtension(undefined, getGrid)], codemode: {} });
+	const args = { ...point, horizon: "1h", sizeMeters: 10_000 };
+	const code = `const g = await tools.weather_rain_grid(${JSON.stringify(args)});
+	const at = (frame, lon) => {
+		const { latitudeEdges, longitudeEdges } = g.grids.find(grid => grid.id === frame.gridId);
+		const y = latitudeEdges.findIndex(edge => edge < 40.6249) - 1;
+		const x = longitudeEdges.findIndex(edge => edge > lon) - 1;
+		return frame.rows[y][x];
+	};
+	return {
+		times: g.frames.map(f => f.validAt.slice(11, 16)).join(','),
+		rainy: g.frames.map(f => at(f, 140.03105)),
+		aroundRain: [140.0283, 140.03105, 140.0338].map(lon => at(g.frames[0], lon))
+	};`;
+	const requests: NonNullable<Parameters<typeof noting>[1]> = [];
+	env.faux.setResponses([call("codemode", { code }), noting(results, requests)]);
+	const bridge = env.bridge();
+	env.link.emit(message("!a:example.org", "$1", "周辺の雨は？"));
+	await bridge.idle();
+	assert.equal(results.length, 1);
+	assert.equal(results[0]?.isError, false);
+	const text = results[0]?.text ?? "";
+	assert.match(text, /"times"\s*:\s*"15:00,15:05,15:10,15:15,15:20,15:25,15:30,15:35,15:40,15:45,15:50,15:55,16:00"/);
+	assert.match(text, /"rainy"\s*:\s*\[\s*7(?:,\s*7){12}\s*\]/);
+	assert.match(text, /"aroundRain"\s*:\s*\[\s*0,\s*7,\s*null\s*\]/);
+	assert.ok(requests[0]);
+	assert.ok(offered(requests[0]).includes("weather_rain"));
+	assert.ok(!offered(requests[0]).includes("weather_rain_grid"));
+	assert.doesNotMatch(everything(requests[0]), /"rows"\s*:/);
 });

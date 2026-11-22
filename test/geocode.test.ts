@@ -34,6 +34,11 @@ function fixture(dir: string, blocks = false): string {
 		...hallAddresses.map((address, i) => ({ properties: { amenity: "community_centre", name: "市民会館", "addr:full": address }, geometry: { type: "Point", coordinates: [135.7, 35.01 + i / 1000] } })),
 		{ properties: { amenity: "community_centre", name: "市民会館" }, geometry: { type: "Point", coordinates: [139.49, 35.66] } },
 		{ properties: { highway: "residential", name: "架空通り" }, geometry: { type: "Point", coordinates: [141.2, 43.06] } },
+		{ properties: { natural: "peak", name: "試験山" }, geometry: { type: "Point", coordinates: [138.474, 36.406] } },
+		{ properties: { railway: "halt", name: "試験駅" }, geometry: { type: "Point", coordinates: [138.46, 36.38] } },
+		{ properties: { highway: "traffic_signals", name: "試験交差点" }, geometry: { type: "Point", coordinates: [138.47, 36.38] } },
+		{ properties: { place: "square", name: "試験広場" }, geometry: { type: "Polygon", coordinates: [[[138, 36], [138.25, 36], [138.25, 36.25], [138, 36.25], [138, 36]]] } },
+		{ properties: { natural: "wood", name: "試験林" }, geometry: { type: "Polygon", coordinates: [[[138, 36], [138.25, 36], [138.25, 36.25], [138, 36.25], [138, 36]]] } },
 	].map((feature) => `\x1e${JSON.stringify(feature)}\n`).join(""));
 	const blockArgs = [];
 	if (blocks) {
@@ -91,6 +96,21 @@ test("an abbreviated address considers both block interpretations before falling
 	assert.deepEqual(lookupPlace(path, "札幌市中央区架空町二丁目4番5号").candidates.map(({ name }) => name), [
 		"北海道札幌市中央区架空町二丁目4番",
 	]);
+});
+
+test("named mountains and urban landmarks can be found without a facility tag", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "agent-geocode-"));
+	t.after(() => rmSync(dir, { force: true, recursive: true }));
+	const path = fixture(dir);
+
+	for (const [name, lon, lat] of [["試験山", 138.474, 36.406], ["試験駅", 138.46, 36.38], ["試験交差点", 138.47, 36.38]] as const) {
+		assert.deepEqual(lookupPlace(path, name).candidates.map(({ lon, lat }) => [lon, lat]), [[lon, lat]], name);
+	}
+	const [square] = lookupPlace(path, "試験広場").candidates;
+	assert.ok(square);
+	assert.ok(square.lon > 138 && square.lon < 138.25);
+	assert.ok(square.lat > 36 && square.lat < 36.25);
+	assert.deepEqual(lookupPlace(path, "試験林").candidates, []);
 });
 
 test("a town name alone returns same-name towns, but area only searches facilities", (t) => {

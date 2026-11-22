@@ -14,7 +14,17 @@ from zipfile import ZipFile
 
 
 FACILITY_TAGS = ('amenity', 'shop', 'leisure', 'tourism', 'office', 'healthcare', 'building', 'historic')
-EXTRA_TAGS = {'aeroway': {'aerodrome', 'terminal'}, 'man_made': {'tower', 'lighthouse'}}
+EXTRA_TAGS = {
+    'aerialway': {'station'},
+    'aeroway': {'aerodrome', 'terminal'},
+    'highway': {'services', 'rest_area'},
+    'man_made': {'tower', 'lighthouse'},
+    'mountain_pass': {'yes'},
+    'natural': {'peak', 'saddle', 'volcano', 'cape', 'beach'},
+    'place': {'square'},
+    'railway': {'station', 'halt', 'tram_stop'},
+    'waterway': {'dam', 'weir'},
+}
 NAME_TAGS = ('name:ja', 'name', 'name:en', 'alt_name:ja', 'alt_name', 'short_name:ja', 'short_name', 'official_name')
 DIGITS = '一二三四五六七八九'
 
@@ -192,14 +202,15 @@ def area(rings):
 
 def facility(builder, feature):
     p = feature['properties']
+    geometry = feature['geometry']
     if not (any(p.get(tag) and p[tag] != 'no' for tag in FACILITY_TAGS)
-            or any(p.get(tag) in values for tag, values in EXTRA_TAGS.items())):
+            or any(p.get(tag) in values for tag, values in EXTRA_TAGS.items())
+            or (p.get('highway') == 'traffic_signals' and geometry['type'] == 'Point')):
         return
     names = [p.get(tag, '') for tag in NAME_TAGS]
     name = next((n for n in names[:3] if n.strip()), '')
     if not name:
         return
-    geometry = feature['geometry']
     if geometry['type'] == 'Point':
         point = geometry['coordinates']
     elif geometry['type'] == 'Polygon':
@@ -229,7 +240,7 @@ def facilities(builder, path, work):
             facility_sequence(builder, stream)
         return
     filtered = work / 'facilities.osm.pbf'
-    filters = [*FACILITY_TAGS, *(f'{tag}={",".join(sorted(values))}' for tag, values in EXTRA_TAGS.items())]
+    filters = [*FACILITY_TAGS, *(f'{tag}={",".join(sorted(values))}' for tag, values in EXTRA_TAGS.items()), 'n/highway=traffic_signals']
     subprocess.run(['osmium', 'tags-filter', str(path), *filters, '-o', str(filtered)], check=True)
     command = ['osmium', 'export', str(filtered), '-f', 'geojsonseq', '--geometry-types=point,polygon']
     with subprocess.Popen(command, stdout=subprocess.PIPE, encoding='utf-8') as process:

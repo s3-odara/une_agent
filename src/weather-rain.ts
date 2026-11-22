@@ -54,42 +54,50 @@ function coordinates(value: unknown): [number, number] {
 	return [value[0], value[1]];
 }
 
-function inRing(point: Point, ring: unknown): boolean {
-	if (!Array.isArray(ring) || ring.length < 3) throw new Error("Unexpected JMA polygon ring");
-	let [x1, y1] = coordinates(ring.at(-1));
+function inRing(point: Point, ring: [number, number][]): boolean {
+	let [x1, y1] = ring[ring.length - 1]!;
 	let inside = false;
-	for (const vertex of ring) {
-		const [x2, y2] = coordinates(vertex);
+	for (const [x2, y2] of ring) {
 		if ((y1 > point.lat) !== (y2 > point.lat) && point.lon < x1 + (point.lat - y1) * (x2 - x1) / (y2 - y1)) inside = !inside;
 		[x1, y1] = [x2, y2];
 	}
 	return inside;
 }
 
-function noData(value: unknown, point: Point): boolean {
-	// JMA draws the enclosing coverage polygon in longitudes -45 through 315.
-	const location = point.lon < -45 ? { ...point, lon: point.lon + 360 } : point;
-	return features(value).map((entry) => {
+function coverage(value: unknown): (point: Point) => boolean {
+	const rings = features(value).flatMap((entry) => {
 		const { geometry, properties } = object(entry);
 		if (object(properties).level !== "NoData") throw new Error("Unexpected JMA coverage level");
-		const { type, coordinates } = object(geometry);
-		const polygons = type === "Polygon" ? [coordinates] : type === "MultiPolygon" ? coordinates : undefined;
+		const { type, coordinates: shape } = object(geometry);
+		const polygons = type === "Polygon" ? [shape] : type === "MultiPolygon" ? shape : undefined;
 		if (!Array.isArray(polygons)) throw new Error("Unexpected JMA coverage geometry");
 		return polygons.map((polygon: unknown) => {
 			if (!Array.isArray(polygon) || polygon.length === 0) throw new Error("Unexpected JMA polygon");
-			const [inside, ...holes] = polygon.map((ring) => inRing(location, ring));
-			return inside && !holes.includes(true);
-		}).includes(true);
-	}).includes(true);
+			return polygon.map((ring: unknown) => {
+				if (!Array.isArray(ring) || ring.length < 3) throw new Error("Unexpected JMA polygon ring");
+				return ring.map(coordinates);
+			});
+		});
+	});
+	return (point) => {
+		// JMA draws the enclosing coverage polygon in longitudes -45 through 315.
+		const location = point.lon < -45 ? { ...point, lon: point.lon + 360 } : point;
+		return rings.some(([outer, ...holes]) => outer !== undefined && inRing(location, outer) && !holes.some((hole) => inRing(location, hole)));
+	};
 }
 
-function amountAt(value: unknown, point: Point, member: string): number {
+function amountGrid(member: string) {
 	// The viewer's numeric overlay uses an approximately 5 km grid even for the first six hours.
 	const lonStep = 0.0625;
 	const latStep = member === "immed" ? 0.049998 : 0.05;
-	const column = (lon: number) => Math.round((lon - 118.03125) / lonStep);
-	const row = (lat: number) => Math.round((47.975 - lat) / latStep);
-	let amount = 0;
+	const x = (lon: number) => (lon - 118.03125) / lonStep;
+	const y = (lat: number) => (47.975 - lat) / latStep;
+	return { x, y, lon: (col: number) => 118.03125 + col * lonStep, lat: (row: number) => 47.975 - row * latStep };
+}
+
+function amounts(value: unknown, member: string): (col: number, row: number) => number {
+	const grid = amountGrid(member);
+	const values = new Map<string, number>();
 	for (const entry of features(value)) {
 		const { geometry, properties } = object(entry);
 		const shape = object(geometry);
@@ -98,23 +106,34 @@ function amountAt(value: unknown, point: Point, member: string): number {
 		const raw = object(properties).value;
 		const mm = typeof raw === "number" || (typeof raw === "string" && raw.trim() !== "") ? Number(raw) : NaN;
 		if (!Number.isFinite(mm) || mm < 0) throw new Error("Unexpected JMA rain amount");
-		if (Math.abs(lon - (118.03125 + column(lon) * lonStep)) > 0.00001 || Math.abs(lat - (47.975 - row(lat) * latStep)) > 0.00001) throw new Error("Unexpected JMA rain grid");
-		if (column(lon) === column(point.lon) && row(lat) === row(point.lat)) amount = mm;
+		const col = Math.round(grid.x(lon));
+		const row = Math.round(grid.y(lat));
+		if (Math.abs(lon - grid.lon(col)) > 0.00001 || Math.abs(lat - grid.lat(row)) > 0.00001) throw new Error("Unexpected JMA rain grid");
+		values.set(`${col},${row}`, mm);
 	}
-	return amount;
+	return (col, row) => values.get(`${col},${row}`) ?? 0;
 }
 
-function tile(point: Point) {
-	const world = TILE_SIZE * 2 ** ZOOM;
-	const x = Math.floor((point.lon + 180) / 360 * world);
-	const y = Math.floor((1 - Math.asinh(Math.tan(point.lat * Math.PI / 180)) / Math.PI) / 2 * world);
-	return { path: `${ZOOM}/${Math.floor(x / TILE_SIZE)}/${Math.floor(y / TILE_SIZE)}.png`, offset: ((y % TILE_SIZE) * TILE_SIZE + (x % TILE_SIZE)) * 4 };
+const world = TILE_SIZE * 2 ** ZOOM;
+const pixels = {
+	x: (lon: number) => (lon + 180) / 360 * world,
+	y: (lat: number) => (1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * world,
+	lon: (col: number) => col / world * 360 - 180,
+	lat: (row: number) => Math.atan(Math.sinh(Math.PI * (1 - 2 * row / world))) * 180 / Math.PI,
+};
+
+function tile(col: number, row: number) {
+	return { path: `${ZOOM}/${Math.floor(col / TILE_SIZE)}/${Math.floor(row / TILE_SIZE)}.png`, offset: ((row % TILE_SIZE) * TILE_SIZE + (col % TILE_SIZE)) * 4 };
 }
 
-async function intensity(png: Buffer, offset: number): Promise<Reading> {
-	if (png.length < 24 || png.length > 300_000 || !png.subarray(0, 8).equals(PNG_SIGNATURE) || png.readUInt32BE(16) !== TILE_SIZE || png.readUInt32BE(20) !== TILE_SIZE) return { kind: "unknown" };
+async function decodePng(png: Buffer): Promise<Buffer> {
+	if (png.length < 24 || png.length > 300_000 || !png.subarray(0, 8).equals(PNG_SIGNATURE) || png.readUInt32BE(16) !== TILE_SIZE || png.readUInt32BE(20) !== TILE_SIZE) throw new Error("Unexpected JMA tile");
 	const rgba = await ffmpeg(["-f", "png_pipe", "-c:v", "png", "-i", "pipe:0", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"], png);
-	if (rgba.length !== TILE_SIZE ** 2 * 4) return { kind: "unknown" };
+	if (rgba.length !== TILE_SIZE ** 2 * 4) throw new Error("Unexpected JMA tile size");
+	return rgba;
+}
+
+function intensity(rgba: Buffer, offset: number): Reading {
 	const [r, g, b, alpha] = rgba.subarray(offset, offset + 4);
 	if (alpha === 0) return { kind: "clear" };
 	const band = INTENSITIES.get(`${r},${g},${b}`);
@@ -126,7 +145,14 @@ function newest(items: readonly Frame[]): Frame[] {
 	return items.filter((item) => item.base === latest);
 }
 
-export function jmaRain(fetchRain = fetch): RainSource {
+export type RainGridQuery = RainQuery & { sizeMeters: number };
+type Bounds = { west: number; south: number; east: number; north: number };
+type Grid = { id: string; longitudeEdges: number[]; latitudeEdges: number[] };
+type GridFrame = { gridId: string; baseAt: string; validAt: string; startAt?: string } & (
+	{ status: "available"; rows: (number | null)[][] } | { status: "unavailable" }
+);
+
+function client(fetchRain: typeof fetch) {
 	const get = async (path: string) => {
 		const response = await fetchRain(`${ROOT}/${path}`, { signal: AbortSignal.timeout(15_000), redirect: "error" });
 		if (!response.ok) throw new Error(`JMA rain: HTTP ${response.status}`);
@@ -136,10 +162,7 @@ export function jmaRain(fetchRain = fetch): RainSource {
 	const index = async (path: string) => frames(await json(path));
 	const geo = (root: string, layer: string) => json(`${root}/${layer}/data.geojson?id=${layer}`);
 
-	return async (query) => {
-		if (!Number.isFinite(query.lat) || Math.abs(query.lat) >= 85 || !Number.isFinite(query.lon) || query.lon < -180 || query.lon >= 180) throw new Error("日本周辺の確認済みの緯度・経度を指定してください。");
-		const point = { lat: query.lat, lon: query.lon };
-		const nowcast = query.horizon === "1h";
+	const select = async (nowcast: boolean) => {
 		let selected: Frame[];
 		if (nowcast) {
 			const [analyses, forecasts] = await Promise.all([index("nowc/targetTimes_N1.json"), index("nowc/targetTimes_N2.json")]);
@@ -153,20 +176,45 @@ export function jmaRain(fetchRain = fetch): RainSource {
 			const far = newest(forecast.filter((f) => f.member === "none" && f.valid >= f.base + 420 * MINUTE && f.valid <= f.base + 900 * MINUTE));
 			selected = [...near, ...far];
 		}
-		const samples: Sample[] = [];
-		const ordered = selected.sort((a, b) => a.valid - b.valid || b.base - a.base);
-		const location = nowcast ? tile(point) : undefined;
-		const readReading = async ({ basetime, validtime, member, elements }: Frame): Promise<Reading> => {
-			const layer = nowcast ? "hrpns" : "rasrf";
-			const root = `${nowcast ? "nowc" : "rasrf"}/${basetime}/${member}/${validtime}/surf`;
+		return selected.sort((a, b) => a.valid - b.valid || b.base - a.base);
+	};
+	const rootOf = ({ basetime, validtime, member }: Frame, nowcast: boolean) => `${nowcast ? "nowc" : "rasrf"}/${basetime}/${member}/${validtime}/surf`;
+	const readCoverage = async (frame: Frame, nowcast: boolean) => {
+		const layer = nowcast ? "hrpns_nd" : "rasrf_nd";
+		if (!frame.elements.includes(layer)) throw new Error("JMA rain: missing coverage layer");
+		return coverage(await geo(rootOf(frame, nowcast), layer));
+	};
+	const readTile = async (root: string, path: string) => decodePng(Buffer.from(await (await get(`${root}/hrpns/${path}`)).arrayBuffer()));
+	return { select, rootOf, geo, readCoverage, readTile };
+}
+
+function validatePoint({ lat, lon }: Point) {
+	if (!Number.isFinite(lat) || Math.abs(lat) >= 85 || !Number.isFinite(lon) || lon < -180 || lon >= 180) throw new Error("日本周辺の確認済みの緯度・経度を指定してください。");
+}
+
+async function inBatches<T, U>(items: readonly T[], read: (item: T) => Promise<U>): Promise<U[]> {
+	const result: U[] = [];
+	for (let i = 0; i < items.length; i += 4) result.push(...await Promise.all(items.slice(i, i + 4).map(read)));
+	return result;
+}
+
+export function jmaRain(fetchRain = fetch): RainSource {
+	const { select, rootOf, geo, readCoverage, readTile } = client(fetchRain);
+	return async (query) => {
+		validatePoint(query);
+		const point = { lat: query.lat, lon: query.lon };
+		const nowcast = query.horizon === "1h";
+		const ordered = await select(nowcast);
+		const location = nowcast ? tile(Math.floor(pixels.x(point.lon)), Math.floor(pixels.y(point.lat))) : undefined;
+		const readReading = async (frame: Frame): Promise<Reading> => {
+			const { member } = frame;
+			const root = rootOf(frame, nowcast);
 			try {
-				if (!elements.includes(`${layer}_nd`)) return { kind: "unknown" };
-				if (noData(await geo(root, `${layer}_nd`), point)) return { kind: "no-data" };
-				if (location !== undefined) {
-					const response = await get(`${root}/${layer}/${location.path}`);
-					return await intensity(Buffer.from(await response.arrayBuffer()), location.offset);
-				}
-				return { kind: "amount", mm: amountAt(await geo(root, "rasrf_point"), point, member) };
+				const missing = await readCoverage(frame, nowcast);
+				if (missing(point)) return { kind: "no-data" };
+				if (location !== undefined) return intensity(await readTile(root, location.path), location.offset);
+				const grid = amountGrid(member);
+				return { kind: "amount", mm: amounts(await geo(root, "rasrf_point"), member)(Math.round(grid.x(point.lon)), Math.round(grid.y(point.lat))) };
 			} catch {
 				return { kind: "unknown" };
 			}
@@ -176,8 +224,118 @@ export function jmaRain(fetchRain = fetch): RainSource {
 			valid: frame.valid,
 			reading: await readReading(frame),
 		});
-		for (let i = 0; i < ordered.length; i += 4) samples.push(...await Promise.all(ordered.slice(i, i + 4).map(read)));
-		return samples;
+		return inBatches(ordered, read);
+	};
+}
+
+function square({ lat, lon, sizeMeters }: RainGridQuery): Bounds {
+	const dy = sizeMeters / 2 / 6378137 * 180 / Math.PI;
+	const dx = dy / Math.cos(lat * Math.PI / 180);
+	const bounds = { west: lon - dx, east: lon + dx, south: lat - dy, north: lat + dy };
+	if (bounds.west < -180 || bounds.east > 180 || bounds.south < -85 || bounds.north > 85) throw new Error("指定範囲が対応範囲を超えています。");
+	return bounds;
+}
+
+function gridFor(id: string, bounds: Bounds, projection: typeof pixels, centerOffset: number) {
+	const edges = (start: number, end: number, coordinate: (index: number) => number) => {
+		const first = Math.floor(start + centerOffset);
+		return { first, values: Array.from({ length: Math.max(first + 1, Math.ceil(end + centerOffset)) - first + 1 }, (_, i) => coordinate(first + i - centerOffset)) };
+	};
+	const x = edges(projection.x(bounds.west), projection.x(bounds.east), projection.lon);
+	const y = edges(projection.y(bounds.north), projection.y(bounds.south), projection.lat);
+	const grid: Grid = { id, longitudeEdges: x.values, latitudeEdges: y.values };
+	const cells = Array.from({ length: y.values.length - 1 }, (_, j) => Array.from({ length: x.values.length - 1 }, (_, i) => {
+		const col = x.first + i;
+		const row = y.first + j;
+		return { col, row, lon: projection.lon(col + 0.5 - centerOffset), lat: projection.lat(row + 0.5 - centerOffset) };
+	}));
+	return { grid, cells };
+}
+
+const BIN_SIZE = 2;
+const nowcastBins = {
+	x: (lon: number) => pixels.x(lon) / BIN_SIZE,
+	y: (lat: number) => pixels.y(lat) / BIN_SIZE,
+	lon: (col: number) => pixels.lon(col * BIN_SIZE),
+	lat: (row: number) => pixels.lat(row * BIN_SIZE),
+};
+
+const inJst = (ms: number) => new Date(ms + 9 * 60 * MINUTE).toISOString().replace(".000Z", "+09:00");
+const bands = [...new Set(INTENSITIES.values())];
+
+async function readNowcastBins(
+	layout: ReturnType<typeof gridFor>, bounds: Bounds, missing: (point: Point) => boolean, readTile: (path: string) => Promise<Buffer>,
+) {
+	const west = Math.floor(pixels.x(bounds.west));
+	const east = Math.ceil(pixels.x(bounds.east));
+	const north = Math.floor(pixels.y(bounds.north));
+	const south = Math.ceil(pixels.y(bounds.south));
+	const paths = new Set<string>();
+	const bins = layout.cells.map((row) => row.map((bin) => {
+		const locations: (ReturnType<typeof tile> | null)[] = [];
+		for (let y = Math.max(north, bin.row * BIN_SIZE); y < Math.min(south, (bin.row + 1) * BIN_SIZE); y++) {
+			for (let x = Math.max(west, bin.col * BIN_SIZE); x < Math.min(east, (bin.col + 1) * BIN_SIZE); x++) {
+				const location = missing({ lat: pixels.lat(y + 0.5), lon: pixels.lon(x + 0.5) }) ? null : tile(x, y);
+				if (location !== null) paths.add(location.path);
+				locations.push(location);
+			}
+		}
+		return locations;
+	}));
+	const tiles = new Map(await inBatches([...paths], async (path) => [path, await readTile(path).catch(() => undefined)] as const));
+	if (tiles.size > 0 && ![...tiles.values()].some((tile) => tile !== undefined)) return undefined;
+	return bins.map((row) => row.map((locations) => {
+		let max = -1;
+		let known = 0;
+		for (const location of locations) {
+			if (location === null) continue;
+			const rgba = tiles.get(location.path);
+			if (rgba === undefined) continue;
+			const reading = intensity(rgba, location.offset);
+			if (reading.kind !== "clear" && reading.kind !== "intensity") continue;
+			known++;
+			max = Math.max(max, reading.kind === "intensity" ? bands.indexOf(reading.band) + 1 : 0);
+		}
+		return max > 0 || (max === 0 && known === locations.length) ? max : null;
+	}));
+}
+
+export function jmaRainGrid(fetchRain = fetch) {
+	const { select, rootOf, geo, readCoverage, readTile } = client(fetchRain);
+	return async (query: RainGridQuery) => {
+		validatePoint(query);
+		if (!Number.isInteger(query.sizeMeters) || query.sizeMeters < 1 || query.sizeMeters > 10_000) throw new Error("一辺は1〜10000 mの整数で指定してください。");
+		const bounds = square(query);
+		const nowcast = query.horizon === "1h";
+		const selected = await select(nowcast);
+		const layouts = new Map<string, ReturnType<typeof gridFor>>();
+		const prepared = selected.map((frame) => {
+			const id = nowcast ? "pixelBins" : frame.member;
+			const layout = layouts.get(id) ?? gridFor(id, bounds, nowcast ? nowcastBins : amountGrid(frame.member), nowcast ? 0 : 0.5);
+			layouts.set(id, layout);
+			return { frame, layout };
+		});
+		const frames = await inBatches(prepared, async ({ frame, layout }): Promise<GridFrame> => {
+			const times = { gridId: layout.grid.id, baseAt: inJst(frame.base), validAt: inJst(frame.valid), ...(!nowcast && { startAt: inJst(frame.valid - 60 * MINUTE) }) };
+			const unavailable = { ...times, status: "unavailable" as const };
+			const root = rootOf(frame, nowcast);
+			try {
+				const missing = await readCoverage(frame, nowcast);
+				if (nowcast) {
+					const rows = await readNowcastBins(layout, bounds, missing, (path) => readTile(root, path));
+					return rows === undefined ? unavailable : { ...times, status: "available", rows };
+				}
+				const covered = layout.cells.map((row) => row.map((cell) => missing(cell) ? null : cell));
+				const read = covered.some((row) => row.some((cell) => cell !== null)) ? amounts(await geo(root, "rasrf_point"), frame.member) : () => null;
+				const rows = covered.map((row) => row.map((cell) => cell === null ? null : read(cell.col, cell.row)));
+				return { ...times, status: "available", rows };
+			} catch {
+				return unavailable;
+			}
+		});
+		return { bounds, grids: [...layouts.values()].map(({ grid }) => grid), frames, ...(nowcast
+			? { cellType: "intensityBand", unit: "mm/h", legend: ["降水なし", ...bands] }
+			: { cellType: "hourlyAmount", unit: "mm" }) };
 	};
 }
 
