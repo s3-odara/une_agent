@@ -62,7 +62,7 @@ test("a provider without a login stops the start and says how to log in", async 
 	piDev(t);
 	const dir = mkdtempSync(join(tmpdir(), "catalog-"));
 	await assert.rejects(prepareModels(createAgentModels(dir), [NEW]), /openai-codex.*just model-login openai-codex/);
-	await assert.rejects(prepareModels(createAgentModels(dir), [{ provider: "openai", modelId: "x" }]), /unknown model provider "openai".*openai-codex/);
+	await assert.rejects(prepareModels(createAgentModels(dir), [{ provider: "unknown-test-provider", modelId: "x" }]), /unknown model provider "unknown-test-provider".*openai-codex/);
 });
 
 test("only the providers the config uses are fetched", async (t) => {

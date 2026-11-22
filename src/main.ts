@@ -42,7 +42,8 @@ import { createWebExtension } from "./web-tools.ts";
 
 const context = BACKGROUND_CONTEXT;
 const RESTART_EXIT_CODE = 75;
-const configPath = process.argv[2] ?? "config.json";
+const configPath = process.argv[2];
+if (!configPath) throw new Error("usage: agent <config.json>");
 const config = loadConfig(configPath);
 mkdirSync(config.dataDir, { recursive: true });
 const models = createAgentModels(config.dataDir);
@@ -228,7 +229,6 @@ gateway.exited.then(
 	},
 	(error) => {
 		console.error(`gateway could not be started (${config.gatewayBin}): ${errorMessage(error)}`);
-		console.error("build it with: just gateway (or run the packaged agent: nix run)");
 		void shutdown(1);
 	},
 );

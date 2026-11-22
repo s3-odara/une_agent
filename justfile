@@ -3,7 +3,6 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-config := "config.json"
 deployed := env("HOME") / ".config/agent"
 state := env("XDG_STATE_HOME", env("HOME") / ".local/state") / "agent"
 units := env("HOME") / ".config/systemd/user"
@@ -47,27 +46,9 @@ test-stt audio text="":
 protocol:
     node -e 'import("./test/protocol.ts").then(m => process.stdout.write(JSON.stringify(m.protocolJson(), null, "\t") + "\n"))' > test/protocol.json
 
-# Build the gateway from source, for `just run`.
-gateway:
-    cargo build --release --manifest-path gateway/Cargo.toml
-
-# Build the browser's sandbox from source, for `just run` and the tests.
+# Build the browser's sandbox from source for the tests.
 sandbox:
     cargo build --release --manifest-path sandbox/Cargo.toml
-
-# Run the agent from source on ./config.json, with the speech recognizer and its models built by nix.
-run: gateway sandbox
-    AGENT_WHISPER_SERVER=$(nix build --no-link --print-out-paths .#whisper-server)/bin/whisper-server \
-    AGENT_STT_MODELS=$(nix build --no-link --print-out-paths .#stt-models) \
-    node --env-file-if-exists=.env src/main.ts {{ config }}
-
-# Log the gateway in for ./config.json (the password is asked for, or taken from MATRIX_PASSWORD).
-login *args: gateway
-    gateway/target/release/matrix-gateway login --config {{ config }} {{ args }}
-
-# Log in to a subscription model provider (OpenAI Codex by default) and store it in the data directory's auth.json.
-model-login provider="openai-codex":
-    AGENT_CONFIG={{ config }} node src/model-login.ts {{ quote(provider) }}
 
 # Build the geocoding database from the downloaded national datasets.
 geocode-db sources="data/geocode-sources" output="data/geocode.sqlite":
@@ -111,11 +92,11 @@ setup: apparmor
     fi
 
 # Log the deployed gateway in (the password is asked for, or taken from MATRIX_PASSWORD).
-deployed-login *args:
+login *args:
     cd {{ deployed }} && {{ current }}/bin/matrix-gateway login --config config.json {{ args }}
 
-# Log the deployed agent in to a subscription model provider (OpenAI Codex by default) through a browser.
-deployed-model-login provider="openai-codex":
+# Log in to an OAuth provider (OpenAI Codex by default) and save it in the deployed agent's auth.json.
+model-login provider="openai-codex":
     AGENT_CONFIG={{ deployed }}/config.json {{ current }}/bin/agent-model-login {{ quote(provider) }}
 
 # Build the checked-out commit and (re)start it as the deployed agent. Run again to update.

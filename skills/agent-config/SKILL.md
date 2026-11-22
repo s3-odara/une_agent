@@ -11,8 +11,7 @@ description: このエージェントの設定（人格、ルームの人格、�
 
 - Matrix の bot。ルームごとに会話が分かれ、ルームごとに人格が決まる。bot のアカウントは1つ
 - 2つのプロセス: Matrix とやり取りするゲートウェイ（Rust）と、このエージェント（Node、pi-durable）
-- 常駐しているときは systemd のユーザーサービス `agent.service`。ログは `journalctl --user -u agent.service`。
-  `agent_restart` で起動し直すのは常駐しているときだけで、それ以外（`just run`）では止まったままになる
+- systemd のユーザーサービス `agent.service` で常駐する。ログは `journalctl --user -u agent.service`。設定の変更は `agent_restart` で反映できる
 - `!` で始まるコマンド（会話のやり直し、承認、認証情報の登録など）はモデルに届かない。ユーザーは `!help` で一覧を見られる
 
 ## ファイル（設定ファイルのあるディレクトリから見た場所）
@@ -20,7 +19,7 @@ description: このエージェントの設定（人格、ルームの人格、�
 | 場所 | 中身 | 変更が効くとき |
 |---|---|---|
 | `config.json` | 設定（下の節） | `agent_restart` のあと |
-| `env` | API キーやパスワード（常駐時）。開発時はリポジトリの `.env` | 再起動のあと（`agent_restart` では読み直さない。ユーザーに `systemctl --user restart agent` を頼む） |
+| `env` | API キーやパスワード | 再起動のあと（`agent_restart` では読み直さない。ユーザーに `systemctl --user restart agent` を頼む） |
 | `personas/*.md` | 人格の口調や振る舞い（SOUL ファイル） | 次の発言から |
 | `skills/<名前>/SKILL.md` | ユーザーが足した手順書。システムプロンプトに名前と説明が一覧される | 次の発言から |
 | `data/memory/shared.md`、`data/memory/persona/<人格>.md` | 長期記憶。ふだんは memory_* ツールで書く | すぐ |

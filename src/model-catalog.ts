@@ -17,7 +17,7 @@ function byTypeAndId(baseline: readonly AnyModel[], newer: readonly AnyModel[]):
  * this pi-ai cannot speak is not offered.
  */
 export function withRemoteCatalog(provider: Provider): Provider {
-	// A provider that lists its own models (none of ours today) knows them better than pi.dev.
+	// Prefer a provider's own model discovery over the public catalog.
 	if (provider.refreshModels !== undefined) return provider;
 	const builtin = provider.getAllModels?.() ?? provider.getModels();
 	let all: readonly AnyModel[] = builtin;

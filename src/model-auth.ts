@@ -41,7 +41,7 @@ export class FileCredentialStore implements CredentialStore {
 			const current = this.#read()[providerId];
 			const next = await fn(current);
 			if (next === undefined) return current;
-			// Read again: `just model-login` may have written another provider while `fn` waited on the network.
+			// Read again: the login command may have written another provider while `fn` waited on the network.
 			this.#write({ ...this.#read(), [providerId]: next });
 			return next;
 		});

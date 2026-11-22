@@ -1,7 +1,3 @@
-/**
- * Logs in to a subscription model provider (by default OpenAI Codex, with a ChatGPT account) and stores the login in
- * the data directory's auth.json, which the agent reads and keeps refreshed. Run it once, and again if the login expires.
- */
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,11 +7,13 @@ import { writeFileAtomic } from "./files.ts";
 import { createAgentModels } from "./harness.ts";
 
 const provider = process.argv[2] ?? "openai-codex";
-const config = loadConfig(process.env.AGENT_CONFIG ?? "config.json");
+const configPath = process.env.AGENT_CONFIG;
+if (!configPath) throw new Error("use `just model-login` or set AGENT_CONFIG to the configuration file");
+const config = loadConfig(configPath);
 mkdirSync(config.dataDir, { recursive: true });
 const models = createAgentModels(config.dataDir);
 if (models.getProvider(provider)?.auth.oauth === undefined) {
-	console.error(`usage: just model-login [provider]; providers with a login: ${models.getProviders().filter((item) => item.auth.oauth !== undefined).map((item) => item.id).join(", ")}`);
+	console.error(`usage: just model-login [provider]; providers with OAuth: ${models.getProviders().filter((item) => item.auth.oauth !== undefined).map((item) => item.id).join(", ")}. Set API keys in ~/.config/agent/env.`);
 	process.exit(2);
 }
 
@@ -27,12 +25,16 @@ const getDeviceId = () => {
 };
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
+const abort = new AbortController();
+rl.once("close", () => abort.abort(new Error("login cancelled")));
 try {
 	await models.login(
 		provider,
 		"oauth",
 		{
+			signal: abort.signal,
 			prompt: async (prompt) => {
+				if (prompt.type === "secret") throw new Error("secret input is not supported by this login command");
 				if (prompt.type !== "select") return rl.question(`${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `);
 				console.log(prompt.message);
 				prompt.options.forEach((option, index) => console.log(`  ${index + 1}. ${option.label}`));
@@ -49,6 +51,9 @@ try {
 		{ getDeviceId },
 	);
 	console.log(`logged in to ${provider}; stored in ${join(config.dataDir, "auth.json")}`);
+} catch (error) {
+	console.error(error instanceof Error ? error.message : "login failed");
+	process.exitCode = 1;
 } finally {
 	rl.close();
 }

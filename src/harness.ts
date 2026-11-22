@@ -1,28 +1,39 @@
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
-import { createModels, type Models } from "@earendil-works/pi-ai/models";
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
-import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { createModels, type Models, type Provider } from "@earendil-works/pi-ai/models";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { type CompactionSettings, createRegistry, DEFAULT_COMPACTION_POLICY, Harness, type Registry } from "@earendil-works/pi-durable";
 import { type Config, loadConfig, type ModelRef, readSoul, usedModels } from "./config.ts";
 import { FileCredentialStore } from "./model-auth.ts";
 import { FileModelsStore, withRemoteCatalog } from "./model-catalog.ts";
+import { sakuraProvider } from "./sakura.ts";
 
 type HarnessOptions = Parameters<typeof Harness.open>[1];
 type Storage = Parameters<typeof Harness.open>[0];
 type Extension = Parameters<ReturnType<typeof createRegistry>["install"]>[0];
 
-/**
- * Anthropic reads `ANTHROPIC_API_KEY` and OpenRouter `OPENROUTER_API_KEY`; OpenAI Codex uses the ChatGPT login stored in
- * `<dataDir>/auth.json`.
- */
+function withVibeModel(provider: Provider): Provider {
+	const id = "mistral-vibe-cli-latest";
+	const chat = provider.getModels();
+	const medium = chat.find((model) => model.id === "mistral-medium-3.5");
+	if (medium === undefined || chat.some((model) => model.id === id)) return provider;
+	// Vibe uses a different request ID for Medium 3.5. Prefer the catalog's entry once it has one.
+	const vibe = { ...medium, id, name: "Mistral Vibe (latest)" };
+	return {
+		...provider,
+		getModels: () => [...chat, vibe],
+		getAllModels: () => [...(provider.getAllModels?.() ?? chat), vibe],
+	};
+}
 export function createAgentModels(dataDir: string): Models {
 	const models = createModels({
 		credentials: new FileCredentialStore(join(dataDir, "auth.json")),
 		modelsStore: new FileModelsStore(join(dataDir, "model-catalog.json")),
 	});
-	for (const provider of [anthropicProvider(), openaiCodexProvider(), openrouterProvider()]) models.setProvider(withRemoteCatalog(provider));
+	for (const provider of builtinProviders()) {
+		models.setProvider(withRemoteCatalog(provider.id === "mistral" ? withVibeModel(provider) : provider));
+	}
+	models.setProvider(sakuraProvider());
 	return models;
 }
 
@@ -33,8 +44,14 @@ export function createAgentModels(dataDir: string): Models {
 export async function prepareModels(models: Models, refs: readonly ModelRef[], timeoutMs = 15_000): Promise<void> {
 	const providers = [...new Set(refs.map((ref) => ref.provider))];
 	for (const provider of providers) {
-		if (models.getProvider(provider) === undefined) throw new Error(`unknown model provider "${provider}" (known: ${models.getProviders().map((item) => item.id).join(", ")})`);
-		if ((await models.checkAuth(provider)) === undefined) throw new Error(`model provider "${provider}" has no login or API key (\`just model-login ${provider}\` or its API key in the environment)`);
+		const registration = models.getProvider(provider);
+		if (registration === undefined) throw new Error(`unknown model provider "${provider}" (known: ${models.getProviders().map((item) => item.id).join(", ")})`);
+		if ((await models.checkAuth(provider)) === undefined) {
+			const hint = registration.auth.oauth === undefined
+				? "configure its credentials in ~/.config/agent/env"
+				: `run \`just model-login ${provider}\` or configure its credentials in ~/.config/agent/env`;
+			throw new Error(`model provider "${provider}" has no login or API key (${hint})`);
+		}
 	}
 	await models.refresh({ allowNetwork: false, providers });
 	const fetch = (signal?: AbortSignal) =>

@@ -1,5 +1,5 @@
 # systemd user units rather than a NixOS module, for a machine that is not NixOS.
-# The commands come along so that the deployed-* recipes run the same build as the service, not what is checked out.
+# The commands come along so that the login recipes run the same build as the service, not what is checked out.
 {
   lib,
   runCommand,

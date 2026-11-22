@@ -19,7 +19,7 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - Matrix は **matrix-rust-sdk**、通話は **matrix-rust-rtc**（element-hq、v0.5.0）。**最初から E2EE ルームに対応**
 - 人格は **bot アカウント1つ、ルームごとに人格**。人格は口調（SOUL ファイル）、専用メモの有無、モデルを別々に指定する
   （Hermes の profile のように、口調を変えるだけで設定まで分かれるのは避ける）。人格ごとに会話は分かれる
-- モデルの既定は Anthropic (Claude)。OpenAI Codex と OpenRouter も使える
+- モデルの既定は Anthropic (Claude)。pi-ai の組み込みプロバイダーと、さくらの AI Engine も使える
 - 記憶は**全人格で共有＋必要な人格だけ専用メモ**。会話中にツールで書かせ、上限つきの全文を毎回読ませる。
   判断の基準は「A に話したことを B が知っていてほしいか」。書いた人格は記録しない（専用メモでは冗長、共有でも応答に効かない）
 - 記憶は**毎日 02:00 に整理**する（前回から変わった日だけ。間隔は設定で変えられる）。会話中に書かせた文は冗長になり、
@@ -425,18 +425,18 @@ Chromium と Playwright の出どころ:
 - モデルは `"プロバイダー/モデル"` の文字列。区切るのは最初の `/` だけ（OpenRouter のモデル名に `/` があるため）
 - pi-ai の既定の認証情報ストアはメモリだけなので、`dataDir/auth.json`（pi-ai の CLI と同じ形）を読み書きする。
   OAuth の更新トークンは使うたびに変わるので書き戻す。OpenAI に送るインストールの ID は `dataDir/device-id` に保存する
-- pi-ai に組み込みのカタログだけでは新しいモデルを使えないことがある。pi 本体と同じく pi.dev のカタログを重ね、`dataDir/model-catalog.json`
+- pi-ai の組み込みプロバイダーは `builtinProviders()` でまとめて登録する。組み込みのカタログだけでは新しいモデルを使えないことがある。pi 本体と同じく pi.dev のカタログを重ね、`dataDir/model-catalog.json`
   に pi-ai の版と一緒に保存する（版が変われば捨てる）。pi.dev は User-Agent の版で絞る（`pi/1.0.0` では 6.2 が出ない）ので pi-ai 自身のものを送る
 - 起動時は、設定のモデルが保存したカタログに全部あればそのまま起動して更新は裏で行う。無いときだけ pi.dev を最大15秒待つ
+- API キーは `~/.config/agent/env` に書き、サービスを再起動する。`just model-login` は OAuth 専用。
+  以前に `dataDir/auth.json` に保存した API キーがある場合はそちらが優先される。環境変数へ移行するときは該当プロバイダーの項目だけ外す。
+- Vibe は [Code > Vibe CLI](https://chat.mistral.ai/code/extensions) で発行したキーを `MISTRAL_API_KEY` に設定し、
+  `"model": "mistral/mistral-vibe-cli-latest"` を指定する。
+- [さくらのAI Engine](https://manual.sakura.ad.jp/cloud/ai-engine/02-howto.html) の基盤モデル無償プランでアカウントトークンを発行し、
+  トークン全体を `SAKURA_AI_ENGINE_API_KEY` に設定する。モデルは `"sakura/preview/GLM-5.3-Flash"`。
+  無償枠は Chat Completions 全体で月3,000リクエスト。従量課金プランのトークンを使うと、無償枠を超えた分は課金される。
 
 ## 動かし方
-
-開発:
-
-1. `cp config.example.json config.json` で homeserver、bot のユーザー ID、`allowedUsers` を書く。`cp .env.example .env` で API キーを書く
-2. `nix develop`（direnv なら自動）で入り、`npm install`
-3. `just login`。新規アカウントならリカバリーキーを控える。設定済みなら `just login --recovery-key '<key>'`
-4. `just run`。Element で暗号化ルームを作り、bot を招待して話しかける
 
 テスト: `just check`（型、Node、gateway）。`just test-caldav`（Radicale を立てる）、`just test-stt 録音:… 台本:…`（whisper-server の実物）。
 実 Chromium のテストは Chromium が無いときだけスキップし、起動しなければ失敗する。このマシンの Claude Code のセッションは
@@ -446,16 +446,17 @@ Chromium と Playwright の出どころ:
 
 0. ユーザーを `nix-users` グループに入れてログインし直す（入っていないと Nix のデーモンに `Permission denied`）
 1. `just setup`（linger、AppArmor のプロファイル（sudo）、`~/.config/agent/` に雛形）
-2. `~/.config/agent/config.json` と `~/.config/agent/env` を書く
-3. `just deployed-login`。Codex を使うなら `just deployed-model-login`（URL をブラウザで開いて ChatGPT でログイン）
-4. `just vulkan` で GPU を確かめる（`AMD …（RADV …）` が出ればよい。llvmpipe だけなら CPU で動く）
-5. `just install`。更新は `git pull` してもう一度。ログは `just logs`
-6. VOICEVOX は `voicevox.service` が nixpkgs のものを起動する
+2. `~/.config/agent/config.json` に homeserver、bot のユーザー ID、`allowedUsers` を書く。環境変数で渡すキーは `~/.config/agent/env` に書く
+3. `just vulkan` で GPU を確かめる（`AMD …（RADV …）` が出ればよい。llvmpipe だけなら CPU で動く）
+4. `just install` で常駐版を配置する。ログインが済むまで起動は失敗しうる
+5. `just login`。新規ならリカバリーキーを控える。設定済みなら `just login --recovery-key '<key>'`。Codex などの OAuth 認証には `just model-login [provider]`
+6. `systemctl --user restart agent.service`。Element で暗号化ルームを作り、bot を招待する。ログは `just logs`
+7. 更新は `git pull` して `just install`。VOICEVOX は `voicevox.service` が nixpkgs のものを起動する
 
 - pi-durable 1.5.2 → 1.6.0 では保存タスクの形式が変わる。旧版へ戻せるよう、更新前にサービスを止めて `session.sqlite` をバックアップする。
 
 - `just install` はチェックアウトしているコミットをビルドして `~/.local/state/agent/current` にリンクする。未コミットの変更があれば止まる
-  （動いているものをコミットとして `just status` で見せるため）。`deployed-*` は `current` のコマンドを使う
+  （動いているものをコミットとして `just status` で見せるため）。`login` と `model-login` は `current` のコマンドを使う
 - 依存更新の Actions を使うには、GitHub の Settings → Actions → General で PR 作成を許可し、リポジトリの Issues を有効にする。
   Landlock ABI 10 未満のランナーではブラウザーと sandbox の統合テストはスキップされる。関連変更は対応カーネル上の `just check` でも確認する。
   通話系を更新したら、暗号化ルームへの通話参加と双方向の音声を実機で確認する。
