@@ -15,6 +15,10 @@ test("a persona name that could not be a file name is rejected", () => {
 	assert.throws(() => testConfig("/nowhere", { personas: { "../escape": "personas/default.md" }, defaultPersona: "../escape" }), /\.\.\/escape/);
 });
 
+test("a weather default must select a forecast area, not just a forecast office", () => {
+	assert.throws(() => testConfig("/nowhere", { weather: { areaCode: "130000" } }), /weather\.areaCode.*130000/);
+});
+
 test("calls cannot be set up without speech synthesis", () => {
 	assert.throws(() => testConfig("/nowhere", { voice: { stt: {}, call: {} } }), /voice\.tts/);
 });

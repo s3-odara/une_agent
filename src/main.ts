@@ -63,7 +63,7 @@ const memory = createMemoryExtension({
 	tz: config.timezone,
 });
 
-const weather = config.weather === undefined ? undefined : jmaForecast(config.weather.jmaOfficeCode, config.timezone, config.weather.areaIndex);
+const weather = jmaForecast(config.weather, config.timezone);
 let calendars: Calendars | undefined;
 if (config.caldav !== undefined) {
 	const password = process.env.CALDAV_PASSWORD;
@@ -112,7 +112,7 @@ const extensions = [
 		restart: () => void restartWhenIdle(),
 	}),
 	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
-	...(weather === undefined ? [] : [createWeatherExtension(weather)]),
+	createWeatherExtension(weather),
 	createProactiveExtension({
 		db,
 		tz: config.timezone,
@@ -185,7 +185,7 @@ scheduler = new Scheduler({
 	config,
 	db,
 	calendars,
-	weather,
+	weather: config.weather === undefined ? undefined : () => weather(),
 	// Weighing takes a model request or more for each wake; the tick does not wait for it.
 	weigh: () => void proactive.run(),
 	notice: (roomId, key, body) => bridge.notice(roomId, key, body),

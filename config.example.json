@@ -24,7 +24,7 @@
 			"ToDo": { "kind": "todos", "description": "タスク" }
 		}
 	},
-	"weather": { "jmaOfficeCode": "130000", "areaIndex": 0 },
+	"weather": { "areaCode": "130010" },
 	"browser": { "idleMinutes": 10 },
 	"web": { "maxChars": 15000 },
 	"mcp": {

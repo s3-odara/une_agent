@@ -67,7 +67,8 @@ description: このエージェントの設定（人格、ルームの人格、�
   - `dueLeadDays`: タスクの期日の何日前に気にかけるか
 - `compaction.at`: 会話がモデルのコンテキストの上限のどれだけに達したら、古い部分を要約に置き換え始めるか（既定 `0.5`）。
   小さいほど安く速いが、細部が要約に変わるのが早くなる
-- ほかに `matrix`、`timezone`、`memory`（記憶の上限と整理の時刻）、`caldav`、`weather`、`browser`、`web`、`mcp`、
+- `weather.areaCode` は、地名を省いた天気予報と朝ブリーフの既定地域（例: `130010` で東京地方）。`weather` を設定しなくても、地名を指定して天気を取得できる。
+- ほかに `matrix`、`timezone`、`memory`（記憶の上限と整理の時刻）、`caldav`、`browser`、`web`、`mcp`、
   `voice` がある。分からない項目は変えない
 - `voice.call.chime`: 通話で発言を聞き取れたときに効果音を鳴らすか（既定 `true`）
 - 通話の文字起こし・進捗・返答はルームに notice で書く。旧設定の `voice.call.transcript` が残っている場合は、常に投稿されることを確認してからキーを削除する

@@ -4,6 +4,7 @@ import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-sch
 import { arr, bool, compile, int, map, nullable, num, obj, oneOf, opt, type Schema, type Static, str, type ValidationError } from "@earendil-works/pi-schema";
 import { sttModelPaths } from "./stt-paths.ts";
 import { isTimeZone } from "./time.ts";
+import { forecastArea, type ForecastArea } from "./weather-areas.ts";
 
 /**
  * The packaged agent (`nix build`) sets these to its own parts; in a source checkout they are the build outputs under
@@ -94,12 +95,7 @@ const ConfigSchema = obj({
 			calendars: named(obj({ kind: oneOf(["events", "todos"]), description: opt(text()) }), "^[^/]+$", { minProperties: 1 }),
 		}),
 	),
-	weather: opt(
-		obj({
-			jmaOfficeCode: str({ pattern: "^\\d{6}$", description: "the 6-digit office code of the Japan Meteorological Agency forecast, such as 130000 for Tokyo" }),
-			areaIndex: amount(0),
-		}),
-	),
+	weather: opt(obj({ areaCode: str({ pattern: "^\\d{6}$", description: "the JMA forecast-area code, such as 130010 for Tokyo Region" }) })),
 	browser: opt(obj({ executablePath: opt(text()), idleMinutes: count(10) })),
 	web: opt(obj({ maxChars: count(15_000) })),
 	// The name becomes part of tool names, which allow only these characters.
@@ -153,7 +149,7 @@ const ConfigSchema = obj({
 	),
 });
 
-export type Config = Static<typeof ConfigSchema> & { readonly baseDir: string };
+export type Config = Omit<Static<typeof ConfigSchema>, "weather"> & { readonly baseDir: string; readonly weather?: ForecastArea };
 export type Persona = Static<typeof Persona>;
 export type McpServerConfig = Static<typeof McpServer>;
 export type ModelRef = { readonly provider: string; readonly modelId: string };
@@ -209,9 +205,12 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 	if (config.voice?.call !== undefined && config.voice.tts === undefined) fail("voice.call needs voice.tts: the bot speaks in calls");
 	if (config.proactive !== undefined && config.proactive.windowEnd <= config.proactive.windowStart) fail("proactive.windowEnd must be later than proactive.windowStart");
 
+	const { weather, ...rest } = config;
+	const defaultArea = weather === undefined ? undefined : forecastArea(weather.areaCode) ?? fail(`weather.areaCode: unknown forecast area "${weather.areaCode}"`);
 	const stt = config.voice?.stt;
 	return {
-		...config,
+		...rest,
+		...(defaultArea === undefined ? {} : { weather: defaultArea }),
 		baseDir,
 		dataDir: resolve(baseDir, config.dataDir),
 		gatewayBin: resolve(baseDir, config.gatewayBin),

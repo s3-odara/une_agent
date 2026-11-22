@@ -1,4 +1,5 @@
 import { dateOf } from "./time.ts";
+import { resolveForecastArea, type ForecastArea } from "./weather-areas.ts";
 
 export type DayForecast = {
 	readonly date: string;
@@ -8,20 +9,20 @@ export type DayForecast = {
 	readonly maxTemp?: string;
 };
 
-export type Forecast = { readonly area: string; readonly reportedAt: string; readonly days: readonly DayForecast[] };
+export type Forecast = { readonly area: string; readonly temperatureStation?: string; readonly reportedAt: string; readonly days: readonly DayForecast[] };
 
-export type WeatherSource = () => Promise<Forecast>;
+export type WeatherSource = (place?: string) => Promise<Forecast>;
 
 type Series = { timeDefines?: unknown; areas?: unknown };
+type AreaData = { area?: { code?: string; name?: string }; weathers?: unknown; pops?: unknown; temps?: unknown };
 
 function strings(value: unknown): string[] {
 	return Array.isArray(value) ? value.map((item) => (typeof item === "string" ? item : "")) : [];
 }
 
-function areaOf(series: Series | undefined, index: number): Record<string, unknown> | undefined {
-	const areas = Array.isArray(series?.areas) ? series.areas : [];
-	const area: unknown = areas[index] ?? areas[0];
-	return typeof area === "object" && area !== null ? (area as Record<string, unknown>) : undefined;
+function areaOf(series: Series | undefined, code: string): AreaData | undefined {
+	const areas: AreaData[] = Array.isArray(series?.areas) ? series.areas : [];
+	return areas.find((entry) => entry?.area?.code === code);
 }
 
 /**
@@ -29,7 +30,7 @@ function areaOf(series: Series | undefined, index: number): Record<string, unkno
  * failing. It holds the short-range forecast as three time series: weather per day, chance of rain per 6 hours, and
  * temperatures as (min, max) pairs per day.
  */
-export function parseJmaForecast(json: unknown, tz: string, areaIndex = 0): Forecast {
+export function parseJmaForecast(json: unknown, tz: string, target: ForecastArea): Forecast {
 	const block = Array.isArray(json) && typeof json[0] === "object" && json[0] !== null ? (json[0] as Record<string, unknown>) : {};
 	const series = (Array.isArray(block.timeSeries) ? block.timeSeries : []) as Series[];
 	const days = new Map<string, { weather?: string; rain: string[]; temps: { hour: number; value: number }[] }>();
@@ -41,14 +42,19 @@ export function parseJmaForecast(json: unknown, tz: string, areaIndex = 0): Fore
 	};
 	const hourOf = (time: string) => Temporal.Instant.fromEpochMilliseconds(Date.parse(time)).toZonedDateTimeISO(tz).hour;
 
-	const weatherArea = areaOf(series[0], areaIndex);
+	const weatherArea = areaOf(series[0], target.areaCode);
+	const rainArea = areaOf(series[1], target.areaCode);
+	const regionName = weatherArea?.area?.name ?? rainArea?.area?.name;
+	const reportedAt = typeof block.reportDatetime === "string" ? block.reportDatetime : "";
+	if (typeof regionName !== "string" || !regionName) return { area: "", reportedAt, days: [] };
+
 	const weathers = strings(weatherArea?.weathers);
 	strings(series[0]?.timeDefines).forEach((time, index) => {
 		const weather = weathers[index]?.replace(/\s+/g, "");
 		if (time !== "" && weather) day(time).weather = weather;
 	});
 
-	const pops = strings(areaOf(series[1], areaIndex)?.pops);
+	const pops = strings(rainArea?.pops);
 	strings(series[1]?.timeDefines).forEach((time, index) => {
 		const pop = pops[index];
 		if (time === "" || !pop) return;
@@ -56,7 +62,9 @@ export function parseJmaForecast(json: unknown, tz: string, areaIndex = 0): Fore
 		day(time).rain.push(`${String(hour).padStart(2, "0")}-${String(hour + 6).padStart(2, "0")}時 ${pop}%`);
 	});
 
-	const temps = strings(areaOf(series[2], areaIndex)?.temps);
+	const temperatureArea = target.temperatureCodes.map((code) => areaOf(series[2], code)).find((entry) => entry !== undefined);
+	const temperatureStation = temperatureArea?.area?.name;
+	const temps = typeof temperatureStation === "string" && temperatureStation ? strings(temperatureArea?.temps) : [];
 	strings(series[2]?.timeDefines).forEach((time, index) => {
 		const temp = Number(temps[index]);
 		if (time === "" || !temps[index] || Number.isNaN(temp)) return;
@@ -73,10 +81,10 @@ export function parseJmaForecast(json: unknown, tz: string, areaIndex = 0): Fore
 		return min === max ? { maxTemp: String(max) } : { minTemp: String(min), maxTemp: String(max) };
 	};
 
-	const area = weatherArea?.area;
 	return {
-		area: typeof area === "object" && area !== null && typeof (area as { name?: unknown }).name === "string" ? (area as { name: string }).name : "",
-		reportedAt: typeof block.reportDatetime === "string" ? block.reportDatetime : "",
+		area: regionName,
+		temperatureStation: typeof temperatureStation === "string" ? temperatureStation : undefined,
+		reportedAt,
 		days: [...days]
 			.sort(([a], [b]) => a.localeCompare(b))
 			.map(([date, entry]) => ({
@@ -89,13 +97,15 @@ export function parseJmaForecast(json: unknown, tz: string, areaIndex = 0): Fore
 }
 
 /** The office code is all that is sent: a prefecture-sized area, nothing finer. */
-export function jmaForecast(officeCode: string, tz: string, areaIndex = 0): WeatherSource {
-	return async () => {
-		const response = await fetch(`https://www.jma.go.jp/bosai/forecast/data/forecast/${encodeURIComponent(officeCode)}.json`, {
+export function jmaForecast(defaultArea: ForecastArea | undefined, tz: string, fetchForecast = fetch): WeatherSource {
+	return async (place) => {
+		const target = place === undefined ? defaultArea : resolveForecastArea(place);
+		if (target === undefined) throw new Error("既定地域が設定されていません。地名を指定してください。");
+		const response = await fetchForecast(`https://www.jma.go.jp/bosai/forecast/data/forecast/${encodeURIComponent(target.officeCode)}.json`, {
 			signal: AbortSignal.timeout(20_000),
 		});
 		if (!response.ok) throw new Error(`JMA forecast failed: HTTP ${response.status}`);
-		return parseJmaForecast(await response.json(), tz, areaIndex);
+		return parseJmaForecast(await response.json(), tz, target);
 	};
 }
 
@@ -107,5 +117,6 @@ export function formatForecast(forecast: Forecast, dates?: readonly string[]): s
 		const rain = day.rain.length === 0 ? "" : ` 降水確率 ${day.rain.join("、")}`;
 		return `- ${day.date} ${day.weather ?? "（天気は未発表）"}${temp}${rain}`;
 	});
-	return [`${forecast.area}の天気予報（気象庁、${forecast.reportedAt} 発表）`, ...lines].join("\n");
+	const station = forecast.temperatureStation && days.some((day) => day.minTemp !== undefined || day.maxTemp !== undefined) ? `、気温：${forecast.temperatureStation}地点` : "";
+	return [`${forecast.area}の天気予報（気象庁、${forecast.reportedAt} 発表${station}）`, ...lines].join("\n");
 }
