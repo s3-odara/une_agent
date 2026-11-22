@@ -109,6 +109,22 @@ test("the model's thinking and what it said before calling a tool are shown, and
 	assert.doesNotMatch(shown, /晴れです/);
 });
 
+test("recorded thinking that is too long is shown cut short", async () => {
+	await using env = await progressEnv();
+	env.faux.setResponses([
+		fauxAssistantMessage([fauxThinking("考え".repeat(300)), fauxText("調べてみます"), fauxToolCall("lookup", { city: "Kyoto" })], { stopReason: "toolUse" }),
+		fauxAssistantMessage("晴れです"),
+	]);
+	const bridge = env.bridge({ progressIntervalMs: 0 });
+
+	env.link.emit(message(ROOM, "$1", "天気は?"));
+	await bridge.idle();
+
+	const { shown } = progress(env.link);
+	assert.ok(shown.includes(`${"考え".repeat(100)}…`));
+	assert.ok(!shown.includes("考え".repeat(101)));
+});
+
 test("a progress notice shows streamed thinking without the answer text", () => {
 	const { role, api, provider, model, usage, stopReason, timestamp } = fauxAssistantMessage("");
 	const content = [fauxThinking("まず天気を確認する。次に"), fauxText("晴れです。続きは生成中")];
@@ -116,6 +132,15 @@ test("a progress notice shows streamed thinking without the answer text", () => 
 	const shown = renderProgress([], { generation: { attempt: 1, message } });
 	assert.match(shown, /まず天気を確認する/);
 	assert.doesNotMatch(shown, /晴れです/);
+});
+
+test("streamed thinking that is too long is shown cut short", () => {
+	const { role, api, provider, model, usage, stopReason, timestamp } = fauxAssistantMessage("");
+	const content = [fauxThinking("あ。".repeat(300))];
+	const message = { role, api, provider, model, usage, stopReason, timestamp, content };
+	const shown = renderProgress([], { generation: { attempt: 1, message } });
+	assert.ok(shown.includes(`${"あ。".repeat(100)}…`));
+	assert.ok(!shown.includes("あ。".repeat(101)));
 });
 
 test("while a tool runs the notice shows it running, and that same notice is edited once it is done", async () => {

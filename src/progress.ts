@@ -15,6 +15,8 @@ const TOOL_STOPPED = "⏹";
 const MAX_CHARS = 3000;
 const MAX_ARGS_CHARS = 80;
 const MAX_ERROR_CHARS = 100;
+/** Thinking is a hint of where the run stands, not the whole train of thought; full text would eat the notice's 3000 chars. */
+const MAX_THINKING_CHARS = 200;
 
 /** A call a script made; `error` only when it failed. */
 type Nested = { readonly name: string; readonly args: string; readonly status: string; readonly error?: string };
@@ -39,15 +41,19 @@ function resultsOf(entries: readonly EntryRecord[]): Results {
 	return results;
 }
 
+/** The head of `text`, cut on a character boundary, with an ellipsis when it was longer. */
+function elided(text: string, max: number): string {
+	return text.length > max ? `${text.slice(0, onCharacter(text, max))}…` : text;
+}
+
 function clipped(text: string, max: number): string {
-	const line = oneLine(text);
-	return line.length > max ? `${line.slice(0, onCharacter(line, max))}…` : line;
+	return elided(oneLine(text), max);
 }
 
 function thinkingBlock(thinking: string, redacted: boolean): string {
 	const text = redacted ? "（非公開）" : thinking.trim();
 	if (text === "") return "";
-	return text
+	return elided(text, MAX_THINKING_CHARS)
 		.split("\n")
 		.map((line, i) => `> ${i === 0 ? "💭 " : ""}${line}`)
 		.join("\n");
