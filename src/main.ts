@@ -35,7 +35,7 @@ import { WhisperServer } from "./stt.ts";
 import { memoryFingerprint, tidyMemory } from "./tidy.ts";
 import { Voicevox } from "./tts.ts";
 import { jmaForecast } from "./weather.ts";
-import { createWeatherExtension, createRainExtension } from "./weather-tools.ts";
+import { createRainExtension, createWeatherExtension } from "./weather-tools.ts";
 import { createOutsideExtension } from "./untrusted.ts";
 import { createWebExtension } from "./web-tools.ts";
 
@@ -63,7 +63,7 @@ const memory = createMemoryExtension({
 	tz: config.timezone,
 });
 
-const weather = jmaForecast(config.weather, config.timezone);
+const weather = jmaForecast(config.weather);
 let calendars: Calendars | undefined;
 if (config.caldav !== undefined) {
 	const password = process.env.CALDAV_PASSWORD;
@@ -113,7 +113,7 @@ const extensions = [
 	}),
 	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
 	createWeatherExtension(weather),
-	createRainExtension(config.timezone),
+	createRainExtension(),
 	createProactiveExtension({
 		db,
 		tz: config.timezone,

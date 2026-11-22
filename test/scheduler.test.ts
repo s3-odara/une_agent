@@ -5,6 +5,7 @@ import { buildEvent, buildTodo, Calendars } from "../src/calendar.ts";
 import { HostDb, type Wake } from "../src/hostdb.ts";
 import { NEAR, Scheduler } from "../src/scheduler.ts";
 import { localToEpoch } from "../src/time.ts";
+import type { WeatherSource } from "../src/weather.ts";
 import { tempDir, testConfig } from "./env.ts";
 import { ics, MemoryCalDav } from "./fakes.ts";
 
@@ -14,7 +15,7 @@ const at = (local: string) => localToEpoch(local, tz);
 /** Written well before the tests' days, so nothing counts as news unless a test says so. */
 const LONG_AGO = at("2026-10-01T09:00");
 
-function setup(proactive: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) {
+function setup(proactive: Record<string, unknown> = {}, extra: Record<string, unknown> = {}, weather?: WeatherSource) {
 	const dir = tempDir();
 	const config = testConfig(dir.path, {
 		caldav: { url: "https://dav.example.org", username: "me", calendars: { Work: { kind: "events" }, Home: { kind: "events" }, ToDo: { kind: "todos" } } },
@@ -31,7 +32,7 @@ function setup(proactive: Record<string, unknown> = {}, extra: Record<string, un
 		config,
 		db,
 		...(config.caldav === undefined ? {} : { calendars: new Calendars(backend, config.caldav.calendars, tz) }),
-		weather: async () => ({ area: "東京地方", reportedAt: "2026-11-17T05:00:00+09:00", days: [{ date: "2026-11-17", weather: "くもり昼過ぎから雨", rain: ["12-18時 70%"], maxTemp: "15" }] }),
+		weather: weather ?? (async () => ({ area: "東京地方", reportedAt: "2026-11-17T05:00:00+09:00", days: [{ date: "2026-11-17", weather: "くもり昼過ぎから雨", rain: ["12-18時 70%"], maxTemp: "15" }] })),
 
 		notice: async (_room, _key, body) => void notices.push(body),
 		now: () => now,
@@ -98,6 +99,23 @@ test("the brief has today's and tomorrow's events, the open tasks, and the forec
 	const brief = t.submitted[0] ?? "";
 	for (const expected of ["歯医者", "定例", "レポート提出", "くもり昼過ぎから雨"]) assert.ok(brief.includes(expected), expected);
 	assert.ok(!brief.includes("来週の予定"));
+});
+
+test("the brief picks today and tomorrow for weather in Japan even when the configured date is still yesterday", async () => {
+	using t = setup({}, { timezone: "America/Los_Angeles" }, async () => ({
+		area: "東京地方",
+		reportedAt: "2026-11-16T17:00:00+09:00",
+		days: [
+			{ date: "2026-11-16", weather: "前日の霧", rain: [] },
+			{ date: "2026-11-17", weather: "当日の晴れ", rain: [] },
+			{ date: "2026-11-18", weather: "翌日の雨", rain: [] },
+		],
+	}));
+	await t.tickAt("2026-11-17T06:00");
+	const brief = t.submitted[0] ?? "";
+	assert.match(brief, /当日の晴れ/);
+	assert.match(brief, /翌日の雨/);
+	assert.doesNotMatch(brief, /前日の霧/);
 });
 
 test("a task past its due date is in the brief with how long ago that was", async () => {

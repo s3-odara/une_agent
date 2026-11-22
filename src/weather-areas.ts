@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 
+export const JMA_TIME_ZONE = "Asia/Tokyo";
+
 export type ForecastArea = { readonly officeCode: string; readonly areaCode: string; readonly temperatureCodes: readonly string[] };
 
 type Region = { name: string; parent: string };
@@ -37,26 +39,30 @@ function add(name: string, code: string, candidate: string) {
 	byName.set(key, matches);
 }
 
-function areaName(code: string): string {
+export function forecastAreaCodes(officeCode: string): readonly string[] {
+	return master.offices[officeCode]?.children ?? [];
+}
+
+export function forecastAreaName(code: string): string {
 	const region = master.class10s[code]!;
 	const office = master.offices[region.parent]!.name;
 	return office === region.name ? office : `${office}・${region.name}`;
 }
 
 for (const office of Object.values(master.offices)) {
-	for (const code of office.children) add(office.name, code, areaName(code));
+	for (const code of office.children) add(office.name, code, forecastAreaName(code));
 }
 for (const [code, region] of Object.entries(master.class10s)) {
-	const name = areaName(code);
+	const name = forecastAreaName(code);
 	add(region.name, code, name);
 	add(name, code, name);
 }
-for (const region of Object.values(master.class15s)) add(region.name, region.parent, areaName(region.parent));
+for (const region of Object.values(master.class15s)) add(region.name, region.parent, forecastAreaName(region.parent));
 for (const [code, region] of Object.entries(master.class20s)) {
 	const areaCode = master.class15s[region.parent]?.parent ?? region.parent;
 	const prefecture = prefectures[Number(code.slice(0, 2)) - 1];
 	if (prefecture === undefined || master.class10s[areaCode] === undefined) continue;
-	add(prefecture, areaCode, areaName(areaCode));
+	add(prefecture, areaCode, forecastAreaName(areaCode));
 	const candidate = prefecture + region.name;
 	const municipality = region.name.replace(/([市区町村])(?:東部|西部|南部|北部|中部)$/, "$1");
 	for (const name of new Set([region.name, municipality])) {

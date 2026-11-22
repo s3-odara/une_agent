@@ -7,7 +7,6 @@ import { agentEnv } from "./env.ts";
 import { call, message, noting, type ToolResult } from "./fakes.ts";
 
 const point = { lat: 40.625, lon: 140.03125 };
-const tz = "Asia/Tokyo";
 const timestamp = (time: string) => `20261122${time}00`;
 const collection = (...features: object[]) => Response.json({ type: "FeatureCollection", features });
 const noData = () => collection({
@@ -59,7 +58,7 @@ test("the rain tool reads the requested pixel and separates clear, missing cover
 		return new Response(null, { status: 404 });
 	});
 	const results: ToolResult[] = [];
-	await using env = await agentEnv({ extensions: () => [createRainExtension(tz, rain)] });
+	await using env = await agentEnv({ extensions: () => [createRainExtension(rain)] });
 	env.faux.setResponses([call("weather_rain", { ...point, horizon: "1h" }), noting(results)]);
 	const bridge = env.bridge();
 	env.link.emit(message("!a:example.org", "$1", "この地点で雨が降りそう？"));
@@ -67,6 +66,7 @@ test("the rain tool reads the requested pixel and separates clear, missing cover
 
 	assert.equal(results[0]?.isError, false);
 	const text = results[0]?.text ?? "";
+	assert.match(text, /日本時間/);
 	assert.match(text, /15:00（実況）：5以上10未満 mm\/h/);
 	assert.match(text, /15:05：降水表示なし/);
 	assert.match(text, /15:10：欠測/);

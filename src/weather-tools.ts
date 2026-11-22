@@ -1,24 +1,31 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { formatThreeHourForecast } from "./weather-details.ts";
 import { formatRain, jmaRain, RAIN_HORIZONS } from "./weather-rain.ts";
-import { formatForecast, type WeatherSource } from "./weather.ts";
+import { FORECAST_PERIODS, formatForecast, type jmaForecast } from "./weather.ts";
 
-export function createWeatherExtension(weather: WeatherSource) {
+export function createWeatherExtension(weather: ReturnType<typeof jmaForecast>) {
 	return defineExtension({
 		name: "weather",
 		tools: [
 			defineTool({
 				name: "weather_forecast",
-				description: "気象庁の短期予報（予報区域の天気・降水確率、代表地点の気温）。候補が返ったら、文脈で絞れる場合は候補をそのまま place に渡し、絞れなければユーザーに確認する。",
-				parameters: obj({ place: opt(str({ description: "都道府県名、市区町村名（都道府県名付きも可）、または予報区域名。省略時は設定された既定地域。" })) }),
+				description: "気象庁の予報。候補が返ったら、文脈で絞れる場合は候補をそのまま place に渡し、絞れなければユーザーに確認する。",
+				parameters: obj({
+					place: opt(str({ description: "都道府県名、市区町村名（都道府県名付きも可）、または予報区域名。省略時は設定された既定地域。" })),
+					period: opt(oneOf(FORECAST_PERIODS, { description: "省略で短期予報。week は7日先までの日別予報、3h は明日までの3時間ごとの天気・風・気温（降水確率なし）。" })),
+				}),
 				replay: "safe",
-				execute: async ({ place }) => ({ output: [{ type: "text" as const, text: formatForecast(await weather(place)) }] }),
+				execute: async ({ place, period }) => {
+					const forecast = await weather(place, period);
+					return { output: [{ type: "text" as const, text: "slots" in forecast ? formatThreeHourForecast(forecast) : formatForecast(forecast) }] };
+				},
 			}),
 		],
 	});
 }
 
-export function createRainExtension(tz: string, rain = jmaRain()) {
+export function createRainExtension(rain = jmaRain()) {
 	return defineExtension({
 		name: "weather-rain",
 		tools: [defineTool({
@@ -30,7 +37,7 @@ export function createRainExtension(tz: string, rain = jmaRain()) {
 				horizon: oneOf(RAIN_HORIZONS),
 			}),
 			replay: "safe",
-			execute: async (query) => ({ output: [{ type: "text" as const, text: formatRain(await rain(query), query, tz) }] }),
+			execute: async (query) => ({ output: [{ type: "text" as const, text: formatRain(await rain(query), query) }] }),
 		})],
 	});
 }

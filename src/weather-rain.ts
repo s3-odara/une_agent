@@ -1,4 +1,5 @@
 import { ffmpeg } from "./ffmpeg.ts";
+import { JMA_TIME_ZONE } from "./weather-areas.ts";
 
 export const RAIN_HORIZONS = ["1h", "15h"] as const;
 export type RainQuery = { lat: number; lon: number; horizon: (typeof RAIN_HORIZONS)[number] };
@@ -179,14 +180,14 @@ export function jmaRain(fetchRain = fetch): RainSource {
 	};
 }
 
-export function formatRain(samples: readonly Sample[], query: RainQuery, tz: string): string {
+export function formatRain(samples: readonly Sample[], query: RainQuery): string {
 	if (samples.length === 0) return "気象庁の降水データに利用できる時刻が見つかりませんでした。";
-	const date = new Intl.DateTimeFormat("ja-JP", { timeZone: tz, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+	const date = new Intl.DateTimeFormat("ja-JP", { timeZone: JMA_TIME_ZONE, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 	const nowcast = query.horizon === "1h";
 	const lines = samples.map(({ base, valid, reading }) => {
 		const period = nowcast ? `${date.format(valid)}${valid === base ? "（実況）" : ""}` : `${date.format(valid - 60 * MINUTE)}〜${date.format(valid)}`;
 		const value = reading.kind === "intensity" ? `${reading.band} mm/h` : reading.kind === "amount" ? `${reading.mm} mm` : reading.kind === "clear" ? "降水表示なし" : reading.kind === "no-data" ? "欠測" : "不明（取得・判定できず）";
 		return `- ${period}：${value}（基準 ${date.format(base)}）`;
 	});
-	return [`気象庁 ${nowcast ? "雨雲の動き（降水強度）" : "今後の雨（1時間降水量・約5 km格子）"}：緯度 ${query.lat}、経度 ${query.lon}（${tz}）`, ...lines].join("\n");
+	return [`気象庁 ${nowcast ? "雨雲の動き（降水強度）" : "今後の雨（1時間降水量・約5 km格子）"}：緯度 ${query.lat}、経度 ${query.lon}（日本時間）`, ...lines].join("\n");
 }

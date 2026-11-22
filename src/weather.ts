@@ -1,5 +1,6 @@
 import { dateOf } from "./time.ts";
-import { resolveForecastArea, type ForecastArea } from "./weather-areas.ts";
+import { JMA_TIME_ZONE, forecastAreaCodes, resolveForecastArea, type ForecastArea } from "./weather-areas.ts";
+import { parseThreeHourForecast, parseWeeklyForecast, type ThreeHourForecast } from "./weather-details.ts";
 
 export type DayForecast = {
 	readonly date: string;
@@ -7,10 +8,13 @@ export type DayForecast = {
 	readonly rain: readonly string[];
 	readonly minTemp?: string;
 	readonly maxTemp?: string;
+	readonly reliability?: string;
 };
 
-export type Forecast = { readonly area: string; readonly temperatureStation?: string; readonly reportedAt: string; readonly days: readonly DayForecast[] };
+export type Forecast = { readonly area: string; readonly temperatureStation?: string; readonly reportedAt: string; readonly days: readonly DayForecast[]; readonly period?: "week" };
 
+export const FORECAST_PERIODS = ["week", "3h"] as const;
+export type ForecastPeriod = (typeof FORECAST_PERIODS)[number];
 export type WeatherSource = (place?: string) => Promise<Forecast>;
 
 type Series = { timeDefines?: unknown; areas?: unknown };
@@ -30,17 +34,17 @@ function areaOf(series: Series | undefined, code: string): AreaData | undefined 
  * failing. It holds the short-range forecast as three time series: weather per day, chance of rain per 6 hours, and
  * temperatures as (min, max) pairs per day.
  */
-export function parseJmaForecast(json: unknown, tz: string, target: ForecastArea): Forecast {
+export function parseJmaForecast(json: unknown, target: ForecastArea): Forecast {
 	const block = Array.isArray(json) && typeof json[0] === "object" && json[0] !== null ? (json[0] as Record<string, unknown>) : {};
 	const series = (Array.isArray(block.timeSeries) ? block.timeSeries : []) as Series[];
 	const days = new Map<string, { weather?: string; rain: string[]; temps: { hour: number; value: number }[] }>();
 	const day = (time: string) => {
-		const date = dateOf(Date.parse(time), tz);
+		const date = dateOf(Date.parse(time), JMA_TIME_ZONE);
 		let entry = days.get(date);
 		if (entry === undefined) days.set(date, (entry = { rain: [], temps: [] }));
 		return entry;
 	};
-	const hourOf = (time: string) => Temporal.Instant.fromEpochMilliseconds(Date.parse(time)).toZonedDateTimeISO(tz).hour;
+	const hourOf = (time: string) => Temporal.Instant.fromEpochMilliseconds(Date.parse(time)).toZonedDateTimeISO(JMA_TIME_ZONE).hour;
 
 	const weatherArea = areaOf(series[0], target.areaCode);
 	const rainArea = areaOf(series[1], target.areaCode);
@@ -96,27 +100,45 @@ export function parseJmaForecast(json: unknown, tz: string, target: ForecastArea
 	};
 }
 
-/** The office code is all that is sent: a prefecture-sized area, nothing finer. */
-export function jmaForecast(defaultArea: ForecastArea | undefined, tz: string, fetchForecast = fetch): WeatherSource {
-	return async (place) => {
+export function jmaForecast(defaultArea: ForecastArea | undefined, fetchForecast = fetch) {
+	const get = async (path: string): Promise<unknown> => {
+		const response = await fetchForecast(`https://www.jma.go.jp/bosai/${path}`, { signal: AbortSignal.timeout(20_000), redirect: "error" });
+		if (!response.ok) throw new Error(`JMA forecast failed: HTTP ${response.status}`);
+		return response.json();
+	};
+
+	function forecast(place?: string, period?: "week"): Promise<Forecast>;
+	function forecast(place: string | undefined, period: "3h"): Promise<ThreeHourForecast>;
+	function forecast(place: string | undefined, period: ForecastPeriod | undefined): Promise<Forecast | ThreeHourForecast>;
+	async function forecast(place?: string, period?: ForecastPeriod): Promise<Forecast | ThreeHourForecast> {
 		const target = place === undefined ? defaultArea : resolveForecastArea(place);
 		if (target === undefined) throw new Error("既定地域が設定されていません。地名を指定してください。");
-		const response = await fetchForecast(`https://www.jma.go.jp/bosai/forecast/data/forecast/${encodeURIComponent(target.officeCode)}.json`, {
-			signal: AbortSignal.timeout(20_000),
-		});
-		if (!response.ok) throw new Error(`JMA forecast failed: HTTP ${response.status}`);
-		return parseJmaForecast(await response.json(), tz, target);
-	};
+		if (period === "3h") {
+			// Sending the same requests for every place in an office avoids revealing which area was selected.
+			const codes = forecastAreaCodes(target.officeCode);
+			const results = await Promise.allSettled(codes.map((code) => get(`jmatile/data/wdist/VPFD/${code}.json`)));
+			const result = results[codes.indexOf(target.areaCode)];
+			if (result?.status === "rejected") throw result.reason;
+			return parseThreeHourForecast(result?.value, target);
+		}
+		// JMA serves Tokachi and Amami in their neighboring offices’ forecast files.
+		const code = target.officeCode === "014030" ? "014100" : target.officeCode === "460040" ? "460100" : target.officeCode;
+		const data = await get(`forecast/data/forecast/${encodeURIComponent(code)}.json`);
+		return period === "week" ? parseWeeklyForecast(data, target) : parseJmaForecast(data, target);
+	}
+	return forecast;
 }
 
 export function formatForecast(forecast: Forecast, dates?: readonly string[]): string {
 	const days = forecast.days.filter((day) => dates === undefined || dates.includes(day.date));
-	if (days.length === 0) return "天気予報を取得できませんでした。";
+	const name = forecast.period === "week" ? "週間天気予報" : "天気予報";
+	if (days.length === 0) return `${name}を取得できませんでした。`;
 	const lines = days.map((day) => {
 		const temp = [day.minTemp === undefined ? "" : ` 最低${day.minTemp}℃`, day.maxTemp === undefined ? "" : ` 最高${day.maxTemp}℃`].join("");
 		const rain = day.rain.length === 0 ? "" : ` 降水確率 ${day.rain.join("、")}`;
-		return `- ${day.date} ${day.weather ?? "（天気は未発表）"}${temp}${rain}`;
+		const confidence = day.reliability === undefined ? "" : ` 降水の信頼度 ${day.reliability}`;
+		return `- ${day.date} ${day.weather ?? "（天気は未発表）"}${temp}${rain}${confidence}`;
 	});
 	const station = forecast.temperatureStation && days.some((day) => day.minTemp !== undefined || day.maxTemp !== undefined) ? `、気温：${forecast.temperatureStation}地点` : "";
-	return [`${forecast.area}の天気予報（気象庁、${forecast.reportedAt} 発表${station}）`, ...lines].join("\n");
+	return [`${forecast.area}の${name}（気象庁、${forecast.reportedAt} 発表${station}、日本時間）`, ...lines].join("\n");
 }

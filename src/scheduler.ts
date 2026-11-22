@@ -5,6 +5,7 @@ import { errorMessage } from "./errors.ts";
 import type { HostDb, Wake } from "./hostdb.ts";
 import { formatTidy, type TidyChange } from "./tidy.ts";
 import { addDays, dateOf, daysBetween, formatClock, formatDay, formatStamp, localToEpoch, startOfDay } from "./time.ts";
+import { JMA_TIME_ZONE } from "./weather-areas.ts";
 import { formatForecast, type WeatherSource } from "./weather.ts";
 
 type Trigger = { readonly kind: "reminder" | "change"; readonly key: string; readonly line: string };
@@ -240,7 +241,7 @@ export class Scheduler {
 
 		if (briefDue) {
 			// The brief covers everything due right now, so none of it is woken for again.
-			this.#wake(now, { key: `brief:${today}`, roomId: proactive.roomId, kind: "brief", content: await this.#brief(stamp, today, events, todos, triggers) });
+			this.#wake(now, { key: `brief:${today}`, roomId: proactive.roomId, kind: "brief", content: await this.#brief(now, stamp, today, events, todos, triggers) });
 			db.markNotified([`brief:${today}`, ...(checkDue === undefined ? [] : [`check:${today}:${checkDue}`]), ...keys], now);
 		} else if (checkDue !== undefined || triggers.length > 0) {
 			const key = checkDue !== undefined ? `check:${today}:${checkDue}` : `check:${createHash("sha256").update(keys.join("\n")).digest("hex").slice(0, 16)}`;
@@ -325,12 +326,13 @@ export class Scheduler {
 		].join("\n");
 	}
 
-	async #brief(stamp: string, today: string, events: readonly EventItem[], todos: readonly TodoItem[], triggers: readonly Trigger[]): Promise<string> {
+	async #brief(now: number, stamp: string, today: string, events: readonly EventItem[], todos: readonly TodoItem[], triggers: readonly Trigger[]): Promise<string> {
 		const { weather } = this.#options;
 		let forecast: string | undefined;
 		if (weather !== undefined) {
+			const jmaToday = dateOf(now, JMA_TIME_ZONE);
 			forecast = await weather().then(
-				(result) => formatForecast(result, [today, addDays(today, 1)]),
+				(result) => formatForecast(result, [jmaToday, addDays(jmaToday, 1)]),
 				(error) => {
 					this.#log(`weather failed: ${errorMessage(error)}`);
 					return "天気予報を取得できませんでした。";
