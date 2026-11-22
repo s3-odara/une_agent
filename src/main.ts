@@ -22,6 +22,7 @@ import { EgressProxy } from "./egress.ts";
 import { errorMessage, fail } from "./errors.ts";
 import { PlaywrightReader } from "./extract.ts";
 import { spawnGateway } from "./gateway.ts";
+import { createGeocodeExtension } from "./geocode.ts";
 import { compactionSettings, createAgentModels, openAgentHarness, openConfig } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
 import { createImageWindowExtension } from "./images.ts";
@@ -114,6 +115,7 @@ const extensions = [
 	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
 	createWeatherExtension(weather),
 	createRainExtension(),
+	createGeocodeExtension(join(config.dataDir, "geocode.sqlite")),
 	createProactiveExtension({
 		db,
 		tz: config.timezone,

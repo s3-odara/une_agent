@@ -173,6 +173,8 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - `weather_rain` は座標を受け取り、区域の予報と同じく日本時間で表示する。`1h` は雨雲の `z=10` PNG を読むのでタイル番号が気象庁に伝わるが、タイル内の座標は送らない。`15h` は時刻ごとの GeoJSON をローカルで照合し、場所を示す情報を送らない
 - `15h` は約5 kmの数値表示用格子を使う。PNGは境界で隣の格子の色が出ることがあるので補完に使わない。欠測域外で格子の掲載がなければ 0 mm 扱い。取得失敗や未知の色・形式は無降水にしない
 
+- `geocode` は市区町村の本庁・街区や地番（なければ大字・町丁目）の代表点・OSM の施設をローカルで引く。全国データの取り込みは起動から分離し、`geocode.sqlite` を生成して置く（[手順](manual/geocode.md)）。市区町村全体ではなく代表点の雨を調べる。
+
 ### 自分から話しかける（`src/scheduler.ts`、`src/proactive.ts`）
 
 - いつ起こすかはスケジューラがコードで決める（既定15分ごとに見るが、モデルを使うのは起こすときだけ）:
@@ -196,7 +198,7 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
   （同じ知らせでは2度起こさない）
 - 約束の時刻は、頼まれた知らせなので、会話で済んでいなければ伝える、と書く
 - aside の間は、読むだけのツール（`read`、`calendar_list`、`weather_forecast`、`web_extract`、`timer_list`、`stay_silent`、
-  `weather_rain`、`codemode`、`tool_search`、設定で `replay: "safe"` の MCP サーバーのツール）のほかを、`beforeTool` フックで拒む。スクリプトから
+  `weather_rain`、`geocode`、`codemode`、`tool_search`、設定で `replay: "safe"` の MCP サーバーのツール）のほかを、`beforeTool` フックで拒む。スクリプトから
   呼んだツールにもフックがかかるので、`codemode` は通してよい。捨てる会話で何かを書き換えていると困るため。
   書き込むツールを並べるのではなく読むツールを並べるのは、あとから足したツールや MCP のツールを、既定で拒むため
 - aside はルームの会話と同じツールを持つ（`stay_silent` と `timer_*` も全会話に出す）。ツールの一覧が変わるとプロンプトキャッシュが切れるため。

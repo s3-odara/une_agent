@@ -69,6 +69,16 @@ login *args: gateway
 model-login provider="openai-codex":
     AGENT_CONFIG={{ config }} node src/model-login.ts {{ quote(provider) }}
 
+# Build the geocoding database from the downloaded national datasets.
+geocode-db sources="data/geocode-sources" output="data/geocode.sqlite":
+    nix shell --inputs-from . nixpkgs#python3 nixpkgs#osmium-tool --command \
+      python3 scripts/build-geocode.py \
+        --offices {{ quote(sources) }}/P05-22_GML.zip \
+        --towns {{ quote(sources) }}/isj/*.zip \
+        --blocks-dir {{ quote(sources) }}/isj-blocks \
+        --osm {{ quote(sources) }}/japan-latest.osm.pbf \
+        --output {{ quote(output) }}
+
 # Show the GPUs the speech recognizer can use, through the same Vulkan driver it uses.
 vulkan:
     nix run .#vulkan-check

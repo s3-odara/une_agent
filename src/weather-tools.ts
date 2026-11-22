@@ -30,7 +30,7 @@ export function createRainExtension(rain = jmaRain()) {
 		name: "weather-rain",
 		tools: [defineTool({
 			name: "weather_rain",
-			description: "指定座標の降水予測を気象庁から取得する。",
+			description: "指定座標の降水予測を気象庁から取得する。座標がわからなければ geocode で引く。",
 			parameters: obj({
 				lat: num({ exclusiveMinimum: -85, exclusiveMaximum: 85, description: "緯度（十進度）" }),
 				lon: num({ minimum: -180, exclusiveMaximum: 180, description: "経度（十進度）" }),
