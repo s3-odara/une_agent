@@ -26,12 +26,12 @@ export function createWeatherExtension(
 			}),
 			defineTool({
 				name: "weather_forecast",
-				description: "指定座標を含む約5 kmメッシュについて、明日までの3時間ごとの天気・気温・降水量／降雪量の階級、日ごとの最高・最低気温を調べる。地名は geocode で座標に変換する。、周辺の格子をまとめて見るには codemode の weather_forecast_grid を使う。",
+				description: "指定座標を含む約5 kmメッシュについて、明日までの3時間ごとの天気・気温・降水量／降雪量の階級、日ごとの最高・最低気温を調べる。地名は geocode で座標に変換する。周辺の格子をまとめて見るには codemode の weather_forecast_grid を使う。",
 				parameters: obj(coordinateParameters),
 				replay: "safe",
 				execute: async (point) => ({ output: [{ type: "text" as const, text: formatWeatherDistribution(await distribution(point), point) }] }),
 			}),
-			defineTool(
+			defineTool({
 				name: "weather_forecast_grid",
 				description: [
 					"指定範囲の天気分布を返す。約5 kmメッシュで明日までの3時間ごとの天気が全て返る。データが大きくなることがあるので必要に応じてcodemode 内で時刻・地点・値等を絞ってから出力する。",
