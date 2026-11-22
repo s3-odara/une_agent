@@ -117,7 +117,7 @@ export class Proactive {
  * tool is refused, those added later and those of MCP servers included. A script's calls are refused one by one, as
  * any call is, so `codemode` itself may run.
  */
-const READS: ReadonlySet<string> = new Set(["read", "calendar_list", "weather_forecast", "web_extract", "timer_list", "stay_silent", CODEMODE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME]);
+const READS: ReadonlySet<string> = new Set(["read", "calendar_list", "weather_forecast", "weather_rain", "web_extract", "timer_list", "stay_silent", CODEMODE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME]);
 
 export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。";
 

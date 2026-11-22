@@ -1,5 +1,6 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { obj, opt, str } from "@earendil-works/pi-schema";
+import { num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { formatRain, jmaRain, RAIN_HORIZONS } from "./weather-rain.ts";
 import { formatForecast, type WeatherSource } from "./weather.ts";
 
 export function createWeatherExtension(weather: WeatherSource) {
@@ -14,5 +15,22 @@ export function createWeatherExtension(weather: WeatherSource) {
 				execute: async ({ place }) => ({ output: [{ type: "text" as const, text: formatForecast(await weather(place)) }] }),
 			}),
 		],
+	});
+}
+
+export function createRainExtension(tz: string, rain = jmaRain()) {
+	return defineExtension({
+		name: "weather-rain",
+		tools: [defineTool({
+			name: "weather_rain",
+			description: "確認済みの座標で気象庁の降水予測を読む。1h は実況と5分ごとの降水強度、15h は1時間ごとの降水量。緯度・経度は推測せず、地図ピンなどで確認する。",
+			parameters: obj({
+				lat: num({ exclusiveMinimum: -85, exclusiveMaximum: 85, description: "緯度（10進度）" }),
+				lon: num({ minimum: -180, exclusiveMaximum: 180, description: "経度（10進度）" }),
+				horizon: oneOf(RAIN_HORIZONS),
+			}),
+			replay: "safe",
+			execute: async (query) => ({ output: [{ type: "text" as const, text: formatRain(await rain(query), query, tz) }] }),
+		})],
 	});
 }
