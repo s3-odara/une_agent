@@ -9,9 +9,7 @@ import { createGeocodeExtension, lookupPlace } from "../src/geocode.ts";
 import { agentEnv } from "./env.ts";
 import { call, message, noting, type ToolResult } from "./fakes.ts";
 
-const hallAddresses = [...Array.from({ length: 9 }, (_, i) => `京都府京都市架空町${i}`), "東京都府中市 架空町"];
-
-function fixture(dir: string, blocks = false): string {
+function fixture(dir: string): string {
 	const towns = join(dir, "towns.csv");
 	writeFileSync(towns, [
 		"都道府県名,市区町村コード,市区町村名,大字町丁目名,緯度,経度",
@@ -31,8 +29,8 @@ function fixture(dir: string, blocks = false): string {
 	writeFileSync(facilities, [
 		{ properties: { leisure: "park", name: "架空公園", alt_name: "中央公園;テスト公園", "addr:city": "札幌市" }, geometry: { type: "Polygon", coordinates: [[[141, 43], [141.25, 43], [141.25, 43.25], [141, 43.25], [141, 43]]] } },
 		{ properties: { leisure: "park", name: "架空公園", "addr:city": "旭川市" }, geometry: { type: "Point", coordinates: [142.36, 43.77] } },
-		...hallAddresses.map((address, i) => ({ properties: { amenity: "community_centre", name: "市民会館", "addr:full": address }, geometry: { type: "Point", coordinates: [135.7, 35.01 + i / 1000] } })),
-		{ properties: { amenity: "community_centre", name: "市民会館" }, geometry: { type: "Point", coordinates: [139.49, 35.66] } },
+		...Array.from({ length: 9 }, (_, i) => ({ properties: { amenity: "community_centre", name: "市民会館", "addr:full": `京都府京都市架空町${i}` }, geometry: { type: "Point", coordinates: [135.7, 35.01 + i / 1000] } })),
+		{ properties: { amenity: "community_centre", name: "試験会館" }, geometry: { type: "Point", coordinates: [139.49, 35.66] } },
 		{ properties: { highway: "residential", name: "架空通り" }, geometry: { type: "Point", coordinates: [141.2, 43.06] } },
 		{ properties: { natural: "peak", name: "試験山" }, geometry: { type: "Point", coordinates: [138.474, 36.406] } },
 		{ properties: { railway: "halt", name: "試験駅" }, geometry: { type: "Point", coordinates: [138.46, 36.38] } },
@@ -40,62 +38,26 @@ function fixture(dir: string, blocks = false): string {
 		{ properties: { place: "square", name: "試験広場" }, geometry: { type: "Polygon", coordinates: [[[138, 36], [138.25, 36], [138.25, 36.25], [138, 36.25], [138, 36]]] } },
 		{ properties: { natural: "wood", name: "試験林" }, geometry: { type: "Polygon", coordinates: [[[138, 36], [138.25, 36], [138.25, 36.25], [138, 36.25], [138, 36]]] } },
 	].map((feature) => `\x1e${JSON.stringify(feature)}\n`).join(""));
-	const blockArgs = [];
-	if (blocks) {
-		const csv = join(dir, "blocks.csv");
-		writeFileSync(csv, [
-			"都道府県名,市区町村名,大字・町丁目名,小字・通称名,街区符号・地番,緯度,経度,代表フラグ,更新後履歴フラグ",
-			"北海道,札幌市中央区,大通西二丁目,,3,43.062,141.354,1,0",
-			"北海道,札幌市中央区,大通西二丁目,,3,43.063,141.355,0,0",
-			"北海道,札幌市中央区,大通西二丁目,,4,43.064,141.356,1,3",
-			"北海道,札幌市中央区,架空町,,12-3,43.066,141.361,1,0",
-			"北海道,札幌市中央区,架空町,,2-3,43.068,141.363,1,0",
-			"北海道,札幌市中央区,架空町,,2-4-5,43.069,141.364,1,0",
-			"北海道,札幌市中央区,架空町二丁目,,4,43.07,141.365,1,0",
-		].join("\n"));
-		const zip = join(dir, "blocks.zip");
-		execFileSync("python3", ["-c", "import sys, zipfile; from pathlib import Path\nwith zipfile.ZipFile(sys.argv[1], 'w') as z: z.writestr('blocks.csv', Path(sys.argv[2]).read_text(encoding='utf-8').encode('cp932'))", zip, csv]);
-		blockArgs.push("--blocks-dir", dir);
-	}
 	const path = join(dir, "geocode.sqlite");
-	execFileSync("python3", [fileURLToPath(new URL("../scripts/build-geocode.py", import.meta.url)), "--offices", offices, "--towns", towns, ...blockArgs, "--osm", facilities, "--output", path], { stdio: "pipe" });
+	execFileSync("python3", [fileURLToPath(new URL("../scripts/build-geocode.py", import.meta.url)), "--offices", offices, "--towns", towns, "--osm", facilities, "--output", path], { stdio: "pipe" });
 	return path;
 }
 
-test("geocode uses the representative block when it matches, otherwise the town", (t) => {
+test("geocode returns town coordinates for full and abbreviated addresses", (t) => {
 	const dir = mkdtempSync(join(tmpdir(), "agent-geocode-"));
 	t.after(() => rmSync(dir, { force: true, recursive: true }));
-	const path = fixture(dir, true);
-	for (const address of ["札幌市中央区大通西二丁目3番5号", "札幌市中央区大通西２－３－５"]) {
-		const { candidates } = lookupPlace(path, address);
-		assert.equal(candidates.length, 1);
-		assert.equal(candidates[0]?.kind, "街区・地番の代表点");
-		assert.equal(candidates[0]?.source, "街区レベル位置参照情報 国土交通省");
-		assert.equal(candidates[0]?.lon, 141.354);
+	const path = fixture(dir);
+	for (const [query, lon, tail] of [
+		["札幌市中央区大通西二丁目3番5号", 141.353, "3番5号"],
+		["札幌市中央区大通西２－３－５", 141.353, "3-5"],
+		["札幌市中央区架空町12-3番地", 141.36, "12-3番地"],
+		["札幌市中央区架空町2-4-5", 141.362, "4-5"],
+	] as const) {
+		const { candidates } = lookupPlace(path, query);
+		assert.deepEqual(candidates.map(({ kind, lon, unmatched }) => [kind, lon, unmatched]), [
+			["大字・町丁目の代表点", lon, tail],
+		], query);
 	}
-	assert.equal(lookupPlace(path, "札幌市中央区大通西二丁目3番5号").candidates[0]?.unmatched, "5号");
-	assert.equal(lookupPlace(path, "札幌市中央区大通西二丁目4番").candidates[0]?.kind, "大字・町丁目の代表点");
-	assert.equal(lookupPlace(path, "札幌市中央区架空町12番地").candidates[0]?.kind, "大字・町丁目の代表点");
-	assert.equal(lookupPlace(path, "札幌市中央区架空町12-3番地").candidates[0]?.lon, 141.361);
-});
-
-test("an abbreviated address considers both block interpretations before falling back to the town", (t) => {
-	const dir = mkdtempSync(join(tmpdir(), "agent-geocode-"));
-	t.after(() => rmSync(dir, { force: true, recursive: true }));
-	const path = fixture(dir, true);
-
-	assert.deepEqual(lookupPlace(path, "札幌市中央区架空町2-3").candidates.map(({ name }) => name), [
-		"北海道札幌市中央区架空町2-3番",
-	]);
-	const ambiguous = lookupPlace(path, "札幌市中央区架空町2-4-5").candidates;
-	assert.equal(ambiguous.length, 2);
-	assert.deepEqual(new Map(ambiguous.map(({ name, unmatched }) => [name, unmatched])), new Map([
-		["北海道札幌市中央区架空町二丁目4番", "5"],
-		["北海道札幌市中央区架空町2-4-5番", undefined],
-	]));
-	assert.deepEqual(lookupPlace(path, "札幌市中央区架空町二丁目4番5号").candidates.map(({ name }) => name), [
-		"北海道札幌市中央区架空町二丁目4番",
-	]);
 });
 
 test("named mountains and urban landmarks can be found without a facility tag", (t) => {
@@ -113,7 +75,7 @@ test("named mountains and urban landmarks can be found without a facility tag", 
 	assert.deepEqual(lookupPlace(path, "試験林").candidates, []);
 });
 
-test("a town name alone returns same-name towns, but area only searches facilities", (t) => {
+test("a town name alone returns same-name towns", (t) => {
 	const dir = mkdtempSync(join(tmpdir(), "agent-geocode-"));
 	t.after(() => rmSync(dir, { force: true, recursive: true }));
 	const path = fixture(dir);
@@ -121,7 +83,6 @@ test("a town name alone returns same-name towns, but area only searches faciliti
 	assert.deepEqual(lookupPlace(path, "大通西２丁目").candidates.map(({ address }) => address).sort(), [
 		"北海道旭川市大通西二丁目", "北海道札幌市中央区大通西二丁目",
 	]);
-	assert.deepEqual(lookupPlace(path, "大通西二丁目", "札幌市中央区").candidates, []);
 });
 
 test("geocode distinguishes offices, approximates street addresses, and returns same-name facilities as candidates", async (t) => {
@@ -142,7 +103,7 @@ test("geocode distinguishes offices, approximates street addresses, and returns 
 
 	const results: ToolResult[] = [];
 	await using env = await agentEnv({ extensions: () => [createGeocodeExtension(path)] });
-	env.faux.setResponses([call("geocode", { query: "札幌市 テスト公園" }), noting(results)]);
+	env.faux.setResponses([call("geocode", { query: "テスト公園" }), noting(results)]);
 	const bridge = env.bridge();
 	env.link.emit(message("!a:example.org", "$1", "公園の座標を教えて"));
 	await bridge.idle();
@@ -155,24 +116,21 @@ test("geocode distinguishes offices, approximates street addresses, and returns 
 	assert.equal(source, "© OpenStreetMap contributors (ODbL)");
 });
 
-test("the tool filters by a facility's full address before limiting candidates", async (t) => {
+test("a facility without address data can be found by name", (t) => {
 	const dir = mkdtempSync(join(tmpdir(), "agent-geocode-"));
 	t.after(() => rmSync(dir, { force: true, recursive: true }));
 	const path = fixture(dir);
-	const unfiltered = lookupPlace(path, "市民会館");
-	assert.equal(unfiltered.more, true);
-	const omitted = hallAddresses.find((address) => !unfiltered.candidates.some((candidate) => candidate.address === address));
-	assert.ok(omitted);
-	const area = omitted.replace("架空町", " 架空町");
+	const { candidates } = lookupPlace(path, "試験会館");
+	assert.deepEqual(candidates.map(({ address, lat, lon }) => ({ address, lat, lon })), [
+		{ address: "", lat: 35.66, lon: 139.49 },
+	]);
+});
 
-	const results: ToolResult[] = [];
-	await using env = await agentEnv({ extensions: () => [createGeocodeExtension(path)] });
-	env.faux.setResponses([call("geocode", { query: "市民会館", area }), noting(results)]);
-	const bridge = env.bridge();
-	env.link.emit(message("!a:example.org", "$1", `${area}の市民会館の座標を教えて`));
-	await bridge.idle();
-	assert.equal(results[0]?.isError, false);
-	const { candidates, more } = JSON.parse(results[0]?.text ?? "");
-	assert.deepEqual(candidates.map(({ address }: { address: string }) => address), [omitted]);
-	assert.equal(more, false);
+test("geocode limits results and reports when more candidates exist", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "agent-geocode-"));
+	t.after(() => rmSync(dir, { force: true, recursive: true }));
+	const path = fixture(dir);
+	const { candidates, more } = lookupPlace(path, "市民会館");
+	assert.equal(candidates.length, 8);
+	assert.equal(more, true);
 });

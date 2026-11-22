@@ -77,7 +77,7 @@ class Builder:
                 PRIMARY KEY (key, place_id)
             ) WITHOUT ROWID;
         ''')
-        self.counts = dict.fromkeys(('office', 'town', 'block', 'facility'), 0)
+        self.counts = dict.fromkeys(('office', 'town', 'facility'), 0)
 
     def add(self, name, address, point, kind, aliases):
         lon, lat = point[:2]
@@ -92,7 +92,7 @@ class Builder:
             place_id, = self.db.execute('SELECT id FROM place WHERE name=? AND address=? AND lat=? AND lon=? AND kind=?',
                                         (name, address, lat, lon, kind)).fetchone()
         keys = {key(alias) for alias in aliases if alias}
-        if kind in ('town', 'block'):
+        if kind == 'town':
             keys |= {chome_key(k) for k in keys}
         self.db.executemany('INSERT OR IGNORE INTO alias VALUES (?,?)', ((k, place_id) for k in sorted(keys) if k))
 
@@ -125,36 +125,6 @@ def towns(builder, paths):
 
 def without_county(city):
     return re.sub(r'^.+?郡(?=.+[町村]$)', '', city)
-
-
-def blocks(builder, paths):
-    required = {'都道府県名', '市区町村名', '小字・通称名', '街区符号・地番', '緯度', '経度', '代表フラグ', '更新後履歴フラグ'}
-    for path in paths:
-        for stream in files(path, '.csv'):
-            try:
-                stream.readline().decode('utf-8-sig')
-                encoding = 'utf-8-sig'
-            except UnicodeDecodeError:
-                encoding = 'cp932'
-            stream.seek(0)
-            with io.TextIOWrapper(stream, encoding=encoding, newline='') as text:
-                reader = csv.DictReader(text)
-                town_field = next((f for f in ('大字・町丁目名', '大字町丁目名') if f in (reader.fieldnames or [])), None)
-                if not town_field or not required.issubset(reader.fieldnames or []):
-                    raise ValueError(f'{path}: 街区 CSV の見出しが見つかりません: {reader.fieldnames}')
-                for row in reader:
-                    if row['代表フラグ'].strip() != '1' or row['更新後履歴フラグ'].strip() == '3':
-                        continue
-                    pref, city, town, koaza, number = (row[f].strip() for f in ('都道府県名', '市区町村名', town_field, '小字・通称名', '街区符号・地番'))
-                    number = re.sub(r'[-−‐―]', '-', key(number))
-                    if not re.fullmatch(r'[0-9]+(?:-[0-9]+)*', number) or not row['経度'].strip() or not row['緯度'].strip():
-                        continue
-                    locality = town + koaza
-                    suffix = locality + number + '番'
-                    name = pref + city + suffix
-                    short_city = without_county(city)
-                    builder.add(name, name, (float(row['経度']), float(row['緯度'])), 'block',
-                                (name, city + suffix, pref + short_city + suffix, short_city + suffix))
 
 
 def offices(builder, paths, municipalities):
@@ -226,7 +196,7 @@ def facility(builder, feature):
     suburb = p.get('addr:suburb', '')
     address = p.get('addr:full') or province + city + suburb + p.get('addr:street', '') + p.get('addr:housenumber', '')
     aliases = {a.strip() for n in names for a in n.split(';') if a.strip()}
-    builder.add(name, address, point, 'facility', aliases | {prefix + a for prefix in (city, province + city, city + suburb) if prefix for a in aliases})
+    builder.add(name, address, point, 'facility', aliases)
 
 
 def facility_sequence(builder, lines):
@@ -257,12 +227,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--offices', type=Path, nargs='+', required=True)
     parser.add_argument('--towns', type=Path, nargs='+', required=True)
-    parser.add_argument('--blocks', type=Path, nargs='+', default=[])
-    parser.add_argument('--blocks-dir', type=Path)
     parser.add_argument('--osm', type=Path, required=True)
     parser.add_argument('--output', type=Path, default=Path('data/geocode.sqlite'))
     args = parser.parse_args()
-    block_paths = args.blocks + (sorted(args.blocks_dir.glob('*.zip')) if args.blocks_dir else [])
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.geocode-', dir=args.output.parent) as temp:
         work = Path(temp)
@@ -274,9 +241,6 @@ def main():
             offices(builder, args.offices, municipalities)
             if not builder.counts['office'] or not builder.counts['town']:
                 parser.error('役場または町丁目のデータが空です')
-            blocks(builder, block_paths)
-            if block_paths and not builder.counts['block']:
-                parser.error('街区データが空です')
             facilities(builder, args.osm, work)
             if not builder.counts['facility']:
                 parser.error('OSM の施設データが空です')
@@ -285,7 +249,7 @@ def main():
             db.close()
         db_path.replace(args.output)
     counts = builder.counts
-    print(f"{args.output}: 本庁 {counts['office']:,} / 町丁目 {counts['town']:,} / 街区 {counts['block']:,} / 施設 {counts['facility']:,}", file=sys.stderr)
+    print(f"{args.output}: 本庁 {counts['office']:,} / 町丁目 {counts['town']:,} / 施設 {counts['facility']:,}", file=sys.stderr)
 
 
 if __name__ == '__main__':
