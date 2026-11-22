@@ -58,9 +58,9 @@ test("the model can request a municipality without changing the default forecast
 		extensions: ({ config }) => [createWeatherExtension(jmaForecast(config.weather, async () => Response.json(jmaFile)))],
 	});
 	env.faux.setResponses([
-		call("weather_forecast", { place: "東京都大島町" }),
+		call("weather_forecast_area", { place: "東京都大島町" }),
 		noting(results),
-		call("weather_forecast", {}),
+		call("weather_forecast_area", {}),
 		noting(results),
 	]);
 	const bridge = env.bridge();
@@ -101,8 +101,8 @@ test("without a configured default, the model can resolve an ambiguous place and
 	});
 	await using env = await agentEnv({ extensions: () => [createWeatherExtension(weather)] });
 	env.faux.setResponses([
-		call("weather_forecast", { place: "府中市" }), noting(results),
-		call("weather_forecast", { place: "東京都府中市" }), noting(results),
+		call("weather_forecast_area", { place: "府中市" }), noting(results),
+		call("weather_forecast_area", { place: "東京都府中市" }), noting(results),
 	]);
 	const bridge = env.bridge();
 	env.link.emit(message("!a:example.org", "$1", "府中市の天気は?"));
@@ -162,7 +162,7 @@ test("a weekly request uses the covering region and labels its actual temperatur
 	}]));
 	const results: ToolResult[] = [];
 	await using env = await agentEnv({ extensions: () => [createWeatherExtension(weather)] });
-	env.faux.setResponses([call("weather_forecast", { place: "小田原市", period: "week" }), noting(results)]);
+	env.faux.setResponses([call("weather_forecast_area", { place: "小田原市", period: "week" }), noting(results)]);
 	const bridge = env.bridge();
 	env.link.emit(message("!a:example.org", "$1", "小田原の週間天気は？"));
 	await bridge.idle();
@@ -198,8 +198,8 @@ test("three-hour queries in one office disclose the same areas but show the requ
 	const results: ToolResult[] = [];
 	await using env = await agentEnv({ extensions: () => [createWeatherExtension(weather)] });
 	env.faux.setResponses([
-		call("weather_forecast", { place: "小田原市", period: "3h" }), noting(results),
-		call("weather_forecast", { place: "横浜市", period: "3h" }), noting(results),
+		call("weather_forecast_area", { place: "小田原市", period: "3h" }), noting(results),
+		call("weather_forecast_area", { place: "横浜市", period: "3h" }), noting(results),
 	]);
 	const bridge = env.bridge();
 	env.link.emit(message("!a:example.org", "$1", "小田原の時間ごとの天気は？"));

@@ -168,6 +168,11 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - 区域の予報は短期・週間・3時間とも日本時間で表示する。日別予報の日付だけを別のタイムゾーンに変えると対象期間がずれるため。朝ブリーフも天気だけは日本時間の日付で絞る
 - 3時間ごとの予報は天気・風が時間帯、気温が代表地点の時刻値。時間帯の開始と同時刻の気温は同じ行に「開始時点」と付けて出す。6時間の降水確率を3時間に割り振らない
 
+### 天気分布予報（`src/weather-distribution.ts`）
+
+- `weather_forecast` は座標必須で、約5 km格子の天気分布予報を返す。旧 `weather_forecast` は `weather_forecast_area` に改名し、短期・3時間・週間を維持。朝ブリーフも区域予報のまま。区域名から代表点を暗黙に選ぶと現在地の予報に見えてしまうため。
+- `weather_forecast_grid` は中心と一辺（最大50 km）で指定し、重なる格子を全時刻・全掲載要素ぶん返す。出力量が多いので codemode で絞って使う。どちらも時刻・要素別の GeoJSON をローカルで照合するため、座標もタイル番号も気象庁に送らない。降水・降雪の階級なしは予報対象内だけで 0 とし、欠測・取得失敗とは分ける。
+
 ### 地点・範囲の雨（`src/weather-rain.ts`）
 
 - `weather_rain` は座標を受け取り、区域の予報と同じく日本時間で表示する。`1h` は雨雲の `z=10` PNG を読むのでタイル番号が気象庁に伝わるが、タイル内の座標は送らない。`15h` は時刻ごとの GeoJSON をローカルで照合し、場所を示す情報を送らない
@@ -198,7 +203,7 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
   添えないと、「すでに伝えたことは繰り返さない」に従って、夕食の1時間前の知らせを毎回黙った。繰り返さないことはコードが守っている
   （同じ知らせでは2度起こさない）
 - 約束の時刻は、頼まれた知らせなので、会話で済んでいなければ伝える、と書く
-- aside の間は、読むだけのツール（`read`、`calendar_list`、`weather_forecast`、`web_extract`、`timer_list`、`stay_silent`、
+- aside の間は、読むだけのツール（`read`、`calendar_list`、`weather_forecast`、`weather_forecast_area`、`weather_forecast_grid`、`web_extract`、`timer_list`、`stay_silent`、
   `weather_rain`、`weather_rain_grid`、`geocode`、`codemode`、`tool_search`、設定で `replay: "safe"` の MCP サーバーのツール）のほかを、`beforeTool` フックで拒む。スクリプトから
   呼んだツールにもフックがかかるので、`codemode` は通してよい。捨てる会話で何かを書き換えていると困るため。
   書き込むツールを並べるのではなく読むツールを並べるのは、あとから足したツールや MCP のツールを、既定で拒むため

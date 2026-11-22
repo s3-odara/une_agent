@@ -15,6 +15,15 @@ const noData = () => collection({
 	geometry: { type: "Polygon", coordinates: [[[139, 40], [141, 40], [141, 41], [139, 41], [139, 40]]] },
 });
 
+const rainCoverage = () => collection({
+	type: "Feature",
+	properties: { level: "NoData" },
+	geometry: { type: "Polygon", coordinates: [
+		[[-45, 85], [315, 85], [315, -85], [-45, -85]],
+		[[139, 40], [141, 40], [141, 41], [139, 41], [139, 40]],
+	] },
+});
+
 function png(rgba?: readonly number[], extra: readonly [x: number, y: number, rgba: readonly number[]][] = []): Response {
 	const chunk = (type: string, bytes: Buffer) => {
 		const data = Buffer.concat([Buffer.from(type), bytes]);
@@ -77,63 +86,80 @@ test("the rain tool reads the requested pixel and separates clear, missing cover
 	assert.match(text, /15:25：不明/);
 });
 
-test("the 15-hour forecast uses the matching cell from each release, not its rainy neighbor", async () => {
-	const urls: string[] = [];
-	const rain = jmaRain(async (input) => {
-		const url = String(input);
-		urls.push(url);
-		const path = new URL(url).pathname;
+function hourlyRainFixture(requests = new Set<string>()): typeof fetch {
+	return async (input) => {
+		const url = new URL(String(input));
+		requests.add(url.href);
+		const path = url.pathname;
 		if (path.endsWith("targetTimes.json")) return Response.json([
-			amountFrame("0600", "1300", "none"), amountFrame("0600", "1400", "none"), amountFrame("0600", "1500", "none"),
+			amountFrame("0600", "1300", "none"), amountFrame("0600", "1400", "none"), amountFrame("0600", "1500", "none"), amountFrame("0600", "1600", "none"),
 			amountFrame("0620", "0720", "immed"), amountFrame("0620", "0820", "immed"), amountFrame("0610", "0710", "immed"),
 		]);
 		const valid = path.split("/")[7];
 		if (path.includes("/rasrf_nd/")) {
 			if (valid === timestamp("1400")) return noData();
-			return collection();
+			if (valid === timestamp("1600")) return collection();
+			return rainCoverage();
 		}
 		if (valid === timestamp("0720")) return collection(amount(140.03125, 40.625294, "2.0"));
 		if (valid === timestamp("0820")) return collection(amount(140.09375, 40.625294, "10.0"));
 		if (valid === timestamp("1300")) return collection(amount(140.03125, 40.625, "0.4"));
 		if (valid === timestamp("1500")) return new Response(null, { status: 503 });
 		return collection(amount(140.03125, 40.625294, "99"));
-	});
+	};
+}
 
+test("the 15-hour forecast uses the matching cell from each release, not its rainy neighbor", async () => {
+	const rain = jmaRain(hourlyRainFixture());
 	const samples = await rain({ ...point, horizon: "15h" });
 	assert.deepEqual(samples.map(({ reading }) => reading), [
-		{ kind: "amount", mm: 2 }, { kind: "amount", mm: 0 }, { kind: "amount", mm: 0.4 }, { kind: "no-data" }, { kind: "unknown" },
+		{ kind: "amount", mm: 2 }, { kind: "amount", mm: 0 }, { kind: "amount", mm: 0.4 }, { kind: "no-data" }, { kind: "unknown" }, { kind: "unknown" },
 	]);
-	const firstRequests = urls.splice(0).sort();
 	const neighbor = await rain({ ...point, lon: 140.09375, horizon: "15h" });
 	assert.deepEqual(neighbor[1]?.reading, { kind: "amount", mm: 10 });
-	assert.deepEqual(urls.sort(), firstRequests);
+});
+
+test("the 15-hour rain forecast does not disclose the requested coordinates to JMA", async () => {
+	const forPoint = new Set<string>();
+	const forOtherPoint = new Set<string>();
+	await jmaRain(hourlyRainFixture(forPoint))({ ...point, horizon: "15h" });
+	await jmaRain(hourlyRainFixture(forOtherPoint))({ ...point, lon: 139.10, horizon: "15h" });
+	assert.ok(forPoint.size > 0);
+	assert.deepEqual(forPoint, forOtherPoint);
 });
 
 test("the range forecast keeps adjacent native cells and distinguishes missing coverage from failed frames", async () => {
 	const getGrid = jmaRainGrid(async (input) => {
 		const path = new URL(String(input)).pathname;
 		if (path.endsWith("targetTimes.json")) return Response.json([
-			amountFrame("0600", "0700", "immed"), amountFrame("0600", "1300", "none"), amountFrame("0600", "1400", "none"),
+			amountFrame("0600", "0700", "immed"), amountFrame("0600", "1300", "none"), amountFrame("0600", "1400", "none"), amountFrame("0600", "1500", "none"),
 		]);
 		const valid = path.split("/")[7];
-		if (path.includes("/rasrf_nd/")) return valid === timestamp("1300") ? noData() : collection();
+		if (path.includes("/rasrf_nd/")) {
+			if (valid === timestamp("1300")) return noData();
+			if (valid === timestamp("1500")) return collection({ type: "Feature", properties: { level: "NoData" }, geometry: { type: "Polygon", coordinates: [] } });
+			return rainCoverage();
+		}
 		if (valid === timestamp("1400")) return new Response(null, { status: 503 });
 		return collection(amount(140.03125, 40.625294, "2.5"), amount(140.09375, 40.625294, "7"));
 	});
 	const result = await getGrid({ ...point, lon: 140.06249, sizeMeters: 1_000, horizon: "15h" });
 	assert.equal(result.unit, "mm");
-	assert.deepEqual(result.frames.map((frame) => frame.status === "available" ? frame.rows : frame.status), [[[2.5, 7]], [[null, null]], "unavailable"]);
-	assert.equal(result.frames[0]?.startAt, "2026-11-22T15:00:00+09:00");
-	assert.equal(result.frames[0]?.validAt, "2026-11-22T16:00:00+09:00");
-	const gridForFrame = (index: number) => {
-		const grid = result.grids.find(({ id }) => id === result.frames[index]?.gridId);
+	const at = (validAt: string, lon: number) => {
+		const frame = result.frames.find((item) => item.validAt === `${validAt}:00+09:00`);
+		assert.ok(frame);
+		if (frame.status === "unavailable") return frame.status;
+		const grid = result.grids.find(({ id }) => id === frame.gridId);
 		assert.ok(grid);
-		assert.ok(grid.longitudeEdges[0]! < result.bounds.west);
-		assert.ok(grid.longitudeEdges.at(-1)! > result.bounds.east);
-		return (grid.latitudeEdges[0]! + grid.latitudeEdges[1]!) / 2;
+		const row = grid.latitudeEdges.findIndex((edge) => edge < point.lat) - 1;
+		const col = grid.longitudeEdges.findIndex((edge) => edge > lon) - 1;
+		return frame.rows[row]?.[col];
 	};
-	assert.ok(Math.abs(gridForFrame(0) - 40.625294) < 0.00001);
-	assert.ok(Math.abs(gridForFrame(1) - 40.625) < 0.00001);
+	assert.equal(result.frames.find((frame) => frame.validAt === "2026-11-22T16:00:00+09:00")?.startAt, "2026-11-22T15:00:00+09:00");
+	assert.deepEqual([140.061, 140.064].map((lon) => at("2026-11-22T16:00", lon)), [2.5, 7]);
+	assert.equal(at("2026-11-22T22:00", 140.061), null);
+	assert.equal(at("2026-11-22T23:00", 140.061), "unavailable");
+	assert.equal(at("2026-11-23T00:00", 140.061), "unavailable");
 });
 
 test("codemode receives every 10 km nowcast frame with rain preserved and uncertain dry cells marked unknown, without exposing the grid to the model", async () => {

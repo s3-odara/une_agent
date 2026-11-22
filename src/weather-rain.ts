@@ -1,16 +1,14 @@
 import { ffmpeg } from "./ffmpeg.ts";
+import { coordinates, features, frames, gridFor, inBatches, inJst, inRing, jmaPolygons, missingCoverage, object, square, validatePoint, type Bounds, type Frame, type Point } from "./jma-grid.ts";
 import { dateOf } from "./time.ts";
 import { JMA_TIME_ZONE } from "./weather-areas.ts";
 
 export const RAIN_HORIZONS = ["1h", "15h"] as const;
 export type RainQuery = { lat: number; lon: number; horizon: (typeof RAIN_HORIZONS)[number] };
-type Point = { lat: number; lon: number };
 type Reading = { kind: "intensity"; band: string } | { kind: "amount"; mm: number } | { kind: "clear" | "no-data" | "unknown" };
-type Frame = { basetime: string; validtime: string; member: string; base: number; valid: number; elements: string[] };
 type Sample = { base: number; valid: number; reading: Reading };
 export type RainSource = (query: RainQuery) => Promise<readonly Sample[]>;
 
-type JsonObject = Record<string, unknown>;
 const ROOT = "https://www.jma.go.jp/bosai/jmatile/data";
 const MINUTE = 60_000;
 const TILE_SIZE = 256;
@@ -20,49 +18,6 @@ const INTENSITIES = new Map([
 	["242,242,255", "1未満"], ["160,210,255", "1以上5未満"], ["33,140,255", "5以上10未満"], ["0,65,255", "10以上20未満"],
 	["250,245,0", "20以上30未満"], ["255,245,0", "20以上30未満"], ["255,153,0", "30以上50未満"], ["255,40,0", "50以上80未満"], ["180,0,104", "80以上"],
 ]);
-
-function object(value: unknown): JsonObject {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Unexpected JMA object");
-	return value as JsonObject;
-}
-
-function time(value: string): number {
-	const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(value);
-	if (m === null) return NaN;
-	return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
-}
-
-function frames(value: unknown): Frame[] {
-	if (!Array.isArray(value)) throw new Error("Unexpected JMA time list");
-	return value.flatMap((entry: unknown) => {
-		const { basetime, validtime, member = "none", elements } = object(entry);
-		if (typeof basetime !== "string" || typeof validtime !== "string" || (member !== "none" && member !== "immed") || !Array.isArray(elements)) return [];
-		const base = time(basetime);
-		const valid = time(validtime);
-		return Number.isFinite(base) && Number.isFinite(valid) ? [{ basetime, validtime, member, base, valid, elements: elements.filter((item): item is string => typeof item === "string") }] : [];
-	});
-}
-
-function features(value: unknown): unknown[] {
-	const { type, features } = object(value);
-	if (type !== "FeatureCollection" || !Array.isArray(features)) throw new Error("Unexpected JMA GeoJSON");
-	return features;
-}
-
-function coordinates(value: unknown): [number, number] {
-	if (!Array.isArray(value) || value.length !== 2 || !value.every(Number.isFinite)) throw new Error("Unexpected JMA coordinates");
-	return [value[0], value[1]];
-}
-
-function inRing(point: Point, ring: [number, number][]): boolean {
-	let [x1, y1] = ring[ring.length - 1]!;
-	let inside = false;
-	for (const [x2, y2] of ring) {
-		if ((y1 > point.lat) !== (y2 > point.lat) && point.lon < x1 + (point.lat - y1) * (x2 - x1) / (y2 - y1)) inside = !inside;
-		[x1, y1] = [x2, y2];
-	}
-	return inside;
-}
 
 function coverage(value: unknown): (point: Point) => boolean {
 	const rings = features(value).flatMap((entry) => {
@@ -146,8 +101,6 @@ function newest(items: readonly Frame[]): Frame[] {
 }
 
 export type RainGridQuery = RainQuery & { sizeMeters: number };
-type Bounds = { west: number; south: number; east: number; north: number };
-type Grid = { id: string; longitudeEdges: number[]; latitudeEdges: number[] };
 type GridFrame = { gridId: string; baseAt: string; validAt: string; startAt?: string } & (
 	{ status: "available"; rows: (number | null)[][] } | { status: "unavailable" }
 );
@@ -182,20 +135,16 @@ function client(fetchRain: typeof fetch) {
 	const readCoverage = async (frame: Frame, nowcast: boolean) => {
 		const layer = nowcast ? "hrpns_nd" : "rasrf_nd";
 		if (!frame.elements.includes(layer)) throw new Error("JMA rain: missing coverage layer");
-		return coverage(await geo(rootOf(frame, nowcast), layer));
+		const data = await geo(rootOf(frame, nowcast), layer);
+		if (nowcast) return coverage(data);
+		return missingCoverage(features(data).flatMap((entry) => {
+			const { geometry, properties } = object(entry);
+			if (object(properties).level !== "NoData") throw new Error("Unexpected JMA coverage level");
+			return jmaPolygons(geometry, true);
+		}));
 	};
 	const readTile = async (root: string, path: string) => decodePng(Buffer.from(await (await get(`${root}/hrpns/${path}`)).arrayBuffer()));
 	return { select, rootOf, geo, readCoverage, readTile };
-}
-
-function validatePoint({ lat, lon }: Point) {
-	if (!Number.isFinite(lat) || Math.abs(lat) >= 85 || !Number.isFinite(lon) || lon < -180 || lon >= 180) throw new Error("日本周辺の確認済みの緯度・経度を指定してください。");
-}
-
-async function inBatches<T, U>(items: readonly T[], read: (item: T) => Promise<U>): Promise<U[]> {
-	const result: U[] = [];
-	for (let i = 0; i < items.length; i += 4) result.push(...await Promise.all(items.slice(i, i + 4).map(read)));
-	return result;
 }
 
 export function jmaRain(fetchRain = fetch): RainSource {
@@ -228,30 +177,6 @@ export function jmaRain(fetchRain = fetch): RainSource {
 	};
 }
 
-function square({ lat, lon, sizeMeters }: RainGridQuery): Bounds {
-	const dy = sizeMeters / 2 / 6378137 * 180 / Math.PI;
-	const dx = dy / Math.cos(lat * Math.PI / 180);
-	const bounds = { west: lon - dx, east: lon + dx, south: lat - dy, north: lat + dy };
-	if (bounds.west < -180 || bounds.east > 180 || bounds.south < -85 || bounds.north > 85) throw new Error("指定範囲が対応範囲を超えています。");
-	return bounds;
-}
-
-function gridFor(id: string, bounds: Bounds, projection: typeof pixels, centerOffset: number) {
-	const edges = (start: number, end: number, coordinate: (index: number) => number) => {
-		const first = Math.floor(start + centerOffset);
-		return { first, values: Array.from({ length: Math.max(first + 1, Math.ceil(end + centerOffset)) - first + 1 }, (_, i) => coordinate(first + i - centerOffset)) };
-	};
-	const x = edges(projection.x(bounds.west), projection.x(bounds.east), projection.lon);
-	const y = edges(projection.y(bounds.north), projection.y(bounds.south), projection.lat);
-	const grid: Grid = { id, longitudeEdges: x.values, latitudeEdges: y.values };
-	const cells = Array.from({ length: y.values.length - 1 }, (_, j) => Array.from({ length: x.values.length - 1 }, (_, i) => {
-		const col = x.first + i;
-		const row = y.first + j;
-		return { col, row, lon: projection.lon(col + 0.5 - centerOffset), lat: projection.lat(row + 0.5 - centerOffset) };
-	}));
-	return { grid, cells };
-}
-
 const BIN_SIZE = 2;
 const nowcastBins = {
 	x: (lon: number) => pixels.x(lon) / BIN_SIZE,
@@ -260,7 +185,6 @@ const nowcastBins = {
 	lat: (row: number) => pixels.lat(row * BIN_SIZE),
 };
 
-const inJst = (ms: number) => new Date(ms + 9 * 60 * MINUTE).toISOString().replace(".000Z", "+09:00");
 const bands = [...new Set(INTENSITIES.values())];
 
 async function readNowcastBins(
