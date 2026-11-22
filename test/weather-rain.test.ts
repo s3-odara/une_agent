@@ -67,7 +67,8 @@ test("the rain tool reads the requested pixel and separates clear, missing cover
 	assert.equal(results[0]?.isError, false);
 	const text = results[0]?.text ?? "";
 	assert.match(text, /日本時間/);
-	assert.match(text, /15:00（実況）：5以上10未満 mm\/h/);
+	assert.match(text, /降水強度.*mm\/h/);
+	assert.match(text, /15:00.*実況.*5以上10未満/);
 	assert.match(text, /15:05：降水表示なし/);
 	assert.match(text, /15:10：欠測/);
 	assert.match(text, /15:15：不明/);

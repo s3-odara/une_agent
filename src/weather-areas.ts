@@ -75,7 +75,7 @@ export function resolveForecastArea(place: string): ForecastArea {
 	const matches = byName.get(normalize(place));
 	if (matches === undefined) throw new Error("指定の地名に対応する予報区域が見つかりません。市区町村名や予報区域名を確認してください。");
 	if (matches.size > 1) {
-		throw new Error(`予報区域を一つに絞れません。どの地域か確認してください：${[...matches.values()].join("、")}`);
+		throw new Error(`予報区域を一つに絞れません。\n候補：${[...matches.values()].join("、")}\n文脈で絞れたら候補をそのまま place に指定し、絞れなければユーザーに確認してください。`);
 	}
 	return forecastArea(matches.keys().next().value!)!;
 }

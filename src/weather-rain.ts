@@ -1,4 +1,5 @@
 import { ffmpeg } from "./ffmpeg.ts";
+import { dateOf } from "./time.ts";
 import { JMA_TIME_ZONE } from "./weather-areas.ts";
 
 export const RAIN_HORIZONS = ["1h", "15h"] as const;
@@ -183,11 +184,19 @@ export function jmaRain(fetchRain = fetch): RainSource {
 export function formatRain(samples: readonly Sample[], query: RainQuery): string {
 	if (samples.length === 0) return "気象庁の降水データに利用できる時刻が見つかりませんでした。";
 	const date = new Intl.DateTimeFormat("ja-JP", { timeZone: JMA_TIME_ZONE, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+	const clock = new Intl.DateTimeFormat("ja-JP", { timeZone: JMA_TIME_ZONE, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+	const relativeTime = (time: number, reference: number) => dateOf(time, JMA_TIME_ZONE) === dateOf(reference, JMA_TIME_ZONE) ? clock.format(time) : date.format(time);
 	const nowcast = query.horizon === "1h";
-	const lines = samples.map(({ base, valid, reading }) => {
-		const period = nowcast ? `${date.format(valid)}${valid === base ? "（実況）" : ""}` : `${date.format(valid - 60 * MINUTE)}〜${date.format(valid)}`;
-		const value = reading.kind === "intensity" ? `${reading.band} mm/h` : reading.kind === "amount" ? `${reading.mm} mm` : reading.kind === "clear" ? "降水表示なし" : reading.kind === "no-data" ? "欠測" : "不明（取得・判定できず）";
-		return `- ${period}：${value}（基準 ${date.format(base)}）`;
-	});
-	return [`気象庁 ${nowcast ? "雨雲の動き（降水強度）" : "今後の雨（1時間降水量・約5 km格子）"}：緯度 ${query.lat}、経度 ${query.lon}（日本時間）`, ...lines].join("\n");
+	const groups = new Map<number, string[]>();
+	for (const { base, valid, reading } of samples) {
+		const start = valid - 60 * MINUTE;
+		const period = nowcast ? `${relativeTime(valid, base)}${valid === base ? "（実況）" : ""}` : `${date.format(start)}〜${relativeTime(valid, start)}`;
+		const value = reading.kind === "intensity" ? reading.band : reading.kind === "amount" ? String(reading.mm) : reading.kind === "clear" ? "降水表示なし" : reading.kind === "no-data" ? "欠測" : "不明（取得・判定できず）";
+		const lines = groups.get(base) ?? [];
+		lines.push(`- ${period}：${value}`);
+		groups.set(base, lines);
+	}
+	const title = nowcast ? "降水強度（mm/h・日本時間）" : "1時間降水量（mm・日本時間、約5 km格子）";
+	const header = `気象庁｜${title}｜緯度 ${query.lat}、経度 ${query.lon}`;
+	return [header, ...[...groups].map(([base, lines]) => [`基準 ${date.format(base)}`, ...lines].join("\n"))].join("\n\n");
 }
