@@ -166,6 +166,14 @@ def polygon_point(rings):
     return None
 
 
+def line_point(coordinates):
+    if not coordinates:
+        return None
+    x = sum(p[0] for p in coordinates) / len(coordinates)
+    y = sum(p[1] for p in coordinates) / len(coordinates)
+    return (x, y)
+
+
 def area(rings):
     return abs(sum(a[0] * b[1] - a[1] * b[0] for a, b in zip(rings[0], rings[0][1:])))
 
@@ -187,6 +195,10 @@ def facility(builder, feature):
         point = polygon_point(geometry['coordinates'])
     elif geometry['type'] == 'MultiPolygon':
         point = polygon_point(max(geometry['coordinates'], key=area))
+    elif geometry['type'] == 'LineString':
+        point = line_point(geometry['coordinates'])
+    elif geometry['type'] == 'MultiLineString':
+        point = line_point(max(geometry['coordinates'], key=len))
     else:
         return
     if point is None:
@@ -196,6 +208,8 @@ def facility(builder, feature):
     suburb = p.get('addr:suburb', '')
     address = p.get('addr:full') or province + city + suburb + p.get('addr:street', '') + p.get('addr:housenumber', '')
     aliases = {a.strip() for n in names for a in n.split(';') if a.strip()}
+    if p.get('railway') in ('station', 'halt', 'tram_stop') and not name.endswith('駅'):
+        aliases.add(f'{name}駅')
     builder.add(name, address, point, 'facility', aliases)
 
 
@@ -212,7 +226,7 @@ def facilities(builder, path, work):
     filtered = work / 'facilities.osm.pbf'
     filters = [*FACILITY_TAGS, *(f'{tag}={",".join(sorted(values))}' for tag, values in EXTRA_TAGS.items()), 'n/highway=traffic_signals']
     subprocess.run(['osmium', 'tags-filter', str(path), *filters, '-o', str(filtered)], check=True)
-    command = ['osmium', 'export', str(filtered), '-f', 'geojsonseq', '--geometry-types=point,polygon']
+    command = ['osmium', 'export', str(filtered), '-f', 'geojsonseq', '--geometry-types=point,linestring,polygon']
     with subprocess.Popen(command, stdout=subprocess.PIPE, encoding='utf-8') as process:
         try:
             facility_sequence(builder, process.stdout)
