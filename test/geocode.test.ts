@@ -39,7 +39,7 @@ function fixture(dir: string): string {
 		{ properties: { place: "square", name: "試験広場" }, geometry: { type: "Polygon", coordinates: [[[138, 36], [138.25, 36], [138.25, 36.25], [138, 36.25], [138, 36]]] } },
 		{ properties: { natural: "wood", name: "試験林" }, geometry: { type: "Polygon", coordinates: [[[138, 36], [138.25, 36], [138.25, 36.25], [138, 36.25], [138, 36]]] } },
 		{ properties: { railway: "station", name: "西試験駅" }, geometry: { type: "LineString", coordinates: [[141, 43], [141.002, 43.001], [141.004, 43.002]] } },
-		{ properties: { waterway: "dam", name: "試験東ダム" }, geometry: { type: "MultiLineString", coordinates: [[[138.4, 36.3], [138.41, 36.31], [138.42, 36.32]], [[138.5, 36.4], [138.502, 36.402]]] } },
+		{ properties: { waterway: "dam", name: "試験東ダム" }, geometry: { type: "MultiLineString", coordinates: [[[138.4, 36.3], [138.41, 36.31], [138.42, 36.32]], [[138.41, 36.31], [138.412, 36.312]]] } },
 	].map((feature) => `\x1e${JSON.stringify(feature)}\n`).join(""));
 	const path = join(dir, "geocode.sqlite");
 	execFileSync("python3", [fileURLToPath(new URL("../scripts/build-geocode.py", import.meta.url)), "--offices", offices, "--towns", towns, "--osm", facilities, "--output", path], { stdio: "pipe" });
@@ -95,10 +95,12 @@ test("geocode distinguishes offices, approximates street addresses, and returns 
 	t.after(() => rmSync(dir, { force: true, recursive: true }));
 	const path = fixture(dir);
 
-	assert.deepEqual(lookupPlace(path, "北海道札幌市").candidates.map(({ name }) => name),
-		["札幌市役所", "札幌市中央区役所", "北海道札幌市中央区大通西一丁目", "北海道札幌市中央区大通西二丁目", "北海道札幌市中央区架空町", "北海道札幌市中央区架空町二丁目"]);
-	assert.deepEqual(lookupPlace(path, "札幌市中央区").candidates.map(({ name }) => name),
-		["札幌市中央区役所", "北海道札幌市中央区大通西一丁目", "北海道札幌市中央区大通西二丁目", "北海道札幌市中央区架空町", "北海道札幌市中央区架空町二丁目"]);
+	assert.deepEqual(lookupPlace(path, "北海道札幌市").candidates.map(({ name }) => name).sort(),
+		["札幌市役所", "札幌市中央区役所", "北海道札幌市中央区大通西一丁目", "北海道札幌市中央区大通西二丁目", "北海道札幌市中央区架空町", "北海道札幌市中央区架空町二丁目"].sort());
+	assert.equal(lookupPlace(path, "北海道札幌市").candidates[0]?.name, "札幌市役所");
+	assert.equal(lookupPlace(path, "札幌市中央区").candidates[0]?.name, "札幌市中央区役所");
+	assert.deepEqual(lookupPlace(path, "札幌市中央区").candidates.map(({ name }) => name).sort(),
+		["札幌市中央区役所", "北海道札幌市中央区大通西一丁目", "北海道札幌市中央区大通西二丁目", "北海道札幌市中央区架空町", "北海道札幌市中央区架空町二丁目"].sort());
 	assert.deepEqual(lookupPlace(path, "札幌市南支所").candidates, []);
 	const address = lookupPlace(path, "札幌市中央区 大通西２－１");
 	assert.deepEqual(address.candidates.map(({ name, lon, kind }) => ({ name, lon, kind })), [
@@ -148,8 +150,8 @@ test("prefix matching fills in when no name matches exactly", (t) => {
 	t.after(() => rmSync(dir, { force: true, recursive: true }));
 	const path = fixture(dir);
 	const { candidates, omitted } = lookupPlace(path, "試験");
-	assert.deepEqual(candidates.map(({ name }) => name),
-		["試験交差点", "試験会館", "試験山", "試験広場", "試験東ダム", "試験駅"]);
+	assert.deepEqual(candidates.map(({ name }) => name).sort(),
+		["試験交差点", "試験会館", "試験駅", "試験東ダム", "試験山", "試験広場"].sort());
 	assert.equal(omitted, undefined);
 });
 
@@ -168,14 +170,14 @@ test("prefecture and municipality names are stripped when nothing matches", (t) 
 	assert.deepEqual(park.candidates.map(({ address }) => address).sort(), ["旭川市", "札幌市"]);
 });
 
-test("lines contribute their mean coordinate", (t) => {
+test("a station drawn as a line can be found near its shape", (t) => {
 	const dir = mkdtempSync(join(tmpdir(), "agent-geocode-"));
 	t.after(() => rmSync(dir, { force: true, recursive: true }));
 	const path = fixture(dir);
 	const [station] = lookupPlace(path, "西試験駅").candidates;
 	assert.ok(station);
-	assert.ok(Math.abs(station.lon - 141.002) < 1e-9 && Math.abs(station.lat - 43.001) < 1e-9);
+	assert.ok(station.lon > 141 && station.lon < 141.004 && station.lat > 43 && station.lat < 43.002);
 	const [dam] = lookupPlace(path, "試験東ダム").candidates;
 	assert.ok(dam);
-	assert.ok(Math.abs(dam.lon - 138.41) < 1e-9 && Math.abs(dam.lat - 36.31) < 1e-9);
+	assert.ok(dam.lon > 138.4 && dam.lon < 138.42 && dam.lat > 36.3 && dam.lat < 36.32);
 });

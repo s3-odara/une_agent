@@ -1,4 +1,4 @@
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { arr, num, obj, oneOf, opt, str, type Static } from "@earendil-works/pi-schema";
 
@@ -36,6 +36,7 @@ function addressKey(key: string): string {
 
 const LIMIT = 20;
 const COUNT_CAP = 200;
+const KEYS_MAX = 8;
 const HEAD_MAX = 16;
 const PREFECTURES = [
 	"北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県",
@@ -49,8 +50,8 @@ const NUMBER_TAIL = /^[0-9]+(?:(?:番地?-?|-)\d+)*(?:番地?|号)?$/u;
 type Row = { id: number; name: string; address: string; lat: number; lon: number; kind: string };
 type Item = { row: Row; unmatched?: string };
 
-const cast = (statement: { all(...params: unknown[]): unknown }, ...params: unknown[]): Row[] =>
-	statement.all(...params) as Row[];
+const all = (statement: StatementSync, ...params: (string | null)[]): Row[] =>
+	statement.all(...params) as unknown as Row[];
 
 export function lookupPlace(path: string, query: string): Lookup {
 	const key = normalize(query);
@@ -68,6 +69,12 @@ export function lookupPlace(path: string, query: string): Lookup {
 		const isOffice = db.prepare(`SELECT 1 FROM alias a JOIN place p ON p.id = a.place_id
 			WHERE a.key = ? AND p.kind = 'office' LIMIT 1`);
 
+		const candidate = ({ row, unmatched }: Item): Candidate => ({
+			name: row.name, address: row.address, lat: row.lat, lon: row.lon,
+			...PLACE_TYPES[row.kind as PlaceType],
+			...(unmatched === undefined ? {} : { unmatched }),
+		});
+
 		// 入力の先頭から都道府県名・市区町村名（本庁の別名）を外した形も候補にする。
 		const stripPrefecture = (k: string): string | null => {
 			for (const pref of PREFECTURES) {
@@ -82,64 +89,70 @@ export function lookupPlace(path: string, query: string): Lookup {
 			return null;
 		};
 		const keys = [key];
-		for (let i = 0; i < keys.length && keys.length < 8; i++) {
+		for (let i = 0; i < keys.length && keys.length < KEYS_MAX; i++) {
 			const k = keys[i]!;
-			const strippedStation = k.endsWith("駅") ? k.slice(0, -1) : null;
-			for (const stripped of [stripPrefecture(k), stripMunicipality(k), strippedStation]) {
+			const withoutStation = k.endsWith("駅") ? k.slice(0, -1) : null;
+			for (const stripped of [stripPrefecture(k), stripMunicipality(k), withoutStation]) {
 				if (stripped && !keys.includes(stripped)) keys.push(stripped);
 			}
 		}
 
 		// 住所（丁目・番地）の照合。番地より前の一致に対し、照合できなかった末尾を unmatched に入れる。
-		const addressItems = (k: string): Item[] => {
+		function* addressItems(k: string): Generator<Item> {
 			const address = addressKey(k).replace(/[-−‐―]/gu, "-");
-			const town: Item[] = cast(lookup, address, "town", "town").map((row) => ({ row }));
-			if (town.length) return town;
+			const town = all(lookup, address, "town", "town");
+			if (town.length) {
+				for (const row of town) yield { row };
+				return;
+			}
 			for (const match of address.matchAll(/[0-9]+/gu)) {
 				const head = address.slice(0, match.index);
 				const tail = address.slice(match.index);
 				if (!head || head.endsWith("-") || !NUMBER_TAIL.test(tail)) continue;
 				const rest = tail.slice(match[0].length);
 				if (!head.endsWith("丁目") && rest.startsWith("-")) {
-					const chome = cast(lookup, `${head}${match[0]}丁目`, "town", "town");
-					if (chome.length) return chome.map((row) => ({ row, unmatched: rest.slice(1) }));
+					const chome = all(lookup, `${head}${match[0]}丁目`, "town", "town");
+					if (chome.length) {
+						for (const row of chome) yield { row, unmatched: rest.slice(1) };
+						return;
+					}
 				}
-				const partial = cast(lookup, head, "town", "town");
-				if (partial.length) return partial.map((row) => ({ row, unmatched: tail }));
+				const partial = all(lookup, head, "town", "town");
+				if (partial.length) {
+					for (const row of partial) yield { row, unmatched: tail };
+					return;
+				}
 			}
-			return [];
-		};
-
-		// 完全一致（住所の照合を含む）をすべての候補キーで集め、だめなら前方一致。
-		const sources: Item[][] = [];
-		for (const k of keys) {
-			const exact: Item[] = cast(lookup, k, null, null).map((row) => ({ row }));
-			sources.push(exact.length ? exact : addressItems(k));
 		}
-		for (const k of keys) {
-			sources.push(cast(prefix, k, `${k}\uffff`).map((row) => ({ row })));
+
+		// 完全一致（住所の照合を含む）をすべての候補キーで集め、続いて前方一致もすべての候補キーで集める。
+		// 遅延評価なので、表示と省略の計上に必要な分しか引かない。
+		function* items(): Generator<Item> {
+			for (const k of keys) {
+				const exact = all(lookup, k, null, null);
+				if (exact.length) {
+					for (const row of exact) yield { row };
+					continue;
+				}
+				yield* addressItems(k);
+			}
+			for (const k of keys) {
+				// キーの直後の文字は UTF-16 の順序で \uffff より前なので、この範囲走査で
+				// 入力から始まる名前が索引から引ける（地名に U+FFFF は現れない）。
+				for (const row of all(prefix, k, `${k}\uffff`)) yield { row };
+			}
 		}
 
 		const shown: Candidate[] = [];
-		const shownIds = new Set<number>();
-		const omittedIds = new Set<number>();
+		const seen = new Set<number>();
 		let omitted = 0;
-		outer: for (const source of sources) {
-			for (const { row, unmatched } of source) {
-				if (shownIds.has(row.id)) continue;
-				if (shown.length < LIMIT) {
-					shownIds.add(row.id);
-					const type = row.kind as PlaceType;
-					shown.push({
-						name: row.name, address: row.address, lat: row.lat, lon: row.lon,
-						...PLACE_TYPES[type],
-						...(unmatched === undefined ? {} : { unmatched }),
-					});
-				} else {
-					if (omittedIds.has(row.id)) continue;
-					omittedIds.add(row.id);
-					if (++omitted >= COUNT_CAP) break outer;
-				}
+		for (const item of items()) {
+			if (seen.has(item.row.id)) continue;
+			seen.add(item.row.id);
+			if (shown.length < LIMIT) {
+				shown.push(candidate(item));
+			} else if (++omitted >= COUNT_CAP) {
+				break;
 			}
 		}
 		return { candidates: shown, ...(omitted ? { omitted } : {}) };
