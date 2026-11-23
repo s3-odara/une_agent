@@ -208,6 +208,7 @@ def facility(builder, feature):
     suburb = p.get('addr:suburb', '')
     address = p.get('addr:full') or province + city + suburb + p.get('addr:street', '') + p.get('addr:housenumber', '')
     aliases = {a.strip() for n in names for a in n.split(';') if a.strip()}
+    # OSM の駅は名前に「駅」を付けない慣習（name=赤羽）なので、「赤羽駅」という呼び方でも引けるよう別名を足す。
     if p.get('railway') in ('station', 'halt', 'tram_stop') and not name.endswith('駅'):
         aliases.add(f'{name}駅')
     builder.add(name, address, point, 'facility', aliases)
@@ -226,6 +227,7 @@ def facilities(builder, path, work):
     filtered = work / 'facilities.osm.pbf'
     filters = [*FACILITY_TAGS, *(f'{tag}={",".join(sorted(values))}' for tag, values in EXTRA_TAGS.items()), 'n/highway=traffic_signals']
     subprocess.run(['osmium', 'tags-filter', str(path), *filters, '-o', str(filtered)], check=True)
+    # linestringは閉じ切っていない名前付き建物・公園などを落とさないために含める。
     command = ['osmium', 'export', str(filtered), '-f', 'geojsonseq', '--geometry-types=point,linestring,polygon']
     with subprocess.Popen(command, stdout=subprocess.PIPE, encoding='utf-8') as process:
         try:

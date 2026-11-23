@@ -38,6 +38,7 @@ const LIMIT = 20;
 const COUNT_CAP = 200;
 const KEYS_MAX = 8;
 const HEAD_MAX = 16;
+// 本庁の別名は「都道府県+市区町村」の形までしかないので、「北海道+地名」のようなクエリに対応するには都道府県のリストが要る。
 const PREFECTURES = [
 	"北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県",
 	"埼玉県", "千葉県", "東京都", "神奈川県", "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県",
@@ -62,6 +63,7 @@ export function lookupPlace(path: string, query: string): Lookup {
 			FROM alias a JOIN place p ON p.id = a.place_id
 			WHERE a.key = ? AND p.kind IN ('office', 'town', 'facility') AND (? IS NULL OR p.kind = ?)
 			ORDER BY p.kind, p.address, p.name, p.id LIMIT ${COUNT_CAP}`);
+		// 前方一致は索引順のまま返す。完全一致と同じ種類順に並べ替えると範囲全体のソートが要り、結果が多いクエリで遅くなる。
 		const prefix = db.prepare(`SELECT p.id, p.name, p.address, p.lat, p.lon, p.kind
 			FROM alias a JOIN place p ON p.id = a.place_id
 			WHERE a.key >= ? AND a.key < ? AND p.kind IN ('office', 'town', 'facility')
@@ -75,7 +77,6 @@ export function lookupPlace(path: string, query: string): Lookup {
 			...(unmatched === undefined ? {} : { unmatched }),
 		});
 
-		// 入力の先頭から都道府県名・市区町村名（本庁の別名）を外した形も候補にする。
 		const stripPrefecture = (k: string): string | null => {
 			for (const pref of PREFECTURES) {
 				if (k.startsWith(pref)) return k.slice(pref.length) || null;
@@ -97,7 +98,6 @@ export function lookupPlace(path: string, query: string): Lookup {
 			}
 		}
 
-		// 住所（丁目・番地）の照合。番地より前の一致に対し、照合できなかった末尾を unmatched に入れる。
 		function* addressItems(k: string): Generator<Item> {
 			const address = addressKey(k).replace(/[-−‐―]/gu, "-");
 			const town = all(lookup, address, "town", "town");
@@ -125,8 +125,7 @@ export function lookupPlace(path: string, query: string): Lookup {
 			}
 		}
 
-		// 完全一致（住所の照合を含む）をすべての候補キーで集め、続いて前方一致もすべての候補キーで集める。
-		// 遅延評価なので、表示と省略の計上に必要な分しか引かない。
+		// 完全一致で当て嵌るものがあっても前方一致検索をする。遅延評価で、上限に当たるまでは。
 		function* items(): Generator<Item> {
 			for (const k of keys) {
 				const exact = all(lookup, k, null, null);
@@ -166,7 +165,7 @@ export function createGeocodeExtension(path: string) {
 		name: "geocode",
 		tools: [defineTool({
 			name: "geocode",
-			description: "日本の地名・住所・施設名から緯度経度の候補を引く。完全一致のほか、見つからないときは入力で始まる名前や、都道府県・市区町村名を外した名前も探す。候補は最大20件で、超えた分は omitted に入る。空のときは名前を短くして試し直すと見つかることがある。",
+			description: "日本の地名・住所・施設名から緯度経度の候補を引く。完全一致、前方一致をするが、部分一致はしないので、見つからないときはクエリを少し変えて探す。候補は最大20件で、超えた分は omitted に入る。",
 			parameters: obj({ query: str({ minLength: 1, maxLength: 160 }) }),
 			structuredOutputSchema: resultSchema,
 			replay: "safe",
