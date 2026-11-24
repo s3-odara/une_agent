@@ -219,13 +219,18 @@ export class Scheduler {
 			return late >= 0 && late < CHECK_LATENESS_MS && !db.wasNotified(`check:${today}:${time}`);
 		});
 
-		// A task's due hour is a wake of its own, at any hour, so the tasks are read at every tick. When the calendar
-		// cannot be reached the room is told only while the window is open: a failure at night says nothing.
+		// A task's due hour is a wake of its own, at any hour, so the tasks are read at every tick. The events are
+		// only weighed inside the window, so outside it they are not read at all. When the calendar cannot be
+		// reached the room is told only while the window is open: a failure at night says nothing.
+		const weighing = inWindow || briefDue;
 		let events: EventItem[] = [];
 		let todos: TodoItem[] = [];
 		if (calendars !== undefined) {
 			try {
-				[events, todos] = await Promise.all([calendars.events(startOfDay(today, tz), startOfDay(addDays(today, LOOKAHEAD_DAYS), tz)), calendars.todos()]);
+				[events, todos] = await Promise.all([
+					weighing ? calendars.events(startOfDay(today, tz), startOfDay(addDays(today, LOOKAHEAD_DAYS), tz)) : Promise.resolve([]),
+					calendars.todos(),
+				]);
 			} catch (error) {
 				// Said once a day: a brief that silently never comes is worse than one message about why.
 				const key = `caldav-down:${today}`;

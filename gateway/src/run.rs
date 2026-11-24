@@ -150,21 +150,30 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
             let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
             match download_media(&client, &shared.media_dir, &event_id, content, mimetype, content.voice.is_some()).await {
                 Ok(media) => (content.body.clone(), Some(media)),
-                Err(error) => failed_media(&shared, &room_id, &event_id, error),
+                Err(error) => {
+                    failed_media(&shared, &room_id, &event_id, error);
+                    return;
+                }
             }
         }
         MessageType::File(content) => {
             let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
             match download_media(&client, &shared.media_dir, &event_id, content, mimetype, false).await {
                 Ok(media) => (content.body.clone(), Some(media)),
-                Err(error) => failed_media(&shared, &room_id, &event_id, error),
+                Err(error) => {
+                    failed_media(&shared, &room_id, &event_id, error);
+                    return;
+                }
             }
         }
         MessageType::Video(content) => {
             let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
             match download_media(&client, &shared.media_dir, &event_id, content, mimetype, false).await {
                 Ok(media) => (content.body.clone(), Some(media)),
-                Err(error) => failed_media(&shared, &room_id, &event_id, error),
+                Err(error) => {
+                    failed_media(&shared, &room_id, &event_id, error);
+                    return;
+                }
             }
         }
         _ => return,
@@ -179,10 +188,11 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
     }
 }
 
-fn failed_media(shared: &Shared, room_id: &str, event_id: &str, error: anyhow::Error) -> (String, Option<Media>) {
+/// A download that failed is told as an undecryptable one is, and the message is not passed on: the sync offers it
+/// again, so the room hears why once more rather than what was not read of it.
+fn failed_media(shared: &Shared, room_id: &str, event_id: &str, error: anyhow::Error) {
     warn!("downloading the media of {event_id} failed: {error:#}");
     shared.emit(Event::Undecryptable { room_id: room_id.to_string(), event_id: event_id.to_string() });
-    (String::new(), None)
 }
 
 /// A media message is downloaded and decrypted first, so what the inbox holds is complete without the homeserver.

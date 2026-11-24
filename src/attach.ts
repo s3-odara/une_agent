@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, section, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { readPdf, type PdfMode } from "./pdf.ts";
@@ -59,6 +60,12 @@ export function mimeTypeOf(name: string): string {
 export function createAttachExtension(options: AttachOptions) {
 	const { db } = options;
 	const roomOf = (api: Pick<ToolExecutionApi, "conversationId">) => db.requireRoom(Number(api.conversationId));
+	/** Like the other tools see a path: a relative one of the conversation's working directory, as `bash` has it. */
+	const absolute = async (api: Pick<ToolExecutionApi, "env">, path: string, context: Context) => {
+		if (api.env === undefined) return path;
+		const resolved = await api.env.absolutePath(path, context);
+		return resolved.ok ? resolved.value : path;
+	};
 
 	return defineExtension({
 		name: "attach",
@@ -82,13 +89,14 @@ export function createAttachExtension(options: AttachOptions) {
 					name: opt(str({ description: "添付の名前。省略するとパスの末尾" })),
 				}),
 				execute: async (args, api, context) => {
-					const name = args.name ?? basename(args.path);
-					const size = await stat(args.path).then((info) => info.size, () => Promise.reject(new Error(`${args.path} は読めません。`)));
+					const path = await absolute(api, args.path, context);
+					const name = args.name ?? basename(path);
+					const size = await stat(path).then((info) => info.size, () => Promise.reject(new Error(`${path} は読めません。`)));
 					const limit = options.uploadLimit();
 					if (limit !== undefined && size > limit) throw new Error(`ファイルは ${fileSizeOf(size)} で、homeserver の上限（${fileSizeOf(limit)}）を超えています。`);
 					// Remembered with the call, so a rerun after a crash sends under the same transaction ID and the homeserver sends one event.
 					const txnId = `file:${await api.memo("txn", randomUUID(), context)}`;
-					const eventId = await options.send(roomOf(api), txnId, { path: args.path, name, mimeType: mimeTypeOf(name) });
+					const eventId = await options.send(roomOf(api), txnId, { path, name, mimeType: mimeTypeOf(name) });
 					return textOutput(`送りました（event ${eventId}）。一時的なファイルなら、送った後に消してよい。`);
 				},
 			}),
@@ -101,10 +109,10 @@ export function createAttachExtension(options: AttachOptions) {
 					page: opt(int({ description: "PDF の先頭を 1 とするページ番号。省略時は複数ページのテキストを読む", minimum: 1 })),
 					pdfMode: opt(oneOf(["text", "layout", "image"], { description: "text は既定、layout は配置を保つ。layout / image は page 必須" })),
 				}),
-				execute: async (args) => {
+				execute: async (args, api, context) => {
 					const mode = (args.pdfMode ?? "text") as PdfMode;
 					if (mode !== "text" && args.page === undefined) throw new Error("pdfMode=layout と pdfMode=image のときは page を指定してください。");
-					const document: BinarySource = { kind: "pdf", url: "file://", status: 200, body: await readFile(args.path), mediaType: "application/pdf" };
+					const document: BinarySource = { kind: "pdf", url: "file://", status: 200, body: await readFile(await absolute(api, args.path, context)), mediaType: "application/pdf" };
 					const result = await readPdf(document, mode, args.page);
 					return "markdown" in result ? textOutput(result.markdown) : { output: [{ type: "image" as const, data: result.data, mimeType: result.mimeType }] };
 				},
