@@ -26,9 +26,21 @@ function dueReminders(todos: readonly TodoItem[], today: string, leadDays: reado
 	return todos.flatMap((todo) => {
 		if (todo.done || todo.due === undefined) return [];
 		const days = daysBetween(today, todo.due.date);
-		if (!leadDays.includes(days)) return [];
-		const when = days === 0 ? "今日が期日" : days === 1 ? "明日が期日" : `${days}日後が期日`;
+		// The day itself is the scheduler's own wake, at the task's due hour (or `dueTime`), not a lead.
+		if (days === 0 || !leadDays.includes(days)) return [];
+		const when = days === 1 ? "明日が期日" : `${days}日後が期日`;
 		return [{ kind: "reminder" as const, key: `due:${todo.id}:${todo.due.date}:${days}`, line: `${when}: ${formatTodo(todo, tz)}` }];
+	});
+}
+
+/** A task falls due on its own: at the time of day its `due` names, or, without one, at the configured hour. */
+function dueTimeTriggers(todos: readonly TodoItem[], now: number, today: string, tz: string, dueClock: string): Trigger[] {
+	return todos.flatMap((todo) => {
+		if (todo.done || todo.due === undefined || todo.due.date !== today) return [];
+		const dueAt = todo.due.at ?? localToEpoch(`${today}T${dueClock}`, tz);
+		if (now < dueAt) return [];
+		const when = todo.due.at === undefined ? "期日当日です" : "期日の時刻です";
+		return [{ kind: "reminder" as const, key: `dueAt:${todo.id}:${todo.due.at ?? todo.due.date}`, line: `${when}: ${formatTodo(todo, tz)}` }];
 	});
 }
 
@@ -78,7 +90,8 @@ const CHECK_LATENESS_MS = 60 * 60_000;
 const ASIDE = [
 	"これはユーザーの発言ではなく、自分から話しかけるかを決める確認。返答はそのままユーザーへのメッセージとしてルームに送られ、通知が鳴る。",
 	"- 話しかけないなら、文章を書かずに stay_silent を呼ぶ（「特にありません」とも書かない）。",
-	"- この確認の間は、書き込むツール（記憶、カレンダー、timer、bash など）は使えない。要るなら話しかけて、ユーザーの返事を待つ。",
+	"- この確認の間は、書き込むツール（記憶、カレンダー、timer、bash など）と、ページを書き換えるブラウザ操作（クリック、入力、ログイン）は使えない。読むだけのブラウザ操作はできる。",
+	"- 書き込みや実行が必要なら、返答の最後の行を「実行継続」だけにする。この行はルームには届かず、返答のあと、その会話で書き込み制限なく続きが実行される。",
 ];
 
 /** A check comes several times a day whether or not there is anything to say. */
@@ -95,8 +108,8 @@ export const NEAR = "（時刻や期日が近づいたという知らせ。朝�
 
 /**
  * When to wake the model is decided here in code, without the model: at the brief, at the check times, when the
- * calendar has something to tell, and when a timer falls due. Whether to say anything, and what, is the model's to
- * decide (see `Proactive`). What it was woken for is recorded in the ledger (`HostDb.markNotified`) after the wake is
+ * calendar has something to tell, when a task falls due at its hour, and when a timer falls due. Whether to say
+ * anything, and what, is the model's to decide (see `Proactive`). What it was woken for is recorded in the ledger (`HostDb.markNotified`) after the wake is
  * stored; a crash between the two repeats the wake under the same key, which changes nothing.
  */
 export class Scheduler {
@@ -205,9 +218,9 @@ export class Scheduler {
 			const late = now - localToEpoch(`${today}T${time}`, tz);
 			return late >= 0 && late < CHECK_LATENESS_MS && !db.wasNotified(`check:${today}:${time}`);
 		});
-		if (!inWindow && !briefDue && checkDue === undefined) return;
-		if (checkDue !== undefined) await this.#otherRooms(now, today, checkDue);
 
+		// A task's due hour is a wake of its own, at any hour, so the tasks are read at every tick. When the calendar
+		// cannot be reached the room is told only while the window is open: a failure at night says nothing.
 		let events: EventItem[] = [];
 		let todos: TodoItem[] = [];
 		if (calendars !== undefined) {
@@ -217,7 +230,7 @@ export class Scheduler {
 				// Said once a day: a brief that silently never comes is worse than one message about why.
 				const key = `caldav-down:${today}`;
 				this.#log(`calendar fetch failed: ${errorMessage(error)}`);
-				if (!db.wasNotified(key)) {
+				if ((inWindow || briefDue) && !db.wasNotified(key)) {
 					await this.#options.notice(proactive.roomId, key, `カレンダー（CalDAV）に接続できません: ${errorMessage(error)}\n復旧するまで、ブリーフと定時の確認はしません。`);
 					db.markNotified([key], now);
 				}
@@ -225,17 +238,24 @@ export class Scheduler {
 			}
 		}
 
+		const dueNow = dueTimeTriggers(todos, now, today, tz, proactive.dueTime).filter((trigger) => !db.wasNotified(trigger.key));
+		if (!inWindow && !briefDue && checkDue === undefined && dueNow.length === 0) return;
+		if (checkDue !== undefined) await this.#otherRooms(now, today, checkDue);
+
 		const upcoming = events.filter((event) => event.end > now);
 		const since = db.value("calendar.checked");
-		// Outside the window the calendar is not looked at, so what changed meanwhile is still news when it opens.
+		// Outside the window the calendar is not weighed for news, so what changed meanwhile is still news when it opens.
 		const watching = calendars !== undefined && (inWindow || briefDue);
-		const triggers = watching
-			? [
-					...eventReminders(upcoming, now, proactive.eventLeadMinutes, tz),
-					...dueReminders(todos, today, proactive.dueLeadDays, tz),
-					...changedItems([...upcoming, ...todos], db.seenItems(), since === undefined ? undefined : Number(since), tz),
-				].filter((trigger) => !db.wasNotified(trigger.key))
-			: [];
+		const triggers = [
+			...(watching
+				? [
+						...eventReminders(upcoming, now, proactive.eventLeadMinutes, tz),
+						...dueReminders(todos, today, proactive.dueLeadDays, tz),
+						...changedItems([...upcoming, ...todos], db.seenItems(), since === undefined ? undefined : Number(since), tz),
+					]
+				: []),
+			...dueNow,
+		].filter((trigger) => !db.wasNotified(trigger.key));
 		const stamp = formatStamp(now, tz);
 		const keys = triggers.map((trigger) => trigger.key).sort();
 

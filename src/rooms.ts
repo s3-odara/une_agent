@@ -1,21 +1,37 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
-import { type Conversation, type Harness, LiveDoc, ProviderDoc } from "@earendil-works/pi-durable";
+import { type Conversation, type Harness, LiveDoc, ProviderDoc, type UserInput } from "@earendil-works/pi-durable";
 import { type Answer, answerOf, type Settled, type Submission } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
 import { type Config, modelFor, persona, personaFor, readSoul, thinkingFor } from "./config.ts";
 import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
 import type { Aside, Delivery, HostDb } from "./hostdb.ts";
 import { ProgressReport } from "./progress.ts";
+import { readPdfText } from "./pdf.ts";
 import type { Transcriber } from "./stt.ts";
+import { fileSizeOf } from "./text.ts";
 import { formatStamp } from "./time.ts";
 import { type Synthesizer, toSpeech } from "./tts.ts";
+import { type BinarySource } from "./web-assets.ts";
 
 type ConversationId = Conversation["id"];
 type SubmissionId = Parameters<Harness["submission"]>[0];
 type MessageEvent = Extract<GatewayEvent, { type: "message" }>;
+type Attachment = NonNullable<MessageEvent["attachment"]>;
+
+/** What a picture is allowed to weigh before it is left out of the conversation: it goes through base64 there. */
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+/** What a PDF or a text contributes to the conversation at most; the rest is read with the `read_pdf` tool. */
+const FILE_TEXT_MAX = 30_000;
+/** What the model sees of an image; the same kinds the Anthropic API takes. */
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function clipped(text: string, max: number, whereTo: string): string {
+	if (text.length <= max) return text;
+	return `${text.slice(0, max)}\n…（以下、${text.length - max} 文字省略。${whereTo}）`;
+}
 
 /** pi-durable IDs are branded numbers; the ledger stores the number. */
 function idFromNumber<I extends ConversationId | SubmissionId>(value: number): I {
@@ -66,6 +82,8 @@ export class Bridge {
 	readonly #retryDelays: readonly number[];
 	readonly #sendTimeoutMs: number;
 	readonly #log: (message: string) => void;
+	/** What the homeserver says it takes, at its ready; undefined until it does. */
+	#uploadLimit: number | undefined;
 	/** Per room, the tail of its admissions, so two messages never race to create the room's conversation. */
 	readonly #admissions = new Map<string, Promise<void>>();
 	readonly #inFlight = new Map<string, string>();
@@ -119,7 +137,8 @@ export class Bridge {
 				else this.#sends.get(event.requestId)?.reject(new Error(event.message));
 				return;
 			case "ready":
-				this.#log(`gateway ready as ${event.userId} (device ${event.deviceId})`);
+				this.#uploadLimit = event.uploadLimit;
+				this.#log(`gateway ready as ${event.userId} (device ${event.deviceId})${event.uploadLimit === undefined ? "" : `, upload limit ${event.uploadLimit}`}`);
 				return;
 			case "reaction":
 				for (const handler of this.#options.handlers ?? []) handler.onReaction?.(event.roomId, event.relatesTo, event.key);
@@ -134,7 +153,8 @@ export class Bridge {
 		const time = message.ts > 0 ? formatStamp(message.ts, config.timezone) : undefined;
 		// A message already in the conversation is one resent after a crash: no handler took it the first time.
 		if (!db.hasDelivery(message.eventId)) {
-			if (message.audio !== undefined) {
+			if (message.attachment !== undefined) {
+				// A media message runs no command: it interrupts one waiting, as a voice message does.
 				for (const handler of this.#options.handlers ?? []) handler.interrupt?.(message.roomId);
 			} else {
 				const command = await this.#command({ roomId: message.roomId, body: message.body, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) });
@@ -145,14 +165,17 @@ export class Bridge {
 				}
 			}
 		}
-		if (message.audio === undefined) {
+		const attachment = message.attachment;
+		if (attachment === undefined) {
 			if (!db.isDelivered(message.eventId)) await this.#submit(message.roomId, message.eventId, `${time === undefined ? "" : `[${time}] `}${message.body}`);
 		} else if (!db.hasDelivery(message.eventId)) {
-			// Once admitted, the transcript lives in the conversation; a resent recording is not transcribed again.
-			await this.#admitAudio(message, message.audio.path, time);
+			// Once admitted, what was made of the file lives in the conversation; a resent one is not processed again.
+			if (attachment.voice === true) await this.#admitAudio(message, attachment.path, time);
+			else await this.#admitFile(message, attachment, time);
 		}
 		link.send({ type: "ack", eventId: message.eventId });
-		if (message.audio !== undefined) await rm(message.audio.path, { force: true });
+		// The transcription lives in the conversation, so the recording is of no use afterwards.
+		if (attachment?.voice === true) await rm(attachment.path, { force: true });
 	}
 
 	/** When it cannot be transcribed, the message is acked all the same: a recording that failed once would fail again at every start. */
@@ -181,14 +204,63 @@ export class Bridge {
 		await this.#submit(message.roomId, message.eventId, `[${time === undefined ? "" : `${time} `}音声] ${text}`, true);
 	}
 
+	/**
+	 * A file that is not a voice message: what the conversation gets of it depends on what it is. A picture the
+	 * provider takes goes to the model as an image; a PDF and a text go in as text; anything else is only announced,
+	 * for the model to read the file itself if it wants to. A PDF and anything not carried in the conversation are
+	 * kept on disk, so the model can look at them later; what is carried there is deleted.
+	 */
+	async #admitFile(message: MessageEvent, attachment: Attachment, time: string | undefined): Promise<void> {
+		const { link } = this.#options;
+		const tell = (body: string) => this.#send(message.roomId, `file:${message.eventId}`, body, true);
+		const name = message.body.trim() === "" ? "添付ファイル" : message.body.trim();
+		const bytes = await stat(attachment.path).then((info) => info.size, () => 0);
+		const kind = `${name}（${attachment.mimeType}、${fileSizeOf(bytes)}）`;
+		const stamp = time === undefined ? "" : `${time} `;
+		const at = `（保存先: ${attachment.path}）`;
+		const asImage = () => ({ type: "image" as const, data: "", mimeType: attachment.mimeType });
+
+		link.send({ type: "typing", roomId: message.roomId, on: true });
+		try {
+			if (IMAGE_TYPES.has(attachment.mimeType) && bytes <= MAX_IMAGE_BYTES) {
+				const image = asImage();
+				image.data = (await readFile(attachment.path)).toString("base64");
+				const content: UserInput = [{ type: "text", text: `[${stamp}画像添付] ${kind}` }, image];
+				await this.#submit(message.roomId, message.eventId, content);
+				await rm(attachment.path, { force: true });
+				return;
+			}
+			if (attachment.mimeType === "application/pdf") {
+				// The file is kept: the rest of it, and a scanned page as an image, are the `read_pdf` tool's to read.
+				const document: BinarySource = { kind: "pdf", url: "file://", status: 200, body: await readFile(attachment.path), mediaType: attachment.mimeType };
+				const text = clipped((await readPdfText(document)).markdown, FILE_TEXT_MAX, "続きは read_pdf ツールで読めます");
+				await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${at}\n${text}`);
+				return;
+			}
+			if (attachment.mimeType.startsWith("text/") || attachment.mimeType === "application/json") {
+				const text = clipped((await readFile(attachment.path, "utf8")).trim(), FILE_TEXT_MAX, `続きは read で ${attachment.path} を読めます`);
+				await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind}\n${text}`);
+				await rm(attachment.path, { force: true });
+				return;
+			}
+			const note = IMAGE_TYPES.has(attachment.mimeType) ? `大きすぎるため会話に載せられません。` : "";
+			await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind}${note === "" ? ` ${at}` : ` ${at}${note}`}`);
+		} catch (error) {
+			this.#log(`reading ${message.eventId} failed: ${errorMessage(error)}`);
+			await tell(`ファイルを処理できませんでした（${errorMessage(error)}）。`);
+		} finally {
+			link.send({ type: "typing", roomId: message.roomId, on: false });
+		}
+	}
+
 	/** What a person said, into the room's conversation; counted, so a check knows something was said in the room. */
-	async #submitToRoom(roomId: string, key: string, content: string) {
+	async #submitToRoom(roomId: string, key: string, content: string | UserInput) {
 		const submission = await (await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key, whenBusy: "steer" }, this.#options.context);
 		this.#options.db.noteActivity(roomId);
 		return submission;
 	}
 
-	async #submit(roomId: string, key: string, content: string, voice = false): Promise<void> {
+	async #submit(roomId: string, key: string, content: string | UserInput, voice = false): Promise<void> {
 		const { db } = this.#options;
 		const submission = await this.#submitToRoom(roomId, key, content);
 		const delivery: Delivery = { eventId: key, roomId, submissionId: Number(submission.id), voice };
@@ -260,6 +332,19 @@ export class Bridge {
 	}
 
 	/**
+	 * Runs the room's conversation on from what an aside answered, as the input its continuation line stands for. An
+	 * input rather than a bare run, so what comes of it reaches the room like any other answer.
+	 */
+	continueRun(roomId: string, key: string): Promise<void> {
+		return this.#serial(roomId, async () => {
+			const submission = await this.#submitToRoom(roomId, `continue:${key}`, "[確認の後続] 直前の返答が「実行継続」で終わっていたので、その続きをここで実行する。ユーザーの発言ではない。");
+			const delivery: Delivery = { eventId: `continue:${key}`, roomId, submissionId: Number(submission.id), voice: false };
+			this.#options.db.addDelivery(delivery);
+			this.#startDelivery(delivery);
+		});
+	}
+
+	/**
 	 * Not in the delivery ledger, so an answer still owed when the process stops is left in the conversation and not
 	 * sent later, by which time the call is over.
 	 */
@@ -287,8 +372,25 @@ export class Bridge {
 		return this.#send(roomId, txnId, body, true);
 	}
 
-	sendImage(roomId: string, txnId: string, image: { readonly path: string; readonly name: string; readonly width: number; readonly height: number }): Promise<string> {
-		return this.#request({ type: "sendImage", requestId: txnId, roomId, txnId, ...image });
+	/** The largest upload the homeserver accepts, when it says. */
+	uploadLimit(): number | undefined {
+		return this.#uploadLimit;
+	}
+
+	/** The same ID again sends nothing new; a retry uploads again and still ends in one event. */
+	sendAttachment(
+		roomId: string,
+		txnId: string,
+		file: {
+			readonly path: string;
+			readonly name: string;
+			readonly mimeType: string;
+			readonly width?: number;
+			readonly height?: number;
+			readonly voice?: { readonly durationMs: number; readonly waveform?: readonly number[] };
+		},
+	): Promise<string> {
+		return this.#request({ type: "sendAttachment", requestId: txnId, roomId, txnId, ...file });
 	}
 
 	async react(roomId: string, txnId: string, eventId: string, key: string): Promise<void> {
@@ -440,7 +542,16 @@ export class Bridge {
 		await writeFile(path, speech.ogg);
 		try {
 			const txnId = `voice:${delivery.eventId}`;
-			await this.#request({ type: "sendVoice", requestId: txnId, roomId: delivery.roomId, txnId, path, durationMs: speech.durationMs, waveform: speech.waveform });
+			await this.#request({
+			type: "sendAttachment",
+			requestId: txnId,
+			roomId: delivery.roomId,
+			txnId,
+			path,
+			name: "voice-message.ogg",
+			mimeType: "audio/ogg",
+			voice: { durationMs: speech.durationMs, waveform: speech.waveform },
+		});
 		} finally {
 			await rm(path, { force: true });
 		}

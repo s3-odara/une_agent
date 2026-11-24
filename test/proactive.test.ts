@@ -92,6 +92,29 @@ test("a tool that writes is refused while a check is weighed, and does nothing",
 	assert.deepEqual(t.env.db.timers(), []);
 });
 
+test("an answer that ends with the continuation line does not send it, and runs on with every tool", async () => {
+	await using t = await setup();
+	const requests: Request[] = [];
+	t.env.faux.setResponses([
+		answer("報告です\n実行継続"),
+		call("timer_add", { at: "2026-11-17T20:00", note: "夜に聞く" }),
+		answer("20時に聞きますね", requests),
+	]);
+	await t.check();
+	await t.bridge.idle();
+	// The middle sends are the progress notices of the continuation's run.
+	assert.deepEqual([t.sent().at(0)?.[0], t.sent().at(-1)?.[0]], ["報告です", "20時に聞きますね"]);
+	// The continuation runs in the room's conversation, where writing is allowed again.
+	assert.deepEqual(t.env.db.timers().map((timer) => timer.note), ["夜に聞く"]);
+});
+
+test("a continuation that was not asked for changes nothing: the line is sent as it is", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([answer("実行継続の結果です。問題ありません。")]);
+	await t.check();
+	assert.deepEqual(t.sent(), [["実行継続の結果です。問題ありません。", false]]);
+});
+
 test("a script that writes is refused while a check is weighed, and does nothing", async () => {
 	await using t = await setup();
 	const requests: Request[] = [];

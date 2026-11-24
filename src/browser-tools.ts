@@ -42,7 +42,9 @@ class BrowserError extends Error {}
  * - A stored password is typed only by `browser_fill_credential`, only into a password field, and only when that
  *   field's document has exactly the origin the password is stored for. It is removed from everything a tool returns.
  * - Only `http` and `https` pages are opened.
- * - Only a run a person's message started can use the browser, not one the bot started of its own accord.
+ * - Only a run a person's message started can write anything, not one the bot started of its own accord: a check
+ *   being weighed is refused every writing tool before it reaches here, and sharing a screenshot to the room is
+ *   refused by that tool itself. Reading pages is fine, there: the worst a thrown-away aside leaves behind is a tab.
  *
  * Everything else, including asking before anything irreversible, is an instruction to the model and not enforced.
  * None of these tools is rerun after a crash: a click is not safe to repeat, and the page it was on is gone anyway.
@@ -59,7 +61,10 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 	const roomOf = (api: Pick<ToolExecutionApi, "conversationId">) => db.requireRoom(Number(api.conversationId));
 
 	const pageFor = async (api: Pick<ToolExecutionApi, "conversationId" | "snapshot">, context: Context): Promise<BrowserPage> => {
-		if (!(await startedByUser(api, db, context))) throw new BrowserError("ユーザーの発言で始まった実行でなければ、ブラウザは使えません。");
+		// While a check is weighed the writing tools are refused before they reach here, so what arrives is a reading
+		// tool, or a run that carries on after the check was adopted (which is in the delivery ledger as its input was).
+		if (!db.isWeighing(Number(api.conversationId)) && !(await startedByUser(api, db, context)))
+			throw new BrowserError("ユーザーの発言で始まった実行でなければ、ブラウザは使えません。");
 		const profile = profileOf(Number(api.conversationId));
 		if (profile === undefined) throw new BrowserError("この会話ではブラウザを使えません。");
 		return browsers.page(profile, roomOf(api));
@@ -269,6 +274,7 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 						execute: async (args, api, context) => {
 							const page = await pageFor(api, context);
 							if (args.share !== true) return look(page, "ページの画面です。");
+							if (db.isWeighing(Number(api.conversationId))) throw new BrowserError("自分から話しかけるかを決めている間は、ルームに画像を送れません。");
 							const roomId = roomOf(api);
 							const png = await page.screenshot({ format: "png", fullPage: args.fullPage === true });
 							await mkdir(screenshots.dir, { recursive: true });

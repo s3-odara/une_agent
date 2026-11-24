@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
@@ -6,9 +8,90 @@ import { obj } from "@earendil-works/pi-schema";
 import { CodeRequests } from "../src/codes.ts";
 import type { MessageHandler } from "../src/rooms.ts";
 import { agentEnv } from "./env.ts";
-import { answer, call, everything, instructionsOf, lastInput, message, type Request } from "./fakes.ts";
+import { samplePdf } from "./pdf-fixture.ts";
+import { answer, call, everything, inputImages, instructionsOf, lastInput, message, type Request } from "./fakes.ts";
 
 const ROOM = "!a:example.org";
+const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 2, 128, 0, 0, 1, 224])]);
+
+test("a picture goes to the model as an image, and is deleted once carried in", async () => {
+	await using env = await agentEnv();
+	const requests: Request[] = [];
+	env.faux.setResponses([answer("きれいな写真ですね", requests)]);
+	const bridge = env.bridge();
+	const path = join(env.dir, "photo.png");
+	writeFileSync(path, PNG);
+	env.link.emit({ type: "message", roomId: ROOM, eventId: "$p", body: "photo.png", ts: 0, attachment: { path, mimeType: "image/png" } });
+	await bridge.idle();
+
+	assert.deepEqual(inputImages(requests[0]!), [{ type: "image", data: PNG.toString("base64"), mimeType: "image/png" }]);
+	assert.match(lastInput(requests[0]!), /画像添付\] photo\.png（image\/png、\d+ B\）/);
+	assert.equal(existsSync(path), false);
+});
+
+test("a text file is carried into the conversation, and deleted", async () => {
+	await using env = await agentEnv();
+	const requests: Request[] = [];
+	env.faux.setResponses([answer("読みました", requests)]);
+	const bridge = env.bridge();
+	const path = join(env.dir, "notes.txt");
+	writeFileSync(path, "買い物リスト\n牛乳");
+	env.link.emit({ type: "message", roomId: ROOM, eventId: "$t", body: "notes.txt", ts: 0, attachment: { path, mimeType: "text/plain" } });
+	await bridge.idle();
+
+	const input = lastInput(requests[0]!);
+	assert.match(input, /ファイル添付\] notes\.txt（text\/plain、\d+ B）/);
+	assert.match(input, /買い物リスト\n牛乳$/);
+	assert.equal(existsSync(path), false);
+});
+
+test("a file of a kind the conversation cannot carry is only announced, and kept for the model to read", async () => {
+	await using env = await agentEnv();
+	const requests: Request[] = [];
+	env.faux.setResponses([answer("どこにありますか", requests)]);
+	const bridge = env.bridge();
+	const path = join(env.dir, "data.zip");
+	writeFileSync(path, "PK");
+	env.link.emit({ type: "message", roomId: ROOM, eventId: "$f", body: "data.zip", ts: 0, attachment: { path, mimeType: "application/zip" } });
+	await bridge.idle();
+
+	const input = lastInput(requests[0]!);
+	assert.match(input, /ファイル添付\] data\.zip（application\/zip、2 B\）/);
+	assert.match(input, /保存先: /);
+	assert.equal(existsSync(path), true);
+});
+
+const withPoppler = process.env.AGENT_POPPLER_BIN ? test : test.skip;
+
+withPoppler("a PDF is carried into the conversation as its text, and kept for read_pdf", async () => {
+	await using env = await agentEnv();
+	const requests: Request[] = [];
+	env.faux.setResponses([answer("読みました", requests)]);
+	const bridge = env.bridge();
+	const path = join(env.dir, "doc.pdf");
+	writeFileSync(path, samplePdf());
+	env.link.emit({ type: "message", roomId: ROOM, eventId: "$d", body: "doc.pdf", ts: 0, attachment: { path, mimeType: "application/pdf" } });
+	await bridge.idle();
+
+	const input = lastInput(requests[0]!);
+	assert.match(input, /PDF添付\] doc\.pdf（application\/pdf、\d+(\.\d)? (KB|B)）/);
+	assert.match(input, /--- PDF 1 ページ目 \/ 全 2 ページ ---/);
+	assert.match(input, /left column/);
+	assert.equal(existsSync(path), true);
+});
+
+withPoppler("a PDF that cannot be read is answered with why, and kept", async () => {
+	await using env = await agentEnv();
+	env.faux.setResponses([fauxAssistantMessage("わかりました")]);
+	const bridge = env.bridge();
+	const path = join(env.dir, "doc.pdf");
+	writeFileSync(path, "not a pdf");
+	env.link.emit({ type: "message", roomId: ROOM, eventId: "$d", body: "doc.pdf", ts: 0, attachment: { path, mimeType: "application/pdf" } });
+	await bridge.idle();
+
+	assert.match(env.link.of("send").map((send) => send.body).find((body) => body !== "") ?? "", /ファイルを処理できませんでした/);
+	assert.equal(existsSync(path), true);
+});
 
 test("a message is answered in its room, and acked", async () => {
 	await using env = await agentEnv();

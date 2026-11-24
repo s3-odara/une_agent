@@ -12,8 +12,7 @@ const MAX_VIRTUAL_EDGE = 16_384;
 const MAX_OUTPUT = 4 * 1024 * 1024;
 const TIMEOUT_MS = 15_000;
 
-export async function readPdf(document: BinarySource, mode: PdfMode, page: number | undefined, signal?: AbortSignal, crop?: Crop): Promise<ReadPage | Image> {
-	const bin = process.env.AGENT_POPPLER_BIN;
+export async function readPdf(document: BinarySource, mode: PdfMode, page: number | undefined, signal?: AbortSignal, crop?: Crop): Promise<ReadPage | Image> {	const bin = process.env.AGENT_POPPLER_BIN;
 	if (!bin) throw new ReadError("PDF の抽出器が設定されていません（AGENT_POPPLER_BIN）。");
 	const timeout = AbortSignal.timeout(TIMEOUT_MS);
 	const stop = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
@@ -68,6 +67,13 @@ export async function readPdf(document: BinarySource, mode: PdfMode, page: numbe
 	}
 	if (page === undefined && last < pages) sections.push(`（最初の ${last} ページのみ抽出しました。以降は page で指定してください。）`);
 	return { url, status, title: "", scope: "page", mediaType: "application/pdf", markdown: sections.join("\n\n") };
+}
+
+/** Text alone, for callers that never ask for an image and do not care to narrow the result. */
+export async function readPdfText(document: BinarySource): Promise<ReadPage> {
+	const result = await readPdf(document, "text", undefined);
+	if (!("markdown" in result)) throw new ReadError("PDF を画像にできませんでした。");
+	return result;
 }
 
 function pdfCrop(info: string, crop: Crop): string[] {

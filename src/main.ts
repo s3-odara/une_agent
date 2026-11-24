@@ -6,6 +6,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { createAttachExtension } from "./attach.ts";
 import { PlaywrightBrowsers } from "./browser.ts";
 import { createBrowserExtension } from "./browser-tools.ts";
 import { connectCalDav } from "./caldav.ts";
@@ -123,6 +124,11 @@ const extensions = [
 		onTimers: () => scheduler?.timersChanged(),
 		reads: mcpReads(mcpServers),
 	}),
+	createAttachExtension({
+		db,
+		send: (roomId, txnId, file) => viaBridge().sendAttachment(roomId, txnId, file),
+		uploadLimit: () => bridge?.uploadLimit(),
+	}),
 	...(browsers === undefined
 		? []
 		: [
@@ -132,7 +138,7 @@ const extensions = [
 					db,
 					profileOf: (conversationId) => personaOfConversation(conversationId)?.browserProfile,
 					codes,
-					screenshots: { send: (roomId, txnId, image) => viaBridge().sendImage(roomId, txnId, image), dir: join(config.dataDir, "browser-shots") },
+					screenshots: { send: (roomId, txnId, image) => viaBridge().sendAttachment(roomId, txnId, { ...image, mimeType: "image/png" }), dir: join(config.dataDir, "browser-shots") },
 				}),
 			]),
 	...(web === undefined ? [] : [web.extension]),

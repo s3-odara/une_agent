@@ -18,8 +18,9 @@
 			"eventId": "$voice",
 			"body": "Voice message.ogg",
 			"ts": 6,
-			"audio": {
+			"attachment": {
 				"path": "/d/v.ogg",
+				"mimeType": "audio/ogg",
 				"voice": true
 			}
 		},
@@ -29,9 +30,9 @@
 			"eventId": "$file",
 			"body": "song.mp3",
 			"ts": 7,
-			"audio": {
+			"attachment": {
 				"path": "/d/f.audio",
-				"voice": false
+				"mimeType": "audio/mpeg"
 			}
 		},
 		{
@@ -123,26 +124,40 @@
 			"replaces": "$p"
 		},
 		{
-			"type": "sendVoice",
+			"type": "sendAttachment",
 			"requestId": "q",
 			"roomId": "!r:example.org",
 			"txnId": "t",
 			"path": "/d/v.ogg",
-			"durationMs": 1500,
-			"waveform": [
-				0.5,
-				0.25
-			]
+			"name": "voice-message.ogg",
+			"mimeType": "audio/ogg",
+			"voice": {
+				"durationMs": 1500,
+				"waveform": [
+					0.5,
+					0.25
+				]
+			}
 		},
 		{
-			"type": "sendImage",
+			"type": "sendAttachment",
 			"requestId": "q",
 			"roomId": "!r:example.org",
 			"txnId": "t",
 			"path": "/d/s.png",
 			"name": "screenshot.png",
+			"mimeType": "image/png",
 			"width": 1280,
 			"height": 800
+		},
+		{
+			"type": "sendAttachment",
+			"requestId": "q",
+			"roomId": "!r:example.org",
+			"txnId": "t",
+			"path": "/d/f.bin",
+			"name": "report.xlsx",
+			"mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 		},
 		{
 			"type": "typing",

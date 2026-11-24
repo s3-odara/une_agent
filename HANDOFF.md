@@ -217,6 +217,11 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
   送信はキーから作ったトランザクション ID で送る
 - ブラウザのタブはルームごと（会話ごとではない）。aside を採用して会話が替わってもタブは続く
 - 追加・変更の知らせは、ETag が変わり、かつ項目の更新時刻が前回のチェック以降のものだけ。エージェント自身の書き込みは知らせない。削除は検知しない
+- タスクの期日はそのもので起こす: DUE が DATETIME ならその時刻に、日付だけなら `dueTime`（既定 07:00）に、窓外でも。エージェントが止まって逃したら、その日の次のチェックで出す（翌日は出さない）。前日までの知らせ（`dueLeadDays`）に当日は入らない。繰り返しのタスクは最初の回だけ読まれる（`calendar.ts` の `parseTodo`）ので、期日が過ぎた繰り返しタスクの次の回は起こらない
+- 期日時刻の判定にタスクの一覧が要るので、窓外でも毎 tick カレンダーを見る。繋がらないときの知らせは窓の中だけ（深夜に鳴らさない）
+- aside では読むだけのブラウザ操作（`browser_open` / `snapshot` / `read` / `screenshot`）もできる。捨てられても残るのは開いたタブだけ、と割り切る。書き換える操作は採用後に限る（認証情報からの新規ログインも）
+- aside の返答の最後の行が「実行継続」だけのとき、その行はルームに届かず、採用後に同じ会話へ input として続きが投げられる（`Bridge.continueRun`）。input は配送台帳に入るので、続きの実行はユーザーの発言で始まったのと同じ扱いになり、ブラウザの書き換えもできる。pi-durable の continue（run なしの継続）は、context が answer で終わっていると始まらないので input にした
+- `browser_screenshot` の share は、weighing 中はツール自身が拒否する（捨てられる aside がルームに画像を送るのを防ぐ）
 - CalDAV に繋がらないときは黙らず、1日1回そう知らせ、その間はブリーフと定時の確認をしない（約束の時刻は起こす）
 - 気温の最低・最高は値の大小で決めている。気象庁の JSON は当日分の時刻ラベルと値の対応が一貫していなかった（正式な仕様では確かめていない）
 - 選ばなかったもの:
@@ -225,6 +230,14 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
   - 約束の時刻を systemd-timer に置くこと。エージェントは常駐しているので外から起こしてもらう利点が無く、起こされたときに
     エージェントへ届ける口が別に要る
   - VTODO の独自プロパティ（`X-…`）。スマホのアプリで見えず直せず、アプリが編集したときに残る保証が無く、ToDo でない約束が入らない
+
+### 添付ファイル（`src/attach.ts`、`src/rooms.ts`、`gateway/src/run.rs`）
+
+- 受信は m.text、m.audio、m.file、m.video。音声（voice フラグつき）だけ STT に回し、ほかは `attachment`（パス、MIME）で agent へ。gateway は 20MB までをダウンロードし、名前は event ID に、MIME から mime_guess で決めた拡張子（音声は従来どおり .audio）
+- 受信ファイルは bridge が分類する。画像（png/jpeg/gif/webp、4MB まで）は pi-durable の input が text+image の配列を取るので、vision で直接渡す。PDF は pdftotext で（pdf.ts の低層を共用）、テキストは text/* と application/json を 30,000 文字まで会話に入れる。ほかは「届いた（パス）」だけ。会話に入れたもの（画像、テキスト）は削除、PDF とそれ以外は残す（モデルが read_pdf / read で後から読むため）。メディアは音声と同じく、承認待ちとコード待ちを中断する
+- 送信は `sendAttachment` 1本に統合（sendVoice と sendImage はなくなった）。画像は width/height があれば渡し、voice は波形つきの Voice 情報。MIME は引数で来る
+- `send_file` ツールは MIME を名前の拡張子から決め、無いものは octet-stream。上限は gateway が ready のとき `load_or_fetch_max_upload_size` で一度取ったものを Bridge が覚え、送る前に拒否する。transaction ID は `api.memo` で覚えるので、crash 後の rerun でも1イベント。パスはどこでもよく、codemode からも呼べる（ツールを出しただけ。秘密のファイルを送らないのは指示）
+- `read_pdf` はローカルの PDF を pdf.ts と同じ抽出器で読む（web_extract は URL だけなので）。テキスト、配置つき、1ページを画像に、の3つの mode
 
 ### 音声（`src/stt.ts`、`src/tts.ts`）
 

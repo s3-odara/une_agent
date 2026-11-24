@@ -15,6 +15,8 @@ export interface Rooms {
 	startAside(roomId: string): Promise<Aside | undefined>;
 	adopt(roomId: string, aside: Aside): Promise<boolean>;
 	say(roomId: string, txnId: string, body: string): Promise<string>;
+	/** Runs the room's conversation on from what the aside answered, with every tool there is. */
+	continueRun(roomId: string, key: string): Promise<void>;
 }
 
 export type ProactiveOptions = {
@@ -25,6 +27,16 @@ export type ProactiveOptions = {
 	readonly now?: () => number;
 	readonly log?: (message: string) => void;
 };
+
+/** The line an aside's answer ends with to have what it weighed up carried out once its conversation is the room's. */
+const CONTINUATION = "実行継続";
+
+/** The last non-empty line is checked, so anything above it is the answer. */
+export function withoutContinuation(text: string): { readonly body: string; readonly continues: boolean } {
+	const last = text.split("\n").findLast((line) => line.trim() !== "");
+	if (last === undefined || last.trim() !== CONTINUATION) return { body: text, continues: false };
+	return { body: text.slice(0, text.lastIndexOf(last)).trimEnd(), continues: true };
+}
 
 /** A brief or a check not weighed by then is of no use any more. */
 const CHECK_STALE_MS = 3 * 3_600_000;
@@ -107,19 +119,41 @@ export class Proactive {
 			this.#again = true;
 			return;
 		}
-		await rooms.say(wake.roomId, `reply:wake:${wake.key}`, answer.text);
+		const { body, continues } = withoutContinuation(answer.text);
+		if (body !== "") await rooms.say(wake.roomId, `reply:wake:${wake.key}`, body);
 		db.endWake(wake.key, "sent");
+		// The conversation is the room's now, so what the aside weighed up is carried out with every tool there is.
+		if (continues) await rooms.continueRun(wake.roomId, wake.key).catch((error) => this.#log(`continuing ${wake.key} failed: ${errorMessage(error)}`));
 	}
 }
 
 /**
  * The tools that only read. A check that is thrown away must not have done anything, so while one is weighed every other
- * tool is refused, those added later and those of MCP servers included. A script's calls are refused one by one, as
- * any call is, so `codemode` itself may run.
+ * tool is refused, those added later and those of MCP servers included. Reading pages in the browser is among them: the
+ * worst a thrown-away aside leaves behind is a tab opened. A script's calls are refused one by one, as any call is, so
+ * `codemode` itself may run; a screenshot shared to the room from there is refused by the tool itself.
  */
-const READS: ReadonlySet<string> = new Set(["read", "calendar_list", "weather_forecast", "weather_forecast_area", "weather_forecast_grid", "weather_rain", "weather_rain_grid", "geocode", "web_extract", "timer_list", "stay_silent", CODEMODE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME]);
+const READS: ReadonlySet<string> = new Set([
+	"read",
+	"calendar_list",
+	"weather_forecast",
+	"weather_forecast_area",
+	"weather_forecast_grid",
+	"weather_rain",
+	"weather_rain_grid",
+	"geocode",
+	"web_extract",
+	"timer_list",
+	"stay_silent",
+	"browser_open",
+	"browser_snapshot",
+	"browser_read",
+	"browser_screenshot",
+	CODEMODE_TOOL_NAME,
+	TOOL_SEARCH_TOOL_NAME,
+]);
 
-export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。";
+export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。実行が必要なら、返答の最後の行を「実行継続」だけにしてください。";
 
 export type ProactiveExtensionOptions = {
 	readonly db: HostDb;

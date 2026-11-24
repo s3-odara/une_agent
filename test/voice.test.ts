@@ -97,7 +97,7 @@ async function setup(options: { tts?: boolean; voice?: boolean; transcript?: (pa
 			return path;
 		},
 		send: async (path: string, roomId = "!a:example.org", eventId = `$v${++n}`) => {
-			const event: GatewayEvent = { type: "message", roomId, eventId, body: "Voice message.ogg", ts: 0, audio: { path, voice: true } };
+			const event: GatewayEvent = { type: "message", roomId, eventId, body: "Voice message.ogg", ts: 0, attachment: { path, mimeType: "audio/ogg", voice: true } };
 			env.link.emit(event);
 			await bridge.idle();
 		},
@@ -117,10 +117,10 @@ test("a voice message gets a text answer then a spoken answer without waiting fo
 	await using t = await setup();
 	t.env.faux.setResponses([fauxAssistantMessage("晴れです。")]);
 	const { link } = t.env;
-	link.beforeSent = (send) => send.type === "send" && send.notice ? link.waitFor("sendVoice") : undefined;
+	link.beforeSent = (send) => send.type === "send" && send.notice ? link.waitFor("sendAttachment") : undefined;
 	await t.send(t.recording("v"));
 	assert.deepEqual(
-		link.commands.flatMap((command) => command.type === "send" ? [command.body] : command.type === "sendVoice" ? ["voice"] : []),
+		link.commands.flatMap((command) => command.type === "send" ? [command.body] : command.type === "sendAttachment" && command.voice !== undefined ? ["voice"] : []),
 		["🎤 明日の天気は？", "晴れです。", "voice"],
 	);
 });
@@ -152,7 +152,7 @@ test("the recording and the spoken answer are deleted once they are done with", 
 	const path = t.recording("v");
 	await t.send(path);
 	assert.equal(existsSync(path), false);
-	assert.equal(existsSync(t.env.link.of("sendVoice")[0]!.path), false);
+	assert.equal(existsSync(t.env.link.of("sendAttachment")[0]!.path), false);
 });
 
 test("a voice message offered again after a lost ack is not transcribed or answered again, and its new copy is deleted", async () => {
@@ -213,7 +213,7 @@ test("without speech synthesis, a voice message is answered in text only", async
 		t.env.link.of("send").map((send) => send.body),
 		["🎤 明日の天気は？", "文字だけです。"],
 	);
-	assert.equal(t.env.link.of("sendVoice").length, 0);
+	assert.equal(t.env.link.of("sendAttachment").length, 0);
 });
 
 test("when speech cannot be made, the text answer stands, a notice says why, and nothing is sent again later", async () => {

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseImageInfo};
+use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::ruma::api::error::ErrorKind;
@@ -12,18 +12,17 @@ use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
 use matrix_sdk::ruma::events::reaction::{OriginalSyncReactionEvent, ReactionEventContent};
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
-use matrix_sdk::ruma::events::room::message::{
-    AudioMessageEventContent, MessageType, OriginalSyncRoomMessageEvent, Relation, ReplacementMetadata, RoomMessageEventContent,
-};
+use matrix_sdk::ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent, Relation, ReplacementMetadata, RoomMessageEventContent};
 use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedTransactionId, OwnedUserId, RoomId, UInt};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomState};
+use matrix_sdk::media::MediaEventContent;
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::call::{Calls, Control, now_ms, watch_memberships};
 use crate::config::Config;
-use crate::ipc::{Audio, Command, Event, Message, Outbox, spawn_writer};
+use crate::ipc::{Command, Event, File, Message, Media, Outbox, spawn_writer};
 use crate::session;
 use crate::state::State;
 
@@ -32,7 +31,7 @@ struct Shared {
     out: Outbox,
     state: Arc<Mutex<State>>,
     allowed: Arc<Vec<OwnedUserId>>,
-    voice_dir: Arc<PathBuf>,
+    media_dir: Arc<PathBuf>,
     typing: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     calls: Calls,
 }
@@ -65,13 +64,15 @@ pub async fn run(config: &Config) -> Result<()> {
         out,
         state: Arc::new(Mutex::new(state)),
         allowed,
-        voice_dir: Arc::new(config.data_dir().join("voice").join("in")),
+        media_dir: Arc::new(config.data_dir().join("files").join("in")),
         typing: Arc::default(),
     };
 
     let user_id = client.user_id().context("the session has no user")?.to_string();
     let device_id = client.device_id().context("the session has no device")?.to_string();
-    shared.emit(Event::Ready { user_id, device_id });
+    // The limit is asked once, at the start; a homeserver that does not say leaves it unknown.
+    let upload_limit = client.load_or_fetch_max_upload_size().await.ok().map(u64::from);
+    shared.emit(Event::Ready { user_id, device_id, upload_limit });
 
     for message in shared.state.lock().unwrap().unacked() {
         shared.emit(Event::Message(message));
@@ -122,10 +123,10 @@ fn without_reply_fallback(body: &str) -> &str {
     rest.strip_prefix('\n').unwrap_or(rest)
 }
 
-/// Larger recordings are refused rather than downloaded: several minutes of speech is far below this.
-const MAX_AUDIO_BYTES: u64 = 20 * 1024 * 1024;
+/// Larger media is refused rather than downloaded: a 20 MB attachment is already a lot for a chat.
+const MAX_MEDIA_BYTES: u64 = 20 * 1024 * 1024;
 
-/// An audio message is downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
+/// A voice or media message is downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
 async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
     let ts: u64 = event.origin_server_ts.0.into();
     // An edit is not a new request.
@@ -142,20 +143,33 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
         Some(Relation::Reply(reply)) => Some(reply.in_reply_to.event_id.to_string()),
         _ => None,
     };
-    let (body, audio) = match &event.content.msgtype {
+    let (body, attachment) = match &event.content.msgtype {
         MessageType::Text(text) if reply_to.is_some() => (without_reply_fallback(&text.body).to_owned(), None),
         MessageType::Text(text) => (text.body.clone(), None),
-        MessageType::Audio(content) => match download_audio(&client, &shared.voice_dir, &event_id, content).await {
-            Ok(audio) => (content.body.clone(), Some(audio)),
-            Err(error) => {
-                warn!("downloading the audio of {event_id} failed: {error:#}");
-                shared.emit(Event::Undecryptable { room_id, event_id });
-                return;
+        MessageType::Audio(content) => {
+            let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
+            match download_media(&client, &shared.media_dir, &event_id, content, mimetype, content.voice.is_some()).await {
+                Ok(media) => (content.body.clone(), Some(media)),
+                Err(error) => failed_media(&shared, &room_id, &event_id, error),
             }
-        },
+        }
+        MessageType::File(content) => {
+            let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
+            match download_media(&client, &shared.media_dir, &event_id, content, mimetype, false).await {
+                Ok(media) => (content.body.clone(), Some(media)),
+                Err(error) => failed_media(&shared, &room_id, &event_id, error),
+            }
+        }
+        MessageType::Video(content) => {
+            let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
+            match download_media(&client, &shared.media_dir, &event_id, content, mimetype, false).await {
+                Ok(media) => (content.body.clone(), Some(media)),
+                Err(error) => failed_media(&shared, &room_id, &event_id, error),
+            }
+        }
         _ => return,
     };
-    let message = Message { room_id, event_id, body, ts, audio, reply_to };
+    let message = Message { room_id, event_id, body, ts, attachment, reply_to };
 
     let added = shared.state.lock().unwrap().add(&message);
     match added {
@@ -165,17 +179,35 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
     }
 }
 
-async fn download_audio(client: &Client, dir: &Path, event_id: &str, content: &AudioMessageEventContent) -> Result<Audio> {
-    let info = content.info.as_deref();
-    if let Some(size) = info.and_then(|info| info.size) {
-        anyhow::ensure!(u64::from(size) <= MAX_AUDIO_BYTES, "the recording is {size} bytes, more than {MAX_AUDIO_BYTES}");
-    }
+fn failed_media(shared: &Shared, room_id: &str, event_id: &str, error: anyhow::Error) -> (String, Option<Media>) {
+    warn!("downloading the media of {event_id} failed: {error:#}");
+    shared.emit(Event::Undecryptable { room_id: room_id.to_string(), event_id: event_id.to_string() });
+    (String::new(), None)
+}
+
+/// A media message is downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
+async fn download_media(client: &Client, dir: &Path, event_id: &str, content: &impl MediaEventContent, mimetype: Option<&str>, voice: bool) -> Result<Media> {
     let data = client.media().get_file(content, false).await?.context("the message has no file")?;
-    anyhow::ensure!(data.len() as u64 <= MAX_AUDIO_BYTES, "the recording is {} bytes, more than {MAX_AUDIO_BYTES}", data.len());
-    let path = dir.join(format!("{}.audio", file_stem(event_id)));
+    anyhow::ensure!(data.len() as u64 <= MAX_MEDIA_BYTES, "the attachment is {} bytes, more than {MAX_MEDIA_BYTES}", data.len());
+    // The kind of the file comes with the message; without one that says anything it is kept as an octet stream.
+    let mime = mimetype
+        .filter(|mime| mime.contains('/') && !mime.eq_ignore_ascii_case("application/octet-stream"))
+        .map(|mime| mime.parse::<mime::Mime>())
+        .transpose()?
+        .unwrap_or(mime::APPLICATION_OCTET_STREAM);
+    let filename = if voice { format!("{}.audio", file_stem(event_id)) } else { format!("{}.{}", file_stem(event_id), extension(&mime)) };
+    let path = dir.join(filename);
     tokio::fs::create_dir_all(dir).await.with_context(|| format!("creating {}", dir.display()))?;
     tokio::fs::write(&path, data).await.with_context(|| format!("writing {}", path.display()))?;
-    Ok(Audio { path: path.to_string_lossy().into_owned(), voice: content.voice.is_some() })
+    Ok(Media { path: path.to_string_lossy().into_owned(), mime_type: mime.essence_str().to_owned(), voice })
+}
+
+/// What the file is named: an extension the mimetype suggests, or `bin` for a kindless one.
+fn extension(mime: &mime::Mime) -> String {
+    mime_guess::get_mime_extensions_str(mime.essence_str())
+        .and_then(|extensions| extensions.first().copied())
+        .unwrap_or("bin")
+        .to_owned()
 }
 
 fn file_stem(event_id: &str) -> String {
@@ -255,13 +287,9 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 let client = client.clone();
                 respond(&shared, request_id, async move { send(&client, &room_id, txn_id, body, notice, replaces).await });
             }
-            Command::SendVoice { request_id, room_id, txn_id, path, duration_ms, waveform } => {
+            Command::SendAttachment { request_id, room_id, txn_id, file } => {
                 let client = client.clone();
-                respond(&shared, request_id, async move { send_voice(&client, &room_id, txn_id, &path, duration_ms, waveform).await });
-            }
-            Command::SendImage { request_id, room_id, txn_id, path, name, width, height } => {
-                let client = client.clone();
-                respond(&shared, request_id, async move { send_image(&client, &room_id, txn_id, &path, &name, width, height).await });
+                respond(&shared, request_id, async move { send_attachment(&client, &room_id, txn_id, &file).await });
             }
             Command::Typing { room_id, on } => set_typing(&client, &shared, room_id, on),
             Command::React { request_id, room_id, txn_id, event_id, key } => {
@@ -327,40 +355,31 @@ async fn react(client: &Client, room_id: &str, txn_id: String, event_id: &str, k
     Ok(result.response.event_id.to_string())
 }
 
-async fn send_voice(client: &Client, room_id: &str, txn_id: String, path: &str, duration_ms: u64, waveform: Vec<f32>) -> Result<String> {
-    let mime: mime::Mime = "audio/ogg".parse().expect("a valid MIME type");
-    send_file(client, room_id, txn_id, path, "voice-message.ogg", &mime, |size| {
-        AttachmentInfo::Voice(BaseAudioInfo {
-            duration: Some(Duration::from_millis(duration_ms)),
-            size,
-            waveform: if waveform.is_empty() { None } else { Some(waveform) },
-        })
-    })
-    .await
-}
-
-/// A retry under the same transaction ID uploads again but still becomes one event.
-async fn send_file(
-    client: &Client,
-    room_id: &str,
-    txn_id: String,
-    path: &str,
-    name: &str,
-    mime: &mime::Mime,
-    info: impl FnOnce(Option<UInt>) -> AttachmentInfo,
-) -> Result<String> {
+/// Any kind of file; what the receiver's client makes of it follows the MIME type and the `voice` flag.
+async fn send_attachment(client: &Client, room_id: &str, txn_id: String, file: &File) -> Result<String> {
     let room = joined_room(client, room_id)?;
-    let data = tokio::fs::read(path).await.with_context(|| format!("reading {path}"))?;
-    let config = AttachmentConfig::new().txn_id(OwnedTransactionId::from(txn_id)).info(info(UInt::new(data.len() as u64)));
-    let response = room.send_attachment(name, mime, data, config).await?;
+    let data = tokio::fs::read(&file.path).await.with_context(|| format!("reading {}", file.path))?;
+    let mime: mime::Mime = file.mime_type.parse().context("a MIME type the client gave is not one")?;
+    let size = UInt::new(data.len() as u64);
+    let info = if let Some(voice) = &file.voice {
+        AttachmentInfo::Voice(BaseAudioInfo {
+            duration: Some(Duration::from_millis(voice.duration_ms)),
+            size,
+            waveform: if voice.waveform.is_empty() { None } else { Some(voice.waveform.clone()) },
+        })
+    } else if mime.type_() == "image" {
+        AttachmentInfo::Image(BaseImageInfo { width: file.width.map(UInt::from), height: file.height.map(UInt::from), size, blurhash: None, is_animated: None })
+    } else if mime.type_() == "audio" {
+        AttachmentInfo::Audio(BaseAudioInfo { duration: None, size, waveform: None })
+    } else if mime.type_() == "video" {
+        AttachmentInfo::Video(BaseVideoInfo { duration: None, height: file.height.map(UInt::from), width: file.width.map(UInt::from), size, blurhash: None })
+    } else {
+        AttachmentInfo::File(BaseFileInfo { size })
+    };
+    // A retry under the same transaction ID uploads again but still becomes one event.
+    let config = AttachmentConfig::new().txn_id(OwnedTransactionId::from(txn_id)).info(info);
+    let response = room.send_attachment(&file.name, &mime, data, config).await?;
     Ok(response.event_id.to_string())
-}
-
-async fn send_image(client: &Client, room_id: &str, txn_id: String, path: &str, name: &str, width: u32, height: u32) -> Result<String> {
-    send_file(client, room_id, txn_id, path, name, &mime::IMAGE_PNG, |size| {
-        AttachmentInfo::Image(BaseImageInfo { width: Some(UInt::from(width)), height: Some(UInt::from(height)), size, blurhash: None, is_animated: Some(false) })
-    })
-    .await
 }
 
 /// A typing notice lasts a few seconds on the homeserver, so "on" keeps renewing it until "off".

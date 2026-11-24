@@ -165,7 +165,7 @@ test("an all-day event does not wake the model", async () => {
 	assert.equal(t.submitted.length, 0);
 });
 
-test("the model is woken for a task three days and one day before its due date", async () => {
+test("the model is woken for a task three days and one day before its due date, and on the day itself at its due hour", async () => {
 	// The brief comes after the first check, so the reminders wake the model on their own.
 	using t = setup({ briefTime: "20:00", windowStart: "07:00" });
 	t.task("report", "レポート提出", "2026-11-21");
@@ -176,8 +176,51 @@ test("the model is woken for a task three days and one day before its due date",
 	};
 	assert.deepEqual(
 		[await remindedOn("2026-11-17"), await remindedOn("2026-11-18"), await remindedOn("2026-11-19"), await remindedOn("2026-11-20"), await remindedOn("2026-11-21")],
-		[false, true, false, true, false],
+		[false, true, false, true, true],
 	);
+});
+
+test("a task without a time of day falls due at the due hour that day, outside the window too, once", async () => {
+	using t = setup({ briefTime: "08:00", windowStart: "08:00" });
+	t.task("report", "レポート提出", "2026-11-17");
+	await t.tickAt("2026-11-17T06:45");
+	assert.equal(t.woken.length, 0);
+	await t.tickAt("2026-11-17T07:00");
+	assert.equal(t.woken.length, 1);
+	assert.equal(t.woken[0]!.kind, "check");
+	assert.match(t.submitted[0]!, /期日当日です/);
+	assert.match(t.submitted[0]!, /レポート提出/);
+	await t.tickAt("2026-11-17T07:15");
+	await t.tickAt("2026-11-18T07:00");
+	assert.equal(t.woken.length, 1);
+});
+
+test("a task with a time of day falls due at that time, not at the configured hour", async () => {
+	using t = setup({ briefTime: "20:00", windowStart: "07:00" });
+	t.task("report", "レポート提出", "2026-11-17T10:30");
+	await t.ticksFrom("2026-11-17T07:00", "2026-11-17T10:15");
+	assert.equal(t.woken.length, 0);
+	await t.tickAt("2026-11-17T10:30");
+	assert.equal(t.woken.length, 1);
+	assert.match(t.submitted[0]!, /期日の時刻です/);
+});
+
+test("a due hour missed while the agent was down is woken for later that day, and not after the day", async () => {
+	using t = setup({ briefTime: "08:00", windowStart: "08:00" });
+	t.task("report", "レポート提出", "2026-11-17");
+	await t.tickAt("2026-11-17T09:00");
+	assert.equal(t.woken.length, 1);
+	assert.match(t.submitted[0]!, /レポート提出/);
+	await t.tickAt("2026-11-18T07:00");
+	assert.equal(t.woken.length, 1);
+});
+
+test("a completed task falls due no more", async () => {
+	using t = setup({ briefTime: "08:00", windowStart: "08:00" });
+	t.task("report", "レポート提出", "2026-11-17");
+	t.backend.put("ToDo", "report.ics", ics("BEGIN:VTODO", "UID:report", "SUMMARY:レポート提出", "STATUS:COMPLETED", "DUE;VALUE=DATE:20261117", "DTSTAMP:20261116T090000Z", "END:VTODO"));
+	await t.tickAt("2026-11-17T07:00");
+	assert.equal(t.woken.length, 0);
 });
 
 test("a task added after the day's brief still wakes the model that day", async () => {

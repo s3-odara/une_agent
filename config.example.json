@@ -53,6 +53,7 @@
 		"windowEnd": "21:00",
 		"tickMinutes": 15,
 		"eventLeadMinutes": 120,
+		"dueTime": "07:00",
 		"dueLeadDays": [3, 1]
 	}
 }

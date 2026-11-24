@@ -6,7 +6,7 @@ import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.t
 export class FakeLink implements GatewayLink {
 	readonly commands: GatewayCommand[] = [];
 	failSends = false;
-	beforeSent?: (command: Extract<GatewayCommand, { type: "send" | "sendVoice" | "sendImage" | "react" }>) => Promise<unknown> | undefined;
+	beforeSent?: (command: Extract<GatewayCommand, { type: "send" | "sendAttachment" | "react" }>) => Promise<unknown> | undefined;
 	/** The gateway answers a `callSpeak` once it has played (or cut off) the speech. */
 	speak: ((command: Extract<GatewayCommand, { type: "callSpeak" }>) => GatewayEvent | undefined) | undefined;
 	readonly #listeners: ((event: GatewayEvent) => void)[] = [];
@@ -15,7 +15,7 @@ export class FakeLink implements GatewayLink {
 	send(command: GatewayCommand): void {
 		this.commands.push(command);
 		this.#waiters = this.#waiters.filter((waiter) => !waiter(command));
-		if (command.type === "send" || command.type === "sendVoice" || command.type === "sendImage" || command.type === "react") {
+		if (command.type === "send" || command.type === "sendAttachment" || command.type === "react") {
 			const reply: GatewayEvent = this.failSends
 				? { type: "error", requestId: command.requestId, message: "the homeserver cannot be reached" }
 				: { type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` };
@@ -157,6 +157,12 @@ export function instructionsOf(request: Request): string {
 /** The names of the tools a request offered the model, after the changes its system messages make. */
 export function offered(request: Request): string[] {
 	return getCurrentTools(normalizeContext(request as Context).messages).map((tool) => tool.name);
+}
+
+/** The images the last user input of a request carried, as the model saw them. */
+export function inputImages(request: Request): { readonly data: string; readonly mimeType: string }[] {
+	const content = request.messages.findLast((item) => item.role === "user")?.content;
+	return Array.isArray(content) ? content.filter((block: { type: string }) => block.type === "image") : [];
 }
 
 export function lastInput(request: Request): string {

@@ -9,7 +9,7 @@ import { CodeRequests, noCode } from "../src/codes.ts";
 import { persona, personaFor } from "../src/config.ts";
 import type { Bridge } from "../src/rooms.ts";
 import { Credentials } from "../src/credentials.ts";
-import { Proactive } from "../src/proactive.ts";
+import { Proactive, createProactiveExtension } from "../src/proactive.ts";
 import { agentEnv, context } from "./env.ts";
 import { call, everything, imagesIn, lastInput, lastToolResult, message, noting, type Request, type ToolResult } from "./fakes.ts";
 
@@ -84,6 +84,8 @@ async function setup() {
 			writeFileSync(path, JSON.stringify({ "https://shop.example.com/login": { username: "me@example.org", password: SECRET } }));
 			credentials = new Credentials(path);
 			return [
+				// The weighing of a check refuses the browser's writing tools.
+				createProactiveExtension({ db, tz: "Asia/Tokyo" }),
 				createBrowserExtension({
 					browsers,
 					credentials,
@@ -94,7 +96,7 @@ async function setup() {
 					},
 					maxChars: 400,
 					codes,
-					screenshots: { send: (roomId, txnId, image) => viaBridge().sendImage(roomId, txnId, image), dir: join(config.dataDir, "shots") },
+					screenshots: { send: (roomId, txnId, image) => viaBridge().sendAttachment(roomId, txnId, { ...image, mimeType: "image/png" }), dir: join(config.dataDir, "shots") },
 				}),
 			];
 		},
@@ -267,13 +269,32 @@ test("filling a login that names no field is refused", async () => {
 	assert.equal(t.results[0]?.isError, true);
 });
 
-test("a check the bot makes of its own accord cannot use the browser", async () => {
+test("a check the bot makes of its own accord may read pages, but not share a screenshot to the room", async () => {
 	await using t = await setup();
-	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), t.noting]);
+	t.env.faux.setResponses([
+		call("browser_open", { url: "https://example.com/" }),
+		call("browser_screenshot", { share: true }),
+		t.noting,
+	]);
 	const proactive = new Proactive({ harness: t.env.harness, db: t.env.db, rooms: t.bridge, context, log: () => {} });
 	t.env.db.addWake({ key: "check:1", roomId: ROOM, kind: "check", content: "[定時チェック] ...", createdAt: Date.now() });
 	await proactive.run();
+	await t.bridge.idle();
+	assert.deepEqual(t.browsers.log, ["goto default https://example.com/"]);
 	assert.equal(t.results[0]?.isError, true);
+	assert.match(t.results[0]?.text ?? "", /ルームに画像を送れません/);
+	assert.deepEqual(t.env.link.of("sendAttachment"), []);
+});
+
+test("a check cannot use a browser tool that writes, the refusal is what the model gets", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([call("browser_click", { ref: "e1" }), t.noting]);
+	const proactive = new Proactive({ harness: t.env.harness, db: t.env.db, rooms: t.bridge, context, log: () => {} });
+	t.env.db.addWake({ key: "check:2", roomId: ROOM, kind: "check", content: "[定時チェック] ...", createdAt: Date.now() });
+	await proactive.run();
+	await t.bridge.idle();
+	assert.equal(t.results[0]?.isError, true);
+	assert.match(t.results[0]?.text ?? "", /書き込むツールは使えません/);
 	assert.deepEqual(t.browsers.log, []);
 });
 
@@ -307,7 +328,7 @@ test("a screenshot is shown to the model as an image of the window, with the siz
 	await t.say("画面を見て");
 	assert.deepEqual(imagesIn(t.requests[0]!), [{ type: "image", data: JPEG.toString("base64"), mimeType: "image/jpeg" }]);
 	assert.match(t.results[0]?.text ?? "", new RegExp(`${VIEWPORT.width}×${VIEWPORT.height}`));
-	assert.deepEqual(t.env.link.of("sendImage"), []);
+	assert.deepEqual(t.env.link.of("sendAttachment"), []);
 });
 
 test("a screenshot shared with the user goes to the room of the conversation as an image of its size, and the model sees it too", async () => {
@@ -315,7 +336,7 @@ test("a screenshot shared with the user goes to the room of the conversation as 
 	t.env.faux.setResponses([call("browser_open", { url: "https://example.com/" }), call("browser_screenshot", { share: true, fullPage: true }), t.noting]);
 	await t.say("画面を見せて");
 	assert.ok(t.browsers.log.includes("screenshot png full"));
-	const [sent] = t.env.link.of("sendImage");
+	const [sent] = t.env.link.of("sendAttachment");
 	assert.equal(sent?.roomId, ROOM);
 	assert.deepEqual({ width: sent?.width, height: sent?.height }, pngSize(PNG));
 	assert.equal(imagesIn(t.requests[0]!).length, 1);

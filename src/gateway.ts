@@ -3,16 +3,16 @@ import { createInterface } from "node:readline";
 
 /** Keep in step with `gateway/src/ipc.rs`. */
 export type GatewayEvent =
-	| { readonly type: "ready"; readonly userId: string; readonly deviceId: string }
+	| { readonly type: "ready"; readonly userId: string; readonly deviceId: string; /** The largest upload the homeserver accepts, when it tells. */ readonly uploadLimit?: number }
 	| {
 			readonly type: "message";
 			readonly roomId: string;
 			readonly eventId: string;
-			/** For audio, the file name or description the sender's client gave it. */
+			/** For a media message, the file name or description the sender's client gave it. */
 			readonly body: string;
 			readonly ts: number;
-			/** Downloaded and decrypted. Delete it once done. */
-			readonly audio?: { readonly path: string; readonly voice: boolean };
+			/** A voice or media message, downloaded and decrypted. Delete it once done. */
+			readonly attachment?: { readonly path: string; readonly mimeType: string; /** True only of a voice message. */ readonly voice?: boolean };
 			readonly replyTo?: string;
 	  }
 	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string }
@@ -60,25 +60,19 @@ export type GatewayCommand =
 			readonly replaces?: string;
 	  }
 	| {
-			/** `path` must be an Ogg Opus file. */
-			readonly type: "sendVoice";
-			readonly requestId: string;
-			readonly roomId: string;
-			readonly txnId: string;
-			readonly path: string;
-			readonly durationMs: number;
-			readonly waveform?: readonly number[];
-	  }
-	| {
-			/** `path` must be a PNG file. */
-			readonly type: "sendImage";
+			/** Any kind of file; what the receiver's client makes of it follows the MIME type. */
+			readonly type: "sendAttachment";
 			readonly requestId: string;
 			readonly roomId: string;
 			readonly txnId: string;
 			readonly path: string;
 			readonly name: string;
-			readonly width: number;
-			readonly height: number;
+			readonly mimeType: string;
+			/** Of an image, when it is known. */
+			readonly width?: number;
+			readonly height?: number;
+			/** Sent as a voice message, which must be an Ogg Opus file. */
+			readonly voice?: { readonly durationMs: number; readonly waveform?: readonly number[] };
 	  }
 	| { readonly type: "typing"; readonly roomId: string; readonly on: boolean }
 	/** Answered with `sent` or `error` under `requestId`. */

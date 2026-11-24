@@ -9,7 +9,13 @@ use crate::audio::VadConfig;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Event {
-    Ready { user_id: String, device_id: String },
+    Ready {
+        user_id: String,
+        device_id: String,
+        /// The largest upload the homeserver accepts, when it says; the agent keeps it to refuse early.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upload_limit: Option<u64>,
+    },
     Message(Message),
     Undecryptable { room_id: String, event_id: String },
     Sent { request_id: String, event_id: String },
@@ -35,21 +41,54 @@ pub enum Event {
 pub struct Message {
     pub room_id: String,
     pub event_id: String,
-    /// For audio, the file name or description the sender's client gave it.
+    /// For a media message, the file name or description the sender's client gave it.
     pub body: String,
     pub ts: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audio: Option<Audio>,
+    pub attachment: Option<Media>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct Audio {
+pub struct Media {
     /// The agent deletes it once it no longer needs it.
     pub path: String,
+    pub mime_type: String,
+    /// True only of a voice message.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub voice: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceInfo {
+    pub duration_ms: u64,
+    /// Each between 0 and 1, for the client to draw.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waveform: Vec<f32>,
+}
+
+/// The file of a `sendAttachment` command; what the receiver's client makes of it follows the MIME type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct File {
+    pub path: String,
+    pub name: String,
+    pub mime_type: String,
+    /// Of an image, when it is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// Sent as a voice message, which must be an Ogg Opus file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceInfo>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -71,24 +110,12 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replaces: Option<String>,
     },
-    SendVoice {
+    SendAttachment {
         request_id: String,
         room_id: String,
         txn_id: String,
-        path: String,
-        duration_ms: u64,
-        /// Each between 0 and 1, for the client to draw.
-        #[serde(default)]
-        waveform: Vec<f32>,
-    },
-    SendImage {
-        request_id: String,
-        room_id: String,
-        txn_id: String,
-        path: String,
-        name: String,
-        width: u32,
-        height: u32,
+        #[serde(flatten)]
+        file: File,
     },
     Typing {
         room_id: String,
