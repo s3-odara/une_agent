@@ -217,7 +217,10 @@ export class Bridge {
 		const bytes = await stat(attachment.path).then((info) => info.size, () => 0);
 		const kind = `${name}（${attachment.mimeType}、${fileSizeOf(bytes)}）`;
 		const stamp = time === undefined ? "" : `${time} `;
-		const at = `（保存先: ${attachment.path}）`;
+		// Every kind says what became of the file in the same place: kept ones give the path, ones whose content is
+		// carried in the conversation say they are deleted, so the model never reads after a gone file.
+		const kept = `（保存先: ${attachment.path}）`;
+		const deleted = `（処理後に削除しました）`;
 		const asImage = () => ({ type: "image" as const, data: "", mimeType: attachment.mimeType });
 
 		link.send({ type: "typing", roomId: message.roomId, on: true });
@@ -225,7 +228,7 @@ export class Bridge {
 			if (IMAGE_TYPES.has(attachment.mimeType) && bytes <= MAX_IMAGE_BYTES) {
 				const image = asImage();
 				image.data = (await readFile(attachment.path)).toString("base64");
-				const content: UserInput = [{ type: "text", text: `[${stamp}画像添付] ${kind}` }, image];
+				const content: UserInput = [{ type: "text", text: `[${stamp}画像添付] ${kind} ${deleted}` }, image];
 				await this.#submit(message.roomId, message.eventId, content);
 				await rm(attachment.path, { force: true });
 				return;
@@ -234,17 +237,17 @@ export class Bridge {
 				// The file is kept: the rest of it, and a scanned page as an image, are the `read_pdf` tool's to read.
 				const document: BinarySource = { kind: "pdf", url: "file://", status: 200, body: await readFile(attachment.path), mediaType: attachment.mimeType };
 				const text = clipped((await readPdfText(document)).markdown, FILE_TEXT_MAX, "続きは read_pdf ツールで読めます");
-				await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${at}\n${text}`);
+				await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${kept}\n${text}`);
 				return;
 			}
 			if (attachment.mimeType.startsWith("text/") || attachment.mimeType === "application/json") {
 				const text = clipped((await readFile(attachment.path, "utf8")).trim(), FILE_TEXT_MAX, `続きは read で ${attachment.path} を読めます`);
-				await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind}\n${text}`);
+				await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${deleted}\n${text}`);
 				await rm(attachment.path, { force: true });
 				return;
 			}
 			const note = IMAGE_TYPES.has(attachment.mimeType) ? `大きすぎるため会話に載せられません。` : "";
-			await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind}${note === "" ? ` ${at}` : ` ${at}${note}`}`);
+			await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${kept}${note}`);
 		} catch (error) {
 			this.#log(`reading ${message.eventId} failed: ${errorMessage(error)}`);
 			await tell(`ファイルを処理できませんでした（${errorMessage(error)}）。`);
