@@ -236,7 +236,7 @@ Hermes の cron で Dreaming と Proactive を試したが、Muse ほど気が�
 - 受信は m.text、m.audio、m.file、m.video。音声（voice フラグつき）だけ STT に回し、ほかは `attachment`（パス、MIME）で agent へ。gateway は 20MB までをダウンロードし、名前は event ID に、MIME から mime_guess で決めた拡張子（音声は従来どおり .audio）
 - 受信ファイルは bridge が分類する。画像（png/jpeg/gif/webp、4MB まで）は pi-durable の input が text+image の配列を取るので、vision で直接渡す。PDF は pdftotext で（pdf.ts の低層を共用）、テキストは text/* と application/json を 30,000 文字まで会話に入れる。ほかは「届いた（パス）」だけ。会話に入れたもの（画像、テキスト）は削除、PDF とそれ以外は残す（モデルが read_pdf / read で後から読むため）。メディアは音声と同じく、承認待ちとコード待ちを中断する
 - 送信は `sendAttachment` 1本に統合（sendVoice と sendImage はなくなった）。画像は width/height があれば渡し、voice は波形つきの Voice 情報。MIME は引数で来る
-- `send_file` ツールは MIME を名前の拡張子から決め、無いものは octet-stream。上限は gateway が ready のとき `load_or_fetch_max_upload_size` で一度取ったものを Bridge が覚え、送る前に拒否する。transaction ID は `api.memo` で覚えるので、crash 後の rerun でも1イベント。パスはどこでもよく、codemode からも呼べる（ツールを出しただけ。秘密のファイルを送らないのは指示）
+- `send_file` ツールは MIME を名前の拡張子から決め、無いものは octet-stream。上限は gateway が ready のとき `load_or_fetch_max_upload_size` で一度取ったものを Bridge が覚え、送る前に拒否する。transaction ID は `api.memo` で覚えるので、crash 後の rerun でも1イベント。パスはどこでもよく、codemode からも呼べる（ツールを出しただけ。上限や MIME の仕組みはエラーと動きでモデルに知らせる）
 - `read_pdf` はローカルの PDF を pdf.ts と同じ抽出器で読む（web_extract は URL だけなので）。テキスト、配置つき、1ページを画像に、の3つの mode
 
 ### 音声（`src/stt.ts`、`src/tts.ts`）

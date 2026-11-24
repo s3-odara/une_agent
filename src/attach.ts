@@ -69,21 +69,11 @@ export function createAttachExtension(options: AttachOptions) {
 
 	return defineExtension({
 		name: "attach",
-		sections: [
-			section(
-				"attach",
-				() =>
-					[
-						"ファイルをルームに添付して送るには send_file を使う。受け取った PDF の続きは read_pdf で読む。",
-						"- 秘密の内容を含むファイル（認証情報、キー、確認コードなど）は添付しない。外に出すのは自分の判断で、送る前に確認する。",
-					].join("\n"),
-			),
-		],
+		sections: [section("attach", () => "ファイルをルームに添付して送るには send_file を使う。受け取った PDF の続きは read_pdf で読む。")],
 		tools: [
 			defineTool({
 				name: "send_file",
-				description:
-					"このルームにファイルを添付して送る。MIME は名前の拡張子から決め、無いものは application/octet-stream。homeserver の上限を超えるものは送れず、エラーで知らせる。",
+				description: "パスを指定してこのルームにファイルを添付する。",
 				parameters: obj({
 					path: str({ description: "送るファイルのパス", minLength: 1 }),
 					name: opt(str({ description: "添付の名前。省略するとパスの末尾" })),
