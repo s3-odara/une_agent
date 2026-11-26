@@ -25,7 +25,6 @@ export type CallsOptions = {
 };
 
 type RoomCall = {
-	joined: boolean;
 	/** Goes up whenever the user starts speaking: an answer to an older turn is not spoken any more. */
 	turn: number;
 	tail: Promise<void>;
@@ -39,7 +38,6 @@ export class Calls {
 	readonly #options: CallsOptions;
 	readonly #log: (message: string) => void;
 	readonly #rooms = new Map<string, RoomCall>();
-	readonly #wanted = new Set<string>();
 	readonly #work = new Set<Promise<void>>();
 	#chime: Promise<string> | undefined;
 
@@ -56,40 +54,23 @@ export class Calls {
 		while (this.#work.size > 0) await Promise.allSettled([...this.#work]);
 	}
 
-	#join(roomId: string): void {
-		const { link, config } = this.#options;
-		this.#rooms.set(roomId, { joined: false, turn: 0, tail: Promise.resolve(), overtaken: false, spoken: new Map() });
-		link.send({ type: "joinCall", roomId, vad: (config.voice?.call ?? fail()).vad });
+	#room(roomId: string): RoomCall {
+		let room = this.#rooms.get(roomId);
+		if (room === undefined) {
+			room = { turn: 0, tail: Promise.resolve(), overtaken: false, spoken: new Map() };
+			this.#rooms.set(roomId, room);
+		}
+		return room;
 	}
 
 	#onEvent(event: GatewayEvent): void {
-		const { link } = this.#options;
 		switch (event.type) {
-			case "callMembers": {
-				const room = this.#rooms.get(event.roomId);
-				if (event.userIds.length > 0) {
-					this.#wanted.add(event.roomId);
-					if (room === undefined) this.#join(event.roomId);
-				} else {
-					this.#wanted.delete(event.roomId);
-					if (room !== undefined) link.send({ type: "leaveCall", roomId: event.roomId });
-				}
-				return;
-			}
-			case "callJoined": {
-				const room = this.#rooms.get(event.roomId);
-				if (room !== undefined) room.joined = true;
-				this.#log(`joined the call in ${event.roomId}`);
-				if (!this.#wanted.has(event.roomId)) link.send({ type: "leaveCall", roomId: event.roomId });
-				return;
-			}
 			case "callLeft": {
 				const room = this.#rooms.get(event.roomId);
 				this.#rooms.delete(event.roomId);
 				for (const resolve of room?.spoken.values() ?? []) resolve();
 				if (event.reason === "") {
 					this.#log(`left the call in ${event.roomId}`);
-					if (this.#wanted.has(event.roomId)) this.#join(event.roomId);
 					return;
 				}
 				this.#log(`left the call in ${event.roomId}: ${event.reason}`);
@@ -97,16 +78,11 @@ export class Calls {
 				return;
 			}
 			case "callSpeech": {
-				const room = this.#rooms.get(event.roomId);
-				if (room !== undefined) room.turn++;
+				this.#room(event.roomId).turn++;
 				return;
 			}
 			case "callUtterance": {
-				const room = this.#rooms.get(event.roomId);
-				if (room === undefined) {
-					void rm(event.path, { force: true });
-					return;
-				}
+				const room = this.#room(event.roomId);
 				const next = room.tail.then(() => this.#hear(event, room)).catch((error) => this.#log(`a call utterance in ${event.roomId} failed: ${errorMessage(error)}`));
 				room.tail = next;
 				this.#track(next);

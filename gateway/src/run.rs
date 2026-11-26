@@ -21,7 +21,7 @@ use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::call::{Calls, Control, now_ms, watch_memberships};
+use crate::call::{Calls, now_ms, watch_memberships};
 use crate::config::Config;
 use crate::ipc::{Command, Event, File, Message, Media, Outbox, spawn_writer};
 use crate::session;
@@ -84,7 +84,9 @@ pub async fn run(config: &Config) -> Result<()> {
     client.add_event_handler(on_undecryptable);
     client.add_event_handler(on_invite);
     client.add_event_handler(on_reaction);
-    watch_memberships(&client, shared.out.clone(), shared.allowed.clone());
+    if let Some(vad) = config.call_vad() {
+        watch_memberships(&client, shared.calls.clone(), vad);
+    }
 
     let commands = tokio::spawn(read_commands(client.clone(), shared.clone()));
     let sync = client.sync_with_result_callback(SyncSettings::default(), |result| async move {
@@ -327,16 +329,8 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 let client = client.clone();
                 respond(&shared, request_id, async move { react(&client, &room_id, txn_id, &event_id, key).await });
             }
-            Command::JoinCall { room_id, vad } => match joined_room(&client, &room_id) {
-                Ok(room) => shared.calls.join(room, vad),
-                Err(error) => shared.emit(Event::CallLeft { room_id, reason: format!("{error:#}") }),
-            },
-            Command::LeaveCall { room_id } => {
-                // Not in a call there: nothing to leave.
-                let _ = shared.calls.control(&room_id, Control::Leave);
-            }
             Command::CallSpeak { room_id, id, path } => {
-                if let Err(error) = shared.calls.control(&room_id, Control::Speak { id: id.clone(), path }) {
+                if let Err(error) = shared.calls.speak(&room_id, id.clone(), path) {
                     shared.emit(Event::CallSpoken { room_id, id });
                     warn!("{error:#}");
                 }

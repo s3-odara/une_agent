@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, stdout};
 use tokio::sync::mpsc;
 
-use crate::audio::VadConfig;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Event {
@@ -27,8 +25,6 @@ pub enum Event {
     },
     /// Not stored: one missed while the gateway was down is not offered again.
     Reaction { room_id: String, event_id: String, relates_to: String, key: String },
-    CallMembers { room_id: String, user_ids: Vec<String> },
-    CallJoined { room_id: String },
     CallLeft { room_id: String, reason: String },
     CallSpeech { room_id: String },
     /// The agent deletes the file once done.
@@ -125,13 +121,6 @@ pub enum Command {
         txn_id: String,
         event_id: String,
         key: String,
-    },
-    JoinCall {
-        room_id: String,
-        vad: VadConfig,
-    },
-    LeaveCall {
-        room_id: String,
     },
     /// The file is read at once.
     CallSpeak {

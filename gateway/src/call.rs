@@ -42,14 +42,93 @@ pub fn now_ms() -> u64 {
 }
 
 #[derive(Debug)]
-pub enum Control {
+enum Control {
     Speak { id: String, path: String },
     Leave,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    #[default]
+    Idle,
+    Joining,
+    InCall,
+    Leaving,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transition {
+    None,
+    StartJoin,
+    SendLeave,
+}
+
+#[derive(Debug, Default)]
+struct CallMachine {
+    phase: Phase,
+    wanted: bool,
+}
+
+impl CallMachine {
+    fn set_wanted(&mut self, wanted: bool) -> Transition {
+        if self.wanted == wanted {
+            return Transition::None;
+        }
+        self.wanted = wanted;
+        match (self.phase, wanted) {
+            (Phase::Idle, true) => {
+                self.phase = Phase::Joining;
+                Transition::StartJoin
+            }
+            (Phase::InCall, false) => {
+                self.phase = Phase::Leaving;
+                Transition::SendLeave
+            }
+            _ => Transition::None,
+        }
+    }
+
+    fn on_joined(&mut self) -> bool {
+        debug_assert_eq!(self.phase, Phase::Joining);
+        if self.wanted {
+            self.phase = Phase::InCall;
+            true
+        } else {
+            self.phase = Phase::Leaving;
+            false
+        }
+    }
+
+    fn on_leaving(&mut self) {
+        if self.phase == Phase::InCall {
+            self.phase = Phase::Leaving;
+        }
+    }
+
+    fn on_left(&mut self, normal: bool) -> Transition {
+        if normal && self.wanted {
+            self.phase = Phase::Joining;
+            Transition::StartJoin
+        } else {
+            self.phase = Phase::Idle;
+            Transition::None
+        }
+    }
+
+    fn is_idle_unwanted(&self) -> bool {
+        self.phase == Phase::Idle && !self.wanted
+    }
+}
+
+#[derive(Default)]
+struct RoomEntry {
+    machine: CallMachine,
+    control: Option<mpsc::UnboundedSender<Control>>,
+}
+
 #[derive(Clone)]
 pub struct Calls {
-    rooms: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Control>>>>,
+    rooms: Arc<Mutex<HashMap<String, RoomEntry>>>,
     out: Outbox,
     allowed: Arc<Vec<OwnedUserId>>,
     dir: Arc<PathBuf>,
@@ -64,40 +143,95 @@ impl Calls {
         let _ = self.out.send(event);
     }
 
-    pub fn join(&self, room: Room, vad: VadConfig) {
+    pub fn set_wanted(&self, room: Room, wanted: bool, vad: VadConfig) {
         let room_id = room.room_id().to_string();
-        let (tx, rx) = mpsc::unbounded_channel();
-        {
+        let action = {
             let mut rooms = self.rooms.lock().unwrap();
-            if rooms.contains_key(&room_id) {
-                return;
+            let entry = rooms.entry(room_id.clone()).or_default();
+            let transition = entry.machine.set_wanted(wanted);
+            let control = if transition == Transition::SendLeave { entry.control.take() } else { None };
+            if entry.machine.is_idle_unwanted() {
+                rooms.remove(&room_id);
             }
-            rooms.insert(room_id.clone(), tx);
+            (transition, control)
+        };
+        match action {
+            (Transition::StartJoin, _) => self.spawn_join(room, vad),
+            (Transition::SendLeave, Some(tx)) => {
+                let _ = tx.send(Control::Leave);
+            }
+            _ => {}
         }
+    }
+
+    pub fn speak(&self, room_id: &str, id: String, path: String) -> Result<()> {
+        let rooms = self.rooms.lock().unwrap();
+        let tx = rooms.get(room_id).and_then(|entry| entry.control.as_ref()).with_context(|| format!("not in a call in {room_id}"))?;
+        tx.send(Control::Speak { id, path }).ok().context("the call is ending")
+    }
+
+    fn spawn_join(&self, room: Room, vad: VadConfig) {
         let calls = self.clone();
         tokio::spawn(async move {
-            let reason = match calls.run(&room, vad, rx).await {
-                Ok(()) => String::new(),
-                Err(error) => format!("{error:#}"),
-            };
-            calls.rooms.lock().unwrap().remove(&room_id);
-            if reason.is_empty() { info!("left the call in {room_id}") } else { warn!("left the call in {room_id}: {reason}") }
-            calls.emit(Event::CallLeft { room_id, reason });
+            let room_id = room.room_id().to_string();
+            loop {
+                let (normal, reason) = match calls.run_once(&room, &room_id, vad).await {
+                    Ok(()) => (true, String::new()),
+                    Err(error) => (false, format!("{error:#}")),
+                };
+                if reason.is_empty() {
+                    info!("left the call in {room_id}");
+                } else {
+                    warn!("left the call in {room_id}: {reason}");
+                }
+                calls.emit(Event::CallLeft { room_id: room_id.clone(), reason });
+                let next = {
+                    let mut rooms = calls.rooms.lock().unwrap();
+                    let entry = rooms.entry(room_id.clone()).or_default();
+                    entry.control = None;
+                    let transition = entry.machine.on_left(normal);
+                    if entry.machine.is_idle_unwanted() {
+                        rooms.remove(&room_id);
+                    }
+                    transition
+                };
+                if next != Transition::StartJoin {
+                    break;
+                }
+            }
         });
     }
 
-    pub fn control(&self, room_id: &str, control: Control) -> Result<()> {
-        let rooms = self.rooms.lock().unwrap();
-        let tx = rooms.get(room_id).with_context(|| format!("not in a call in {room_id}"))?;
-        tx.send(control).ok().context("the call is ending")
-    }
-
-    async fn run(&self, room: &Room, vad: VadConfig, controls: mpsc::UnboundedReceiver<Control>) -> Result<()> {
+    async fn run_once(&self, room: &Room, room_id: &str, vad: VadConfig) -> Result<()> {
         tokio::fs::create_dir_all(&*self.dir).await.with_context(|| format!("creating {}", self.dir.display()))?;
         let options = LiveKitCallOptions { format: MembershipFormat::RoomState, ..LiveKitCallOptions::default() };
         let call = LiveKitCall::join(room, options).await.context("joining the call")?;
-        info!("joined the call in {} as {}", room.room_id(), call.local_identity());
-        let result = self.in_call(&call, room.room_id().as_str(), vad, controls).await;
+        info!("joined the call in {room_id} as {}", call.local_identity());
+
+        let rx = {
+            let mut rooms = self.rooms.lock().unwrap();
+            let entry = rooms.entry(room_id.to_owned()).or_default();
+            if entry.machine.on_joined() {
+                let (tx, rx) = mpsc::unbounded_channel();
+                entry.control = Some(tx);
+                Some(rx)
+            } else {
+                None
+            }
+        };
+
+        let result = match rx {
+            Some(rx) => {
+                let result = self.in_call(&call, room_id, vad, rx).await;
+                let mut rooms = self.rooms.lock().unwrap();
+                if let Some(entry) = rooms.get_mut(room_id) {
+                    entry.control = None;
+                    entry.machine.on_leaving();
+                }
+                result
+            }
+            None => Ok(()),
+        };
         let left = call.leave().await.context("leaving the call");
         result.and(left)
     }
@@ -105,7 +239,6 @@ impl Calls {
     async fn in_call(&self, call: &LiveKitCall, room_id: &str, vad: VadConfig, mut controls: mpsc::UnboundedReceiver<Control>) -> Result<()> {
         let mic = call.publish(PublishOptions::microphone()).await.context("publishing the bot's audio")?;
         let player = Player::start(mic, room_id.to_owned(), self.out.clone());
-        self.emit(Event::CallJoined { room_id: room_id.to_owned() });
 
         let mut events = call.subscribe_call_events();
         let mut status = call.subscribe_status();
@@ -309,7 +442,7 @@ fn spoken(room_id: &str, id: String) -> Event {
 }
 
 /// Memberships carry a deadline, so the rooms are also looked at again every half minute.
-pub fn watch_memberships(client: &Client, out: Outbox, allowed: Arc<Vec<OwnedUserId>>) {
+pub fn watch_memberships(client: &Client, calls: Calls, vad: VadConfig) {
     let (tx, mut rx) = mpsc::unbounded_channel::<OwnedRoomId>();
     client.add_event_handler(move |event: Raw<AnySyncStateEvent>, room: Room| {
         let tx = tx.clone();
@@ -321,7 +454,6 @@ pub fn watch_memberships(client: &Client, out: Outbox, allowed: Arc<Vec<OwnedUse
     });
     let client = client.clone();
     tokio::spawn(async move {
-        let mut known: HashMap<OwnedRoomId, Vec<String>> = HashMap::new();
         let mut tick = tokio::time::interval(Duration::from_secs(30));
         loop {
             let rooms: Vec<Room> = tokio::select! {
@@ -329,12 +461,8 @@ pub fn watch_memberships(client: &Client, out: Outbox, allowed: Arc<Vec<OwnedUse
                 _ = tick.tick() => client.joined_rooms(),
             };
             for room in rooms {
-                let members = if room.state() == RoomState::Joined { members_in_call(&client, &room, &allowed).await } else { Vec::new() };
-                let previous = known.get(room.room_id()).cloned().unwrap_or_default();
-                if members != previous {
-                    known.insert(room.room_id().to_owned(), members.clone());
-                    let _ = out.send(Event::CallMembers { room_id: room.room_id().to_string(), user_ids: members });
-                }
+                let wanted = room.state() == RoomState::Joined && !members_in_call(&client, &room, &calls.allowed).await.is_empty();
+                calls.set_wanted(room, wanted, vad);
             }
         }
     });
@@ -401,5 +529,76 @@ mod tests {
         assert!(!is_live_room_call(&json!({}), 0, 0));
         assert!(!is_live_room_call(&json!({ "application": "m.call", "call_id": "breakout" }), 0, 0));
         assert!(!is_live_room_call(&json!({ "application": "io.element.spreadsheet", "call_id": "" }), 0, 0));
+    }
+
+    #[test]
+    fn joins_when_wanted_and_leaves_when_everyone_leaves() {
+        let mut m = CallMachine::default();
+        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+        assert_eq!(m.set_wanted(true), Transition::None);
+        assert!(m.on_joined());
+        assert_eq!(m.set_wanted(false), Transition::SendLeave);
+        assert_eq!(m.set_wanted(false), Transition::None);
+        assert_eq!(m.on_left(true), Transition::None);
+    }
+
+    #[test]
+    fn leaves_immediately_when_everyone_leaves_during_join() {
+        let mut m = CallMachine::default();
+        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+        assert_eq!(m.set_wanted(false), Transition::None);
+        assert!(!m.on_joined());
+        assert_eq!(m.on_left(true), Transition::None);
+    }
+
+    #[test]
+    fn stays_in_call_when_user_leaves_and_reenters_during_join() {
+        let mut m = CallMachine::default();
+        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+        assert_eq!(m.set_wanted(false), Transition::None);
+        assert_eq!(m.set_wanted(true), Transition::None);
+        assert!(m.on_joined());
+    }
+
+    #[test]
+    fn rejoins_when_user_reenters_before_leave_finishes() {
+        let mut m = CallMachine::default();
+        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+        assert!(m.on_joined());
+        assert_eq!(m.set_wanted(false), Transition::SendLeave);
+        assert_eq!(m.set_wanted(true), Transition::None);
+        assert_eq!(m.on_left(true), Transition::StartJoin);
+        assert!(m.on_joined());
+    }
+
+    #[test]
+    fn spontaneous_leave_rejoins_only_while_still_wanted() {
+        let mut m = CallMachine::default();
+        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+        assert!(m.on_joined());
+        m.on_leaving();
+        assert_eq!(m.on_left(true), Transition::StartJoin);
+        assert!(m.on_joined());
+
+        m.on_leaving();
+        assert_eq!(m.set_wanted(false), Transition::None);
+        assert_eq!(m.on_left(true), Transition::None);
+    }
+
+    #[test]
+    fn abnormal_exit_does_not_rejoin_until_membership_cycles() {
+        let mut m = CallMachine::default();
+        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+        assert_eq!(m.on_left(false), Transition::None);
+        assert_eq!(m.set_wanted(true), Transition::None);
+        assert_eq!(m.set_wanted(false), Transition::None);
+        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+
+        assert!(m.on_joined());
+        m.on_leaving();
+        assert_eq!(m.on_left(false), Transition::None);
+        assert_eq!(m.set_wanted(true), Transition::None);
+        assert_eq!(m.set_wanted(false), Transition::None);
+        assert_eq!(m.set_wanted(true), Transition::StartJoin);
     }
 }

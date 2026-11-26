@@ -1,35 +1,28 @@
 // Formal model of the Call lifecycle & half-duplex turn protocol:
-//   src/call.ts (Calls) <-> gateway/src/call.rs (Calls, Player, watch_memberships)
+//   gateway/src/call.rs (CallMachine, Calls, Player, watch_memberships) <-> src/call.ts (Calls)
 //
 // Models a single room with:
-//   - User joining/leaving the Matrix room call (watch_memberships -> FIFO callMembers)
-//   - Async IPC channels between Node (Calls) and Rust (gateway)
-//   - Utterance handling: writeFile -> callSpeak -> callSpoken
+//   - User joining/leaving the Matrix room call (watch_memberships -> CallMachine in gateway)
+//   - Async IPC channels between Rust (gateway) and Node (Calls): callLeft, callSpeak, callSpoken
+//   - Utterance playback: writeFile -> callSpeak -> callSpoken
 //   - Interruption via callLeft
 module call_protocol {
   // --- World / Matrix room state ---
   var userInCall: bool          // Ground truth: allowed user is currently in the Matrix call
-  var gwKnownInCall: bool       // watch_memberships's last emitted state
 
   // --- Gateway state (gateway/src/call.rs) ---
+  var gwWanted: bool            // CallMachine.wanted (last observed by watch_memberships)
   var gwCallState: str          // "none" | "joining" | "inCall" | "leaving"
   var gwPlayQueue: Set[int]     // Clip IDs queued in Player
 
-  // --- IPC channels (gateway -> agent stdout is FIFO for callMembers) ---
-  var evCallMembers: List[bool] // gateway -> agent: callMembers (non-empty?)
-  var evCallJoined: bool        // gateway -> agent: callJoined
+  // --- IPC channels ---
   var evCallLeft: int           // gateway -> agent: count of pending callLeft events
   var evCallSpoken: Set[int]    // gateway -> agent: callSpoken(clipId)
-
-  var cmdJoinCall: bool         // agent -> gateway: joinCall
-  var cmdLeaveCall: bool        // agent -> gateway: leaveCall
   var cmdCallSpeak: Set[int]    // agent -> gateway: callSpeak(clipId)
 
   // --- Agent state (src/call.ts) ---
   var agRoomId: int             // 0 = not in #rooms, >0 = generation ID of current RoomCall object
-  var agWanted: bool            // #wanted.has(roomId)
   var nextAgRoomId: int
-  var agJoined: bool
   var agSpokenWaiters: Set[int] // clipIds registered in current RoomCall.spoken
   // Active #play coroutine state
   var playState: str            // "idle" | "writingFile" | "waitingSpoken"
@@ -41,37 +34,26 @@ module call_protocol {
   var playHungOnDeadRoom: bool
 
   pure def isQuiescent(
-    evMem: List[bool], evJoin: bool, evLeft: int, evSpk: Set[int],
-    cJoin: bool, cLeave: bool, cSpk: Set[int],
-    gwState: str, pState: str, uIn: bool, gwKnown: bool
+    evLeft: int, evSpk: Set[int], cSpk: Set[int],
+    gwState: str, pState: str, uIn: bool, gwWant: bool
   ): bool =
-    evMem.length() == 0
-    and not(evJoin)
-    and evLeft == 0
+    evLeft == 0
     and evSpk.size() == 0
-    and not(cJoin)
-    and not(cLeave)
     and cSpk.size() == 0
     and (gwState == "none" or gwState == "inCall")
     and pState == "idle"
-    and uIn == gwKnown
+    and uIn == gwWant
 
   action init = all {
     userInCall' = false,
-    gwKnownInCall' = false,
+    gwWanted' = false,
     gwCallState' = "none",
     gwPlayQueue' = Set(),
-    evCallMembers' = List(),
-    evCallJoined' = false,
     evCallLeft' = 0,
     evCallSpoken' = Set(),
-    cmdJoinCall' = false,
-    cmdLeaveCall' = false,
     cmdCallSpeak' = Set(),
     agRoomId' = 0,
-    agWanted' = false,
     nextAgRoomId' = 1,
-    agJoined' = false,
     agSpokenWaiters' = Set(),
     playState' = "idle",
     playRoomGen' = 0,
@@ -84,20 +66,14 @@ module call_protocol {
   action userToggleCall(entering: bool): bool = all {
     userInCall != entering,
     userInCall' = entering,
-    gwKnownInCall' = gwKnownInCall,
+    gwWanted' = gwWanted,
     gwCallState' = gwCallState,
     gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
-    cmdJoinCall' = cmdJoinCall,
-    cmdLeaveCall' = cmdLeaveCall,
     cmdCallSpeak' = cmdCallSpeak,
     agRoomId' = agRoomId,
-    agWanted' = agWanted,
     nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
     agSpokenWaiters' = agSpokenWaiters,
     playState' = playState,
     playRoomGen' = playRoomGen,
@@ -106,96 +82,26 @@ module call_protocol {
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
 
-  // 2. Gateway watch_memberships observes a change and appends Event::CallMembers.
-  action gwEmitMembers: bool = all {
-    gwKnownInCall != userInCall,
-    evCallMembers.length() < 4,
-    gwKnownInCall' = userInCall,
-    evCallMembers' = evCallMembers.append(userInCall),
-    userInCall' = userInCall,
-    gwCallState' = gwCallState,
-    gwPlayQueue' = gwPlayQueue,
-    evCallJoined' = evCallJoined,
-    evCallLeft' = evCallLeft,
-    evCallSpoken' = evCallSpoken,
-    cmdJoinCall' = cmdJoinCall,
-    cmdLeaveCall' = cmdLeaveCall,
-    cmdCallSpeak' = cmdCallSpeak,
-    agRoomId' = agRoomId,
-    agWanted' = agWanted,
-    nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
-    agSpokenWaiters' = agSpokenWaiters,
-    playState' = playState,
-    playRoomGen' = playRoomGen,
-    playClipId' = playClipId,
-    nextClipId' = nextClipId,
-    playHungOnDeadRoom' = playHungOnDeadRoom,
-  }
-
-  // 3. Agent receives callMembers in FIFO order (updated src/call.ts).
-  action agRecvMembers: bool = all {
-    evCallMembers.length() > 0,
-    val hasMembers = evCallMembers.head()
-    all {
-      evCallMembers' = evCallMembers.tail(),
-      agWanted' = hasMembers,
-      if (hasMembers and agRoomId == 0) all {
-        agRoomId' = nextAgRoomId,
-        nextAgRoomId' = nextAgRoomId + 1,
-        agJoined' = false,
-        agSpokenWaiters' = Set(),
-        cmdJoinCall' = true,
-        cmdLeaveCall' = cmdLeaveCall,
-      } else if (not(hasMembers) and agRoomId != 0) all {
-        agRoomId' = agRoomId,
-        nextAgRoomId' = nextAgRoomId,
-        agJoined' = agJoined,
-        agSpokenWaiters' = agSpokenWaiters,
-        cmdJoinCall' = cmdJoinCall,
-        cmdLeaveCall' = true,
-      } else all {
-        agRoomId' = agRoomId,
-        nextAgRoomId' = nextAgRoomId,
-        agJoined' = agJoined,
-        agSpokenWaiters' = agSpokenWaiters,
-        cmdJoinCall' = cmdJoinCall,
-        cmdLeaveCall' = cmdLeaveCall,
-      },
+  // 2. Gateway watch_memberships observes a membership change and calls CallMachine::set_wanted.
+  action gwObserveMembers: bool = all {
+    gwWanted != userInCall,
+    gwWanted' = userInCall,
+    if (userInCall and gwCallState == "none") all {
+      gwCallState' = "joining",
+      gwPlayQueue' = gwPlayQueue,
+    } else if (not(userInCall) and gwCallState == "inCall") all {
+      gwCallState' = "leaving",
+      gwPlayQueue' = Set(),
+    } else all {
+      gwCallState' = gwCallState,
+      gwPlayQueue' = gwPlayQueue,
     },
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
-    gwCallState' = gwCallState,
-    gwPlayQueue' = gwPlayQueue,
-    evCallJoined' = evCallJoined,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
-    cmdCallSpeak' = cmdCallSpeak,
-    playState' = playState,
-    playRoomGen' = playRoomGen,
-    playClipId' = playClipId,
-    nextClipId' = nextClipId,
-    playHungOnDeadRoom' = playHungOnDeadRoom,
-  }
-
-  // 4. Gateway receives Command::JoinCall.
-  action gwRecvJoin: bool = all {
-    cmdJoinCall,
-    cmdJoinCall' = false,
-    gwCallState' = if (gwCallState == "none") "joining" else gwCallState,
-    userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
-    gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
-    evCallLeft' = evCallLeft,
-    evCallSpoken' = evCallSpoken,
-    cmdLeaveCall' = cmdLeaveCall,
     cmdCallSpeak' = cmdCallSpeak,
     agRoomId' = agRoomId,
-    agWanted' = agWanted,
     nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
     agSpokenWaiters' = agSpokenWaiters,
     playState' = playState,
     playRoomGen' = playRoomGen,
@@ -204,49 +110,17 @@ module call_protocol {
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
 
-  // 5. Gateway finishes joining and emits Event::CallJoined.
+  // 3. Gateway finishes joining and calls CallMachine::on_joined.
   action gwFinishJoin: bool = all {
     gwCallState == "joining",
-    gwCallState' = "inCall",
-    evCallJoined' = true,
+    gwCallState' = if (gwWanted) "inCall" else "leaving",
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
+    gwWanted' = gwWanted,
     gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
-    cmdJoinCall' = cmdJoinCall,
-    cmdLeaveCall' = cmdLeaveCall,
     cmdCallSpeak' = cmdCallSpeak,
     agRoomId' = agRoomId,
-    agWanted' = agWanted,
-    nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
-    agSpokenWaiters' = agSpokenWaiters,
-    playState' = playState,
-    playRoomGen' = playRoomGen,
-    playClipId' = playClipId,
-    nextClipId' = nextClipId,
-    playHungOnDeadRoom' = playHungOnDeadRoom,
-  }
-
-  // 6. Agent receives callJoined. If user already left (not agWanted), immediately send leaveCall.
-  action agRecvJoined: bool = all {
-    evCallJoined,
-    evCallJoined' = false,
-    agJoined' = if (agRoomId != 0) true else agJoined,
-    cmdLeaveCall' = if (not(agWanted)) true else cmdLeaveCall,
-    userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
-    gwCallState' = gwCallState,
-    gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
-    evCallLeft' = evCallLeft,
-    evCallSpoken' = evCallSpoken,
-    cmdJoinCall' = cmdJoinCall,
-    cmdCallSpeak' = cmdCallSpeak,
-    agRoomId' = agRoomId,
-    agWanted' = agWanted,
     nextAgRoomId' = nextAgRoomId,
     agSpokenWaiters' = agSpokenWaiters,
     playState' = playState,
@@ -256,25 +130,19 @@ module call_protocol {
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
 
-  // 7. Gateway receives Command::LeaveCall or sees ParticipantLeft.
-  action gwBeginLeave: bool = all {
-    (cmdLeaveCall and (gwCallState == "joining" or gwCallState == "inCall"))
-      or (gwCallState == "inCall" and not(userInCall)),
-    cmdLeaveCall' = if (cmdLeaveCall) false else cmdLeaveCall,
+  // 4. Gateway sees ParticipantLeft while inCall (everyone else left SFU).
+  action gwSpontaneousLeave: bool = all {
+    gwCallState == "inCall",
+    not(userInCall),
     gwCallState' = "leaving",
     gwPlayQueue' = Set(),
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
+    gwWanted' = gwWanted,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
-    cmdJoinCall' = cmdJoinCall,
     cmdCallSpeak' = cmdCallSpeak,
     agRoomId' = agRoomId,
-    agWanted' = agWanted,
     nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
     agSpokenWaiters' = agSpokenWaiters,
     playState' = playState,
     playRoomGen' = playRoomGen,
@@ -283,51 +151,18 @@ module call_protocol {
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
 
-  // 7b. Gateway receives LeaveCall when already not in call (ignored).
-  action gwIgnoreLeave: bool = all {
-    cmdLeaveCall,
-    gwCallState == "none" or gwCallState == "leaving",
-    cmdLeaveCall' = false,
-    userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
-    gwCallState' = gwCallState,
-    gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
-    evCallLeft' = evCallLeft,
-    evCallSpoken' = evCallSpoken,
-    cmdJoinCall' = cmdJoinCall,
-    cmdCallSpeak' = cmdCallSpeak,
-    agRoomId' = agRoomId,
-    agWanted' = agWanted,
-    nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
-    agSpokenWaiters' = agSpokenWaiters,
-    playState' = playState,
-    playRoomGen' = playRoomGen,
-    playClipId' = playClipId,
-    nextClipId' = nextClipId,
-    playHungOnDeadRoom' = playHungOnDeadRoom,
-  }
-
-  // 8. Gateway finishes leaving, removes from rooms map, emits Event::CallLeft.
+  // 5. Gateway finishes leaving, emits Event::CallLeft, and rejoins immediately if gwWanted.
   action gwFinishLeave: bool = all {
     gwCallState == "leaving",
-    gwCallState' = "none",
+    gwCallState' = if (gwWanted) "joining" else "none",
     evCallLeft' = evCallLeft + 1,
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
+    gwWanted' = gwWanted,
     gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
     evCallSpoken' = evCallSpoken,
-    cmdJoinCall' = cmdJoinCall,
-    cmdLeaveCall' = cmdLeaveCall,
     cmdCallSpeak' = cmdCallSpeak,
     agRoomId' = agRoomId,
-    agWanted' = agWanted,
     nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
     agSpokenWaiters' = agSpokenWaiters,
     playState' = playState,
     playRoomGen' = playRoomGen,
@@ -336,71 +171,54 @@ module call_protocol {
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
 
-  // 9. Agent receives callLeft (updated src/call.ts): deletes room, resolves waiters,
-  //    and immediately rejoins if agWanted is still true.
+  // 6. Agent receives callLeft: deletes room and resolves pending spoken waiters.
   action agRecvLeft: bool = all {
     evCallLeft > 0,
     evCallLeft' = evCallLeft - 1,
     val resolvesPlay = playState == "waitingSpoken" and playRoomGen == agRoomId and agSpokenWaiters.contains(playClipId)
     all {
-      if (agWanted) all {
-        agRoomId' = nextAgRoomId,
-        nextAgRoomId' = nextAgRoomId + 1,
-        cmdJoinCall' = true,
-      } else all {
-        agRoomId' = 0,
-        nextAgRoomId' = nextAgRoomId,
-        cmdJoinCall' = cmdJoinCall,
-      },
-      agJoined' = false,
+      agRoomId' = 0,
       agSpokenWaiters' = Set(),
       playState' = if (resolvesPlay) "idle" else playState,
       playRoomGen' = if (resolvesPlay) 0 else playRoomGen,
       playClipId' = if (resolvesPlay) 0 else playClipId,
     },
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
+    gwWanted' = gwWanted,
     gwCallState' = gwCallState,
     gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
     evCallSpoken' = evCallSpoken,
-    cmdLeaveCall' = cmdLeaveCall,
     cmdCallSpeak' = cmdCallSpeak,
-    agWanted' = agWanted,
+    nextAgRoomId' = nextAgRoomId,
     nextClipId' = nextClipId,
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
 
-  // 10a. Agent #play starts writing WAV file.
+  // 7a. Agent receives utterance (lazily creating RoomCall if needed) and #play starts writing WAV file.
   action agPlayStartWrite: bool = all {
     playState == "idle",
-    agRoomId != 0,
-    agJoined,
-    playState' = "writingFile",
-    playRoomGen' = agRoomId,
-    playClipId' = nextClipId,
-    nextClipId' = nextClipId + 1,
+    gwCallState == "inCall",
+    val gen = if (agRoomId == 0) nextAgRoomId else agRoomId
+    all {
+      agRoomId' = gen,
+      nextAgRoomId' = if (agRoomId == 0) nextAgRoomId + 1 else nextAgRoomId,
+      playState' = "writingFile",
+      playRoomGen' = gen,
+      playClipId' = nextClipId,
+      nextClipId' = nextClipId + 1,
+    },
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
+    gwWanted' = gwWanted,
     gwCallState' = gwCallState,
     gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
-    cmdJoinCall' = cmdJoinCall,
-    cmdLeaveCall' = cmdLeaveCall,
     cmdCallSpeak' = cmdCallSpeak,
-    agRoomId' = agRoomId,
-    agWanted' = agWanted,
-    nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
     agSpokenWaiters' = agSpokenWaiters,
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
 
-  // 10b. Agent #play finishes writeFile: re-checks `this.#rooms.get(roomId) === room` before registering waiter.
+  // 7b. Agent #play finishes writeFile: re-checks `this.#rooms.get(roomId) === room` before registering waiter.
   action agPlaySendSpeak: bool = all {
     playState == "writingFile",
     if (agRoomId != playRoomGen) all {
@@ -419,23 +237,17 @@ module call_protocol {
       playHungOnDeadRoom' = playHungOnDeadRoom,
     },
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
+    gwWanted' = gwWanted,
     gwCallState' = gwCallState,
     gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
-    cmdJoinCall' = cmdJoinCall,
-    cmdLeaveCall' = cmdLeaveCall,
     agRoomId' = agRoomId,
-    agWanted' = agWanted,
     nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
     nextClipId' = nextClipId,
   }
 
-  // 11. Gateway receives Command::CallSpeak.
+  // 8. Gateway receives Command::CallSpeak.
   action gwRecvSpeak(cid: int): bool = all {
     cmdCallSpeak.contains(cid),
     cmdCallSpeak' = cmdCallSpeak.exclude(Set(cid)),
@@ -447,17 +259,11 @@ module call_protocol {
       evCallSpoken' = evCallSpoken.union(Set(cid)),
     },
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
+    gwWanted' = gwWanted,
     gwCallState' = gwCallState,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
     evCallLeft' = evCallLeft,
-    cmdJoinCall' = cmdJoinCall,
-    cmdLeaveCall' = cmdLeaveCall,
     agRoomId' = agRoomId,
-    agWanted' = agWanted,
     nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
     agSpokenWaiters' = agSpokenWaiters,
     playState' = playState,
     playRoomGen' = playRoomGen,
@@ -466,24 +272,18 @@ module call_protocol {
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
 
-  // 12. Gateway finishes playing clip and emits CallSpoken.
+  // 9. Gateway finishes playing clip and emits CallSpoken.
   action gwFinishPlay(cid: int): bool = all {
     gwPlayQueue.contains(cid),
     gwPlayQueue' = gwPlayQueue.exclude(Set(cid)),
     evCallSpoken' = evCallSpoken.union(Set(cid)),
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
+    gwWanted' = gwWanted,
     gwCallState' = gwCallState,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
     evCallLeft' = evCallLeft,
-    cmdJoinCall' = cmdJoinCall,
-    cmdLeaveCall' = cmdLeaveCall,
     cmdCallSpeak' = cmdCallSpeak,
     agRoomId' = agRoomId,
-    agWanted' = agWanted,
     nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
     agSpokenWaiters' = agSpokenWaiters,
     playState' = playState,
     playRoomGen' = playRoomGen,
@@ -492,7 +292,7 @@ module call_protocol {
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
 
-  // 13. Agent receives callSpoken.
+  // 10. Agent receives callSpoken.
   action agRecvSpoken(cid: int): bool = all {
     evCallSpoken.contains(cid),
     evCallSpoken' = evCallSpoken.exclude(Set(cid)),
@@ -504,19 +304,13 @@ module call_protocol {
       playClipId' = if (matched) 0 else playClipId,
     },
     userInCall' = userInCall,
-    gwKnownInCall' = gwKnownInCall,
+    gwWanted' = gwWanted,
     gwCallState' = gwCallState,
     gwPlayQueue' = gwPlayQueue,
-    evCallMembers' = evCallMembers,
-    evCallJoined' = evCallJoined,
     evCallLeft' = evCallLeft,
-    cmdJoinCall' = cmdJoinCall,
-    cmdLeaveCall' = cmdLeaveCall,
     cmdCallSpeak' = cmdCallSpeak,
     agRoomId' = agRoomId,
-    agWanted' = agWanted,
     nextAgRoomId' = nextAgRoomId,
-    agJoined' = agJoined,
     nextClipId' = nextClipId,
     playHungOnDeadRoom' = playHungOnDeadRoom,
   }
@@ -524,13 +318,9 @@ module call_protocol {
   action step = any {
     userToggleCall(true),
     userToggleCall(false),
-    gwEmitMembers,
-    agRecvMembers,
-    gwRecvJoin,
+    gwObserveMembers,
     gwFinishJoin,
-    agRecvJoined,
-    gwBeginLeave,
-    gwIgnoreLeave,
+    gwSpontaneousLeave,
     gwFinishLeave,
     agRecvLeft,
     agPlayStartWrite,
@@ -549,9 +339,8 @@ module call_protocol {
 
   val invMembershipConverges: bool =
     isQuiescent(
-      evCallMembers, evCallJoined, evCallLeft, evCallSpoken,
-      cmdJoinCall, cmdLeaveCall, cmdCallSpeak,
-      gwCallState, playState, userInCall, gwKnownInCall
+      evCallLeft, evCallSpoken, cmdCallSpeak,
+      gwCallState, playState, userInCall, gwWanted
     ) implies ((gwCallState == "inCall") == userInCall)
 
   val allInvariants: bool = invPlayNeverHangs and invMembershipConverges

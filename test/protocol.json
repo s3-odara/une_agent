@@ -82,17 +82,6 @@
 			"key": "✅"
 		},
 		{
-			"type": "callMembers",
-			"roomId": "!r:example.org",
-			"userIds": [
-				"@me:example.org"
-			]
-		},
-		{
-			"type": "callJoined",
-			"roomId": "!r:example.org"
-		},
-		{
 			"type": "callLeft",
 			"roomId": "!r:example.org",
 			"reason": "no LiveKit focus"
@@ -183,21 +172,6 @@
 			"txnId": "t",
 			"eventId": "$p",
 			"key": "❌"
-		},
-		{
-			"type": "joinCall",
-			"roomId": "!r:example.org",
-			"vad": {
-				"threshold": 0.5,
-				"startMs": 200,
-				"endSilenceMs": 700,
-				"maxMs": 20000,
-				"preRollMs": 250
-			}
-		},
-		{
-			"type": "leaveCall",
-			"roomId": "!r:example.org"
 		},
 		{
 			"type": "callSpeak",
