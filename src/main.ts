@@ -37,7 +37,7 @@ import { WhisperServer } from "./stt.ts";
 import { memoryFingerprint, tidyMemory } from "./tidy.ts";
 import { Voicevox } from "./tts.ts";
 import { jmaForecast } from "./weather.ts";
-import { createRainExtension, createWeatherExtension } from "./weather-tools.ts";
+import { createRainExtension, createSnowExtension, createWeatherExtension } from "./weather-tools.ts";
 import { createOutsideExtension } from "./untrusted.ts";
 import { createWebExtension } from "./web-tools.ts";
 
@@ -117,6 +117,7 @@ const extensions = [
 	...(calendars === undefined ? [] : [createCalendarExtension({ calendars, db, approvals })]),
 	createWeatherExtension(weather),
 	createRainExtension(),
+	createSnowExtension(),
 	createGeocodeExtension(join(config.dataDir, "geocode.sqlite")),
 	createProactiveExtension({
 		db,

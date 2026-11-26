@@ -3,6 +3,7 @@ import { arr, nullable, num, obj, oneOf, opt, str } from "@earendil-works/pi-sch
 import { formatThreeHourForecast } from "./weather-details.ts";
 import { formatWeatherDistribution, jmaWeatherDistribution, jmaWeatherDistributionGrid, WEATHER_GRID_MAX_METERS } from "./weather-distribution.ts";
 import { formatRain, jmaRain, jmaRainGrid, RAIN_HORIZONS } from "./weather-rain.ts";
+import { formatSnow, jmaSnow, jmaSnowGrid, SNOW_GRID_MAX_METERS, SNOW_MAX_PAST_HOURS } from "./weather-snow.ts";
 import { FORECAST_PERIODS, formatForecast, type jmaForecast } from "./weather.ts";
 
 export function createWeatherExtension(
@@ -128,6 +129,72 @@ export function createRainExtension(rain = jmaRain(), rainGrid = jmaRainGrid()) 
 			structuredOutputSchema: rainGridSchema,
 			replay: "safe",
 			execute: async (query) => ({ structuredOutput: await rainGrid(query), output: [] }),
+		})],
+	});
+}
+
+const snowLayerSchema = obj({
+	status: oneOf(["available", "unavailable"]),
+	rows: opt(cellRowsSchema),
+});
+const snowGridSchema = obj({
+	bounds: boundsSchema,
+	longitudeEdges: arr(num()),
+	latitudeEdges: arr(num()),
+	unit: oneOf(["cm"]),
+	legends: obj({
+		depth: arr(str()),
+		snowfall3h: arr(str()),
+		snowfall6h: arr(str()),
+		snowfall12h: arr(str()),
+		snowfall24h: arr(str()),
+		snowfall48h: arr(str()),
+		snowfall72h: arr(str()),
+	}),
+	frames: arr(obj({
+		baseAt: str(),
+		validAt: str(),
+		layers: obj({
+			depth: opt(snowLayerSchema),
+			snowfall3h: opt(snowLayerSchema),
+			snowfall6h: opt(snowLayerSchema),
+			snowfall12h: opt(snowLayerSchema),
+			snowfall24h: opt(snowLayerSchema),
+			snowfall48h: opt(snowLayerSchema),
+			snowfall72h: opt(snowLayerSchema),
+		}),
+	})),
+});
+const snowParameters = {
+	...coordinateParameters,
+	pastHours: opt(num({ minimum: 0, maximum: SNOW_MAX_PAST_HOURS, description: "最新実況より前にさかのぼる時間数（0〜24の整数、省略時は0で最新実況〜6時間先まで）。" })),
+};
+
+export function createSnowExtension(snow = jmaSnow(), snowGrid = jmaSnowGrid()) {
+	return defineExtension({
+		name: "weather-snow",
+		tools: [defineTool({
+			name: "weather_snow",
+			description: "指定座標を含む約5 kmメッシュについて、気象庁「今後の雪」で積雪の深さと3・6・12・24・48・72時間降雪量（最新実況〜6時間先、pastHours指定時は過去実況も）を調べる。地名は geocode で座標に変換する。周辺の格子をまとめて見るには codemode の weather_snow_grid を使う。",
+			parameters: obj(snowParameters),
+			replay: "safe",
+			execute: async (query) => ({ output: [{ type: "text" as const, text: formatSnow(await snow(query), query) }] }),
+		}), defineTool({
+			name: "weather_snow_grid",
+			description: [
+				"指定範囲の気象庁「今後の雪」分布を返す。約5 kmメッシュで1時間ごとの積雪の深さと3・6・12・24・48・72時間降雪量が返る。データが大きくなることがあるので必要に応じてcodemode 内で時刻・地点・値等を絞ってから出力する。",
+				"位置: latitudeEdges・longitudeEdges で座標を格子に対応づける。rows は北→南、各行は西→東。",
+				"時刻（日本時間）: validAt 時点の積雪深と、validAt までの各時間累積降雪量。validAt === baseAt が実況。",
+				"値: 各要素は legends の添字（cmの階級）。0 は積雪なし・降雪なし、null は格子の欠測・対象外・判定不能、unavailable は要素の取得・判定不能（rows なし）。未掲載の要素はキーなし。",
+			].join("\n"),
+			parameters: obj({
+				...snowParameters,
+				sizeMeters: num({ minimum: 1, maximum: SNOW_GRID_MAX_METERS, description: "指定座標を中心とする正方形の一辺（1〜50000 mの整数）。" }),
+			}),
+			callers: ["tools"],
+			structuredOutputSchema: snowGridSchema,
+			replay: "safe",
+			execute: async (query) => ({ structuredOutput: await snowGrid(query), output: [] }),
 		})],
 	});
 }

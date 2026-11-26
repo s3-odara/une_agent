@@ -124,6 +124,8 @@ const READS: ReadonlySet<string> = new Set([
 	"weather_forecast_grid",
 	"weather_rain",
 	"weather_rain_grid",
+	"weather_snow",
+	"weather_snow_grid",
 	"geocode",
 	"web_extract",
 	"timer_list",
