@@ -89,14 +89,24 @@ export function lookupPlace(path: string, query: string): Lookup {
 			}
 			return null;
 		};
-		const keys = [key];
-		for (let i = 0; i < keys.length && keys.length < KEYS_MAX; i++) {
-			const k = keys[i]!;
-			const withoutStation = k.endsWith("駅") ? k.slice(0, -1) : null;
-			for (const stripped of [stripPrefecture(k), stripMunicipality(k), withoutStation]) {
-				if (stripped && !keys.includes(stripped)) keys.push(stripped);
+		const primaryKeys = [key, ...(key.endsWith("駅") && key.length > 1 ? [key.slice(0, -1)] : [])];
+		const strippedKeys = (): string[] => {
+			const seen = new Set(primaryKeys);
+			const queue = [...primaryKeys];
+			const fallback: string[] = [];
+			for (let i = 0; i < queue.length && queue.length < KEYS_MAX; i++) {
+				const k = queue[i]!;
+				const withoutStation = k.endsWith("駅") ? k.slice(0, -1) : null;
+				for (const stripped of [stripPrefecture(k), stripMunicipality(k), withoutStation]) {
+					if (stripped && !seen.has(stripped)) {
+						seen.add(stripped);
+						queue.push(stripped);
+						fallback.push(stripped);
+					}
+				}
 			}
-		}
+			return fallback;
+		};
 
 		function* addressItems(k: string): Generator<Item> {
 			const address = addressKey(k).replace(/[-−‐―]/gu, "-");
@@ -126,7 +136,7 @@ export function lookupPlace(path: string, query: string): Lookup {
 		}
 
 		// 完全一致で当て嵌るものがあっても前方一致検索をする。遅延評価で、上限に当たるまでは。
-		function* items(): Generator<Item> {
+		function* matchKeys(keys: readonly string[]): Generator<Item> {
 			for (const k of keys) {
 				const exact = all(lookup, k, null, null);
 				if (exact.length) {
@@ -140,6 +150,16 @@ export function lookupPlace(path: string, query: string): Lookup {
 				// 入力から始まる名前が索引から引ける（地名に U+FFFF は現れない）。
 				for (const row of all(prefix, k, `${k}\uffff`)) yield { row };
 			}
+		}
+
+		// 元のクエリで候補が見つかったときは、都道府県・市区町村を外したフォールバックで別地域の候補を混ぜない。
+		function* items(): Generator<Item> {
+			let found = false;
+			for (const item of matchKeys(primaryKeys)) {
+				found = true;
+				yield item;
+			}
+			if (!found) yield* matchKeys(strippedKeys());
 		}
 
 		const shown: Candidate[] = [];

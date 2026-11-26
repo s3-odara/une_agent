@@ -51,8 +51,8 @@ test("geocode returns town coordinates for full and abbreviated addresses", (t) 
 	t.after(() => rmSync(dir, { force: true, recursive: true }));
 	const path = fixture(dir);
 	for (const [query, rows] of [
-		["札幌市中央区大通西二丁目3番5号", [[141.353, "3番5号"], [142.36, "3番5号"]]],
-		["札幌市中央区大通西２－３－５", [[141.353, "3-5"], [142.36, "3-5"]]],
+		["札幌市中央区大通西二丁目3番5号", [[141.353, "3番5号"]]],
+		["札幌市中央区大通西２－３－５", [[141.353, "3-5"]]],
 		["札幌市中央区架空町12-3番地", [[141.36, "12-3番地"]]],
 		["札幌市中央区架空町2-4-5", [[141.362, "4-5"]]],
 	] as const) {
@@ -105,7 +105,6 @@ test("geocode distinguishes offices, approximates street addresses, and returns 
 	const address = lookupPlace(path, "札幌市中央区 大通西２－１");
 	assert.deepEqual(address.candidates.map(({ name, lon, kind }) => ({ name, lon, kind })), [
 		{ name: "北海道札幌市中央区大通西二丁目", lon: 141.353, kind: "大字・町丁目の代表点" },
-		{ name: "北海道旭川市大通西二丁目", lon: 142.36, kind: "大字・町丁目の代表点" },
 	]);
 	assert.equal(address.candidates[0]?.unmatched, "1");
 	assert.equal(lookupPlace(path, "架空通り").candidates.length, 0);
