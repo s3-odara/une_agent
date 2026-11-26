@@ -2,17 +2,17 @@
 //   gateway/src/call.rs (CallMachine, Calls, Player, watch_memberships) <-> src/call.ts (Calls)
 //
 // Models a single room with:
-//   - User joining/leaving the Matrix room call (each join writes a fresh membership generation)
+//   - Multiple allowed users joining/leaving the Matrix room call (each join writes a fresh generation)
 //   - Async IPC channels between Rust (gateway) and Node (Calls): callLeft, callSpeak, callSpoken
 //   - Utterance playback: writeFile -> callSpeak -> callSpoken
 //   - Interruption via callLeft
 module call_protocol {
   // --- World / Matrix room state ---
-  var userCallGen: int          // 0 = no allowed user in call, >0 = generation of current membership
+  var userCallGens: Set[int]    // generations of allowed users currently live in the call
   var nextUserGen: int
 
   // --- Gateway state (gateway/src/call.rs) ---
-  var gwMembership: int         // CallMachine.membership (0 = None, >0 = Some(gen))
+  var gwMembership: int         // CallMachine.latest_ts (0 = None, >0 = Some(ts))
   var gwCallState: str          // "none" | "joining" | "inCall" | "leaving"
   var gwRejoin: bool            // Phase::Leaving { rejoin }
   var gwPlayQueue: Set[int]     // Clip IDs queued in Player
@@ -32,19 +32,22 @@ module call_protocol {
   var playClipId: int
   var nextClipId: int
 
+  pure def latestGen(gens: Set[int]): int =
+    gens.fold(0, (acc, g) => if (g > acc) g else acc)
+
   pure def isQuiescent(
     evLeft: int, evSpk: Set[int], cSpk: Set[int],
-    gwState: str, pState: str, uGen: int, gwMem: int
+    gwState: str, pState: str, uGens: Set[int], gwMem: int
   ): bool =
     evLeft == 0
     and evSpk.size() == 0
     and cSpk.size() == 0
     and (gwState == "none" or gwState == "inCall")
     and pState == "idle"
-    and uGen == gwMem
+    and latestGen(uGens) == gwMem
 
   action init = all {
-    userCallGen' = 0,
+    userCallGens' = Set(),
     nextUserGen' = 1,
     gwMembership' = 0,
     gwCallState' = "none",
@@ -62,11 +65,11 @@ module call_protocol {
     nextClipId' = 1,
   }
 
-  // 1. User enters (fresh generation) or leaves (0) the Matrix call.
-  action userToggleCall(entering: bool): bool = all {
-    (userCallGen > 0) != entering,
-    userCallGen' = if (entering) nextUserGen else 0,
-    nextUserGen' = if (entering) nextUserGen + 1 else nextUserGen,
+  // 1a. An allowed user enters the Matrix call with a fresh generation (up to 2 concurrent users).
+  action userEnterCall: bool = all {
+    userCallGens.size() < 2,
+    userCallGens' = userCallGens.union(Set(nextUserGen)),
+    nextUserGen' = nextUserGen + 1,
     gwMembership' = gwMembership,
     gwCallState' = gwCallState,
     gwRejoin' = gwRejoin,
@@ -83,23 +86,49 @@ module call_protocol {
     nextClipId' = nextClipId,
   }
 
-  // 2. Gateway watch_memberships observes a membership change and calls CallMachine::set_membership.
+  // 1b. One of the allowed users leaves the Matrix call.
+  action userLeaveCall(gen: int): bool = all {
+    userCallGens.contains(gen),
+    userCallGens' = userCallGens.exclude(Set(gen)),
+    nextUserGen' = nextUserGen,
+    gwMembership' = gwMembership,
+    gwCallState' = gwCallState,
+    gwRejoin' = gwRejoin,
+    gwPlayQueue' = gwPlayQueue,
+    evCallLeft' = evCallLeft,
+    evCallSpoken' = evCallSpoken,
+    cmdCallSpeak' = cmdCallSpeak,
+    agRoomId' = agRoomId,
+    nextAgRoomId' = nextAgRoomId,
+    agSpokenWaiters' = agSpokenWaiters,
+    playState' = playState,
+    playRoomGen' = playRoomGen,
+    playClipId' = playClipId,
+    nextClipId' = nextClipId,
+  }
+
+  // 2. Gateway watch_memberships observes latest_ts and calls CallMachine::set_membership.
   action gwObserveMembers: bool = all {
-    gwMembership != userCallGen,
-    gwMembership' = userCallGen,
-    val wanted = userCallGen > 0
+    val obs = latestGen(userCallGens)
+    val isNewer = obs > gwMembership
     all {
-      if (wanted and gwCallState == "none") all {
+      obs != gwMembership,
+      gwMembership' = obs,
+      if (gwCallState == "none" and isNewer) all {
         gwCallState' = "joining",
         gwRejoin' = false,
         gwPlayQueue' = gwPlayQueue,
-      } else if (not(wanted) and gwCallState == "inCall") all {
+      } else if (gwCallState == "inCall" and obs == 0) all {
         gwCallState' = "leaving",
         gwRejoin' = false,
         gwPlayQueue' = Set(),
-      } else if (gwCallState == "leaving") all {
+      } else if (gwCallState == "leaving" and obs == 0) all {
         gwCallState' = "leaving",
-        gwRejoin' = wanted,
+        gwRejoin' = false,
+        gwPlayQueue' = gwPlayQueue,
+      } else if (gwCallState == "leaving" and isNewer) all {
+        gwCallState' = "leaving",
+        gwRejoin' = true,
         gwPlayQueue' = gwPlayQueue,
       } else all {
         gwCallState' = gwCallState,
@@ -107,7 +136,7 @@ module call_protocol {
         gwPlayQueue' = gwPlayQueue,
       },
     },
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
@@ -126,7 +155,7 @@ module call_protocol {
     gwCallState == "joining",
     gwCallState' = if (gwMembership > 0) "inCall" else "leaving",
     gwRejoin' = false,
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembership' = gwMembership,
     gwPlayQueue' = gwPlayQueue,
@@ -145,11 +174,11 @@ module call_protocol {
   // 4. Gateway sees ParticipantLeft while inCall (everyone else left SFU).
   action gwSpontaneousLeave: bool = all {
     gwCallState == "inCall",
-    userCallGen == 0,
+    userCallGens.size() == 0,
     gwCallState' = "leaving",
     gwRejoin' = false,
     gwPlayQueue' = Set(),
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembership' = gwMembership,
     evCallLeft' = evCallLeft,
@@ -170,7 +199,7 @@ module call_protocol {
     gwCallState' = if (gwRejoin) "joining" else "none",
     gwRejoin' = false,
     evCallLeft' = evCallLeft + 1,
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembership' = gwMembership,
     gwPlayQueue' = gwPlayQueue,
@@ -197,7 +226,7 @@ module call_protocol {
       playRoomGen' = if (resolvesPlay) 0 else playRoomGen,
       playClipId' = if (resolvesPlay) 0 else playClipId,
     },
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembership' = gwMembership,
     gwCallState' = gwCallState,
@@ -222,7 +251,7 @@ module call_protocol {
       playClipId' = nextClipId,
       nextClipId' = nextClipId + 1,
     },
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembership' = gwMembership,
     gwCallState' = gwCallState,
@@ -250,7 +279,7 @@ module call_protocol {
       agSpokenWaiters' = agSpokenWaiters.union(Set(playClipId)),
       cmdCallSpeak' = cmdCallSpeak.union(Set(playClipId)),
     },
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembership' = gwMembership,
     gwCallState' = gwCallState,
@@ -274,7 +303,7 @@ module call_protocol {
       gwPlayQueue' = gwPlayQueue,
       evCallSpoken' = evCallSpoken.union(Set(cid)),
     },
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembership' = gwMembership,
     gwCallState' = gwCallState,
@@ -294,7 +323,7 @@ module call_protocol {
     gwPlayQueue.contains(cid),
     gwPlayQueue' = gwPlayQueue.exclude(Set(cid)),
     evCallSpoken' = evCallSpoken.union(Set(cid)),
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembership' = gwMembership,
     gwCallState' = gwCallState,
@@ -321,7 +350,7 @@ module call_protocol {
       playRoomGen' = if (matched) 0 else playRoomGen,
       playClipId' = if (matched) 0 else playClipId,
     },
-    userCallGen' = userCallGen,
+    userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembership' = gwMembership,
     gwCallState' = gwCallState,
@@ -335,8 +364,9 @@ module call_protocol {
   }
 
   action step = any {
-    userToggleCall(true),
-    userToggleCall(false),
+    userEnterCall,
+    nondet gen = oneOf(userCallGens)
+    userLeaveCall(gen),
     gwObserveMembers,
     gwFinishJoin,
     gwSpontaneousLeave,
@@ -362,14 +392,14 @@ module call_protocol {
     ))
     and (isQuiescent(
       evCallLeft, evCallSpoken, cmdCallSpeak,
-      gwCallState, playState, userCallGen, gwMembership
+      gwCallState, playState, userCallGens, gwMembership
     ) implies agSpokenWaiters.size() == 0)
 
   val invMembershipConverges: bool =
     isQuiescent(
       evCallLeft, evCallSpoken, cmdCallSpeak,
-      gwCallState, playState, userCallGen, gwMembership
-    ) implies ((gwCallState == "inCall") == (userCallGen > 0))
+      gwCallState, playState, userCallGens, gwMembership
+    ) implies ((gwCallState == "inCall") == (latestGen(userCallGens) > 0))
 
   val allInvariants: bool = invPlayNeverHangs and invMembershipConverges
 }

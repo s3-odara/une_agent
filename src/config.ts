@@ -121,14 +121,14 @@ const ConfigSchema = obj({
 				obj({
 					maxChars: count(300),
 					chime: flag(true),
-					// Keep defaults in step with `VadConfig::default` in `gateway/src/audio.rs`.
-					vad: section(
+					// Defaults live in `VadConfig::default` in `gateway/src/audio.rs`; TS validates ranges only.
+					vad: opt(
 						obj({
-							threshold: num({ exclusiveMinimum: 0, exclusiveMaximum: 1, default: 0.5 }),
-							startMs: count(208),
-							endSilenceMs: count(1400),
-							maxMs: count(30_000),
-							preRollMs: amount(300),
+							threshold: opt(num({ exclusiveMinimum: 0, exclusiveMaximum: 1 })),
+							startMs: opt(int({ minimum: 1 })),
+							endSilenceMs: opt(int({ minimum: 1 })),
+							maxMs: opt(int({ minimum: 1 })),
+							preRollMs: opt(int({ minimum: 0 })),
 						}),
 					),
 				}),

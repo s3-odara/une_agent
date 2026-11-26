@@ -34,7 +34,7 @@ struct Shared {
     allowed: Arc<Vec<OwnedUserId>>,
     media_dir: Arc<PathBuf>,
     typing: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
-    calls: Calls,
+    calls: Option<Calls>,
 }
 
 impl Shared {
@@ -60,8 +60,9 @@ pub async fn run(config: &Config) -> Result<()> {
     let state = State::load(&config.data_dir().join("gateway-state.json"))?;
     let out = spawn_writer();
     let allowed = Arc::new(config.matrix.allowed_users.clone());
+    let calls = config.call_vad().map(|vad| Calls::new(out.clone(), allowed.clone(), config.data_dir().join("voice").join("call"), vad));
     let shared = Shared {
-        calls: Calls::new(out.clone(), allowed.clone(), config.data_dir().join("voice").join("call")),
+        calls,
         out,
         state: Arc::new(Mutex::new(state)),
         allowed,
@@ -84,8 +85,8 @@ pub async fn run(config: &Config) -> Result<()> {
     client.add_event_handler(on_undecryptable);
     client.add_event_handler(on_invite);
     client.add_event_handler(on_reaction);
-    if let Some(vad) = config.call_vad() {
-        watch_memberships(&client, shared.calls.clone(), vad);
+    if let Some(calls) = &shared.calls {
+        watch_memberships(&client, calls.clone());
     }
 
     let commands = tokio::spawn(read_commands(client.clone(), shared.clone()));
@@ -330,7 +331,11 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 respond(&shared, request_id, async move { react(&client, &room_id, txn_id, &event_id, key).await });
             }
             Command::CallSpeak { room_id, id, path } => {
-                if let Err(error) = shared.calls.speak(&room_id, id.clone(), path) {
+                let result = match &shared.calls {
+                    Some(calls) => calls.speak(&room_id, id.clone(), path),
+                    None => Err(anyhow::anyhow!("calls are not enabled")),
+                };
+                if let Err(error) = result {
                     shared.emit(Event::CallSpoken { room_id, id });
                     warn!("{error:#}");
                 }
