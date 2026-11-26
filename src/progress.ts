@@ -18,7 +18,6 @@ const MAX_ERROR_CHARS = 100;
 /** Thinking is a hint of where the run stands, not the whole train of thought; full text would eat the notice's 3000 chars. */
 const MAX_THINKING_CHARS = 200;
 
-/** A call a script made; `error` only when it failed. */
 type Nested = { readonly name: string; readonly args: string; readonly status: string; readonly error?: string };
 type Result = { readonly isError: boolean; readonly text: string; readonly nested: readonly Nested[] };
 type Results = ReadonlyMap<string, Result>;

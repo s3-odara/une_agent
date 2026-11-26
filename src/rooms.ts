@@ -76,7 +76,6 @@ export class Bridge {
 	readonly #retryDelays: readonly number[];
 	readonly #sendTimeoutMs: number;
 	readonly #log: (message: string) => void;
-	/** What the homeserver says it takes, at its ready; undefined until it does. */
 	#uploadLimit: number | undefined;
 	/** Per room, the tail of its admissions, so two messages never race to create the room's conversation. */
 	readonly #admissions = new Map<string, Promise<void>>();
@@ -315,7 +314,6 @@ export class Bridge {
 		});
 	}
 
-	/** Whether the conversation is at work, and its newest entry: what an aside starts from and is checked against. */
 	async #head(conversation: Conversation) {
 		const { harness, context } = this.#options;
 		const busy = (await harness.snapshot(LiveDoc, conversation.id, context))?.run !== undefined;
@@ -323,7 +321,6 @@ export class Bridge {
 		return { busy, latest };
 	}
 
-	/** A message of the bot's own accord, which notifies as an answer does. The same ID again sends nothing new. */
 	say(roomId: string, txnId: string, body: string): Promise<string> {
 		return this.#retrying(`the message ${txnId}`, () => this.#send(roomId, txnId, body, false));
 	}
@@ -356,17 +353,14 @@ export class Bridge {
 		return result;
 	}
 
-	/** The same ID again sends nothing new. */
 	post(roomId: string, txnId: string, body: string): Promise<string> {
 		return this.#send(roomId, txnId, body, true);
 	}
 
-	/** The largest upload the homeserver accepts, when it says. */
 	uploadLimit(): number | undefined {
 		return this.#uploadLimit;
 	}
 
-	/** The same ID again sends nothing new; a retry uploads again and still ends in one event. */
 	sendAttachment(
 		roomId: string,
 		txnId: string,
@@ -386,7 +380,6 @@ export class Bridge {
 		await this.#request({ type: "react", requestId: txnId, roomId, txnId, eventId, key });
 	}
 
-	/** The same key again sends nothing new. */
 	async notice(roomId: string, key: string, body: string): Promise<void> {
 		await this.#send(roomId, `notice:${key}`, body, true);
 	}

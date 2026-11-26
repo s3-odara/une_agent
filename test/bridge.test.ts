@@ -8,7 +8,7 @@ import { obj } from "@earendil-works/pi-schema";
 import { CodeRequests } from "../src/codes.ts";
 import type { MessageHandler } from "../src/rooms.ts";
 import { agentEnv } from "./env.ts";
-import { samplePdf } from "./pdf-fixture.ts";
+import { samplePdf, textPdf } from "./pdf-fixture.ts";
 import { answer, call, everything, inputImages, instructionsOf, lastInput, message, type Request } from "./fakes.ts";
 
 const ROOM = "!a:example.org";
@@ -117,12 +117,13 @@ withPoppler("a long PDF is announced by path without inlining its text", async (
 	env.faux.setResponses([answer("確認します", requests)]);
 	const bridge = env.bridge();
 	const path = join(env.dir, "long.pdf");
-	writeFileSync(path, samplePdf("LongText ".repeat(350)));
+	writeFileSync(path, textPdf(Array.from({ length: 140 }, (_, i) => `LongText line ${i} ${"x".repeat(30)}`)));
 	env.link.emit({ type: "message", roomId: ROOM, eventId: "$d2", body: "long.pdf", ts: 0, attachment: { path, mimeType: "application/pdf" } });
 	await bridge.idle();
 
 	const input = lastInput(requests[0]!);
 	assert.match(input, /PDF添付\] long\.pdf/);
+	assert.match(input, /全 1 ページ/);
 	assert.match(input, /保存先: /);
 	assert.match(input, /read_pdf/);
 	assert.doesNotMatch(input, /LongText/);

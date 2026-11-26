@@ -60,13 +60,10 @@ export type SchedulerOptions = {
 	readonly db: HostDb;
 	readonly calendars?: Calendars;
 	readonly weather?: WeatherSource;
-	/** Starts weighing the open wakes, those of this tick and those left open before, such as one whose room was busy. */
 	readonly weigh?: () => void;
-	/** Runs a user-scheduled timer directly in its room without aside restrictions. */
 	readonly runTimer?: (roomId: string, id: string, content: string) => Promise<void>;
 	readonly notice: (roomId: string, key: string, body: string) => Promise<void>;
 	readonly tidy?: { fingerprint(): string; run(date: string): Promise<TidyChange[]> };
-	/** Directory of received attachment files; entries older than the TTL are removed on ticks. */
 	readonly filesDir?: string;
 	readonly filesTtlMs?: number;
 	readonly now?: () => number;

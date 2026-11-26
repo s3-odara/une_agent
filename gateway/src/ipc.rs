@@ -75,19 +75,16 @@ pub struct VoiceInfo {
     pub waveform: Vec<f32>,
 }
 
-/// The file of a `sendAttachment` command; what the receiver's client makes of it follows the MIME type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct File {
     pub path: String,
     pub name: String,
     pub mime_type: String,
-    /// Of an image, when it is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
-    /// Sent as a voice message, which must be an Ogg Opus file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<VoiceInfo>,
 }

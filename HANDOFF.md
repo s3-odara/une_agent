@@ -55,7 +55,7 @@
 ### 自分から話しかける（Proactive / Timer）
 
 - aside 中は読み取り系ツールのみ `beforeTool` フックで許可する（ホワイトリスト方式。あとから足したツールや MCP を既定で拒むため）。`browser_screenshot` の `share` も weighing 中は拒否する。
-- aside 返答の最終行が「実行継続」だけのとき、採用後に通常実行として `Bridge.continueRun` に引き継ぐ（pi-durable の continue は answer 終わりから始まらないため）。
+- `timer_add` は aside を使わず通常実行（`Bridge.runTimer`）として動かす（aside 内で書き込みを許すと、ユーザー発言との競合で aside が破棄・再実行されたときに副作用が二重になるため）。
 - **採らなかった案**:
   - `followup_add`: 会話中にモデルが気づかないと登録されないため、定時確認で会話を読み返す形にした。
   - systemd-timer: 常駐エージェントに外から起こしてもらう利点が無い。

@@ -225,7 +225,6 @@ async fn download_media(client: &Client, dir: &Path, event_id: &str, content: &i
     Ok(Media { path: path.to_string_lossy().into_owned(), mime_type: mime.essence_str().to_owned(), voice })
 }
 
-/// What the file is named: an extension the mimetype suggests, or `bin` for a kindless one.
 fn extension(mime: &mime::Mime) -> String {
     mime_guess::get_mime_extensions_str(mime.essence_str())
         .and_then(|extensions| extensions.first().copied())
@@ -378,7 +377,6 @@ async fn react(client: &Client, room_id: &str, txn_id: String, event_id: &str, k
     Ok(result.response.event_id.to_string())
 }
 
-/// Any kind of file; what the receiver's client makes of it follows the MIME type and the `voice` flag.
 async fn send_attachment(client: &Client, room_id: &str, txn_id: String, file: &File) -> Result<String> {
     let room = joined_room(client, room_id)?;
     let data = tokio::fs::read(&file.path).await.with_context(|| format!("reading {}", file.path))?;
