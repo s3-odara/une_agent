@@ -2,7 +2,7 @@
 //! can write no other format Element Call reads, and it is the only one that arrives over the plain `/sync` the gateway
 //! runs (the current format needs sticky events over sliding sync).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -53,7 +53,9 @@ enum Phase {
     Idle,
     Joining,
     InCall,
-    Leaving,
+    /// `rejoin` is set only when a newer membership arrives while leaving, so a spontaneous SFU
+    /// disconnect before `/sync` catches up does not immediately rejoin an empty call.
+    Leaving { rejoin: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,26 +65,37 @@ enum Transition {
     SendLeave,
 }
 
-#[derive(Debug, Default)]
-struct CallMachine {
+#[derive(Debug)]
+struct CallMachine<M> {
     phase: Phase,
-    wanted: bool,
+    membership: Option<M>,
 }
 
-impl CallMachine {
-    fn set_wanted(&mut self, wanted: bool) -> Transition {
-        if self.wanted == wanted {
+impl<M> Default for CallMachine<M> {
+    fn default() -> Self {
+        Self { phase: Phase::Idle, membership: None }
+    }
+}
+
+impl<M: PartialEq> CallMachine<M> {
+    fn set_membership(&mut self, membership: Option<M>) -> Transition {
+        if self.membership == membership {
             return Transition::None;
         }
-        self.wanted = wanted;
+        let wanted = membership.is_some();
+        self.membership = membership;
         match (self.phase, wanted) {
             (Phase::Idle, true) => {
                 self.phase = Phase::Joining;
                 Transition::StartJoin
             }
             (Phase::InCall, false) => {
-                self.phase = Phase::Leaving;
+                self.phase = Phase::Leaving { rejoin: false };
                 Transition::SendLeave
+            }
+            (Phase::Leaving { .. }, wanted) => {
+                self.phase = Phase::Leaving { rejoin: wanted };
+                Transition::None
             }
             _ => Transition::None,
         }
@@ -90,23 +103,23 @@ impl CallMachine {
 
     fn on_joined(&mut self) -> bool {
         debug_assert_eq!(self.phase, Phase::Joining);
-        if self.wanted {
+        if self.membership.is_some() {
             self.phase = Phase::InCall;
             true
         } else {
-            self.phase = Phase::Leaving;
+            self.phase = Phase::Leaving { rejoin: false };
             false
         }
     }
 
     fn on_leaving(&mut self) {
         if self.phase == Phase::InCall {
-            self.phase = Phase::Leaving;
+            self.phase = Phase::Leaving { rejoin: false };
         }
     }
 
     fn on_left(&mut self, normal: bool) -> Transition {
-        if normal && self.wanted {
+        if normal && matches!(self.phase, Phase::Leaving { rejoin: true }) {
             self.phase = Phase::Joining;
             Transition::StartJoin
         } else {
@@ -116,13 +129,17 @@ impl CallMachine {
     }
 
     fn is_idle_unwanted(&self) -> bool {
-        self.phase == Phase::Idle && !self.wanted
+        self.phase == Phase::Idle && self.membership.is_none()
     }
 }
 
+/// Sorted `(user_id, origin_server_ts)` pairs for allowed users live in a room's call, so a quick leave-and-rejoin
+/// changes the snapshot even if `/sync` never saw the empty state in between.
+type Membership = Vec<(String, u64)>;
+
 #[derive(Default)]
 struct RoomEntry {
-    machine: CallMachine,
+    machine: CallMachine<Membership>,
     control: Option<mpsc::UnboundedSender<Control>>,
 }
 
@@ -143,12 +160,12 @@ impl Calls {
         let _ = self.out.send(event);
     }
 
-    pub fn set_wanted(&self, room: Room, wanted: bool, vad: VadConfig) {
+    pub fn set_membership(&self, room: Room, membership: Option<Membership>, vad: VadConfig) {
         let room_id = room.room_id().to_string();
         let action = {
             let mut rooms = self.rooms.lock().unwrap();
             let entry = rooms.entry(room_id.clone()).or_default();
-            let transition = entry.machine.set_wanted(wanted);
+            let transition = entry.machine.set_membership(membership);
             let control = if transition == Transition::SendLeave { entry.control.take() } else { None };
             if entry.machine.is_idle_unwanted() {
                 rooms.remove(&room_id);
@@ -461,24 +478,30 @@ pub fn watch_memberships(client: &Client, calls: Calls, vad: VadConfig) {
                 _ = tick.tick() => client.joined_rooms(),
             };
             for room in rooms {
-                let wanted = room.state() == RoomState::Joined && !members_in_call(&client, &room, &calls.allowed).await.is_empty();
-                calls.set_wanted(room, wanted, vad);
+                if room.state() != RoomState::Joined {
+                    calls.set_membership(room, None, vad);
+                    continue;
+                }
+                if let Some(members) = members_in_call(&client, &room, &calls.allowed).await {
+                    let membership = if members.is_empty() { None } else { Some(members) };
+                    calls.set_membership(room, membership, vad);
+                }
             }
         }
     });
 }
 
-async fn members_in_call(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> Vec<String> {
+async fn members_in_call(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> Option<Membership> {
     let events = match room.get_state_events(StateEventType::from(MEMBER_EVENT_TYPE)).await {
         Ok(events) => events,
         Err(error) => {
             warn!("reading the call memberships of {} failed: {error}", room.room_id());
-            return Vec::new();
+            return None;
         }
     };
     let own = client.user_id().map(|user| user.to_string());
     let now = now_ms();
-    let mut members = HashSet::new();
+    let mut members: HashMap<String, u64> = HashMap::new();
     for event in events {
         let RawAnySyncOrStrippedState::Sync(raw) = event else { continue };
         let Ok(value) = serde_json::from_str::<Value>(raw.json().get()) else { continue };
@@ -488,12 +511,12 @@ async fn members_in_call(client: &Client, room: &Room, allowed: &[OwnedUserId]) 
         }
         let ts = value.get("origin_server_ts").and_then(Value::as_u64).unwrap_or(0);
         if value.get("content").is_some_and(|content| is_live_room_call(content, ts, now)) {
-            members.insert(sender.to_owned());
+            members.entry(sender.to_owned()).and_modify(|seen| *seen = (*seen).max(ts)).or_insert(ts);
         }
     }
-    let mut members: Vec<String> = members.into_iter().collect();
+    let mut members: Membership = members.into_iter().collect();
     members.sort();
-    members
+    Some(members)
 }
 
 /// `{}` is how a member leaves.
@@ -533,72 +556,80 @@ mod tests {
 
     #[test]
     fn joins_when_wanted_and_leaves_when_everyone_leaves() {
-        let mut m = CallMachine::default();
-        assert_eq!(m.set_wanted(true), Transition::StartJoin);
-        assert_eq!(m.set_wanted(true), Transition::None);
+        let mut m = CallMachine::<u64>::default();
+        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
+        assert_eq!(m.set_membership(Some(1)), Transition::None);
         assert!(m.on_joined());
-        assert_eq!(m.set_wanted(false), Transition::SendLeave);
-        assert_eq!(m.set_wanted(false), Transition::None);
+        assert_eq!(m.set_membership(None), Transition::SendLeave);
+        assert_eq!(m.set_membership(None), Transition::None);
         assert_eq!(m.on_left(true), Transition::None);
     }
 
     #[test]
     fn leaves_immediately_when_everyone_leaves_during_join() {
-        let mut m = CallMachine::default();
-        assert_eq!(m.set_wanted(true), Transition::StartJoin);
-        assert_eq!(m.set_wanted(false), Transition::None);
+        let mut m = CallMachine::<u64>::default();
+        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
+        assert_eq!(m.set_membership(None), Transition::None);
         assert!(!m.on_joined());
         assert_eq!(m.on_left(true), Transition::None);
     }
 
     #[test]
     fn stays_in_call_when_user_leaves_and_reenters_during_join() {
-        let mut m = CallMachine::default();
-        assert_eq!(m.set_wanted(true), Transition::StartJoin);
-        assert_eq!(m.set_wanted(false), Transition::None);
-        assert_eq!(m.set_wanted(true), Transition::None);
+        let mut m = CallMachine::<u64>::default();
+        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
+        assert_eq!(m.set_membership(None), Transition::None);
+        assert_eq!(m.set_membership(Some(2)), Transition::None);
         assert!(m.on_joined());
     }
 
     #[test]
     fn rejoins_when_user_reenters_before_leave_finishes() {
-        let mut m = CallMachine::default();
-        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+        let mut m = CallMachine::<u64>::default();
+        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
         assert!(m.on_joined());
-        assert_eq!(m.set_wanted(false), Transition::SendLeave);
-        assert_eq!(m.set_wanted(true), Transition::None);
+        assert_eq!(m.set_membership(None), Transition::SendLeave);
+        assert_eq!(m.set_membership(Some(2)), Transition::None);
         assert_eq!(m.on_left(true), Transition::StartJoin);
         assert!(m.on_joined());
     }
 
     #[test]
-    fn spontaneous_leave_rejoins_only_while_still_wanted() {
-        let mut m = CallMachine::default();
-        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+    fn spontaneous_leave_does_not_rejoin_before_sync_catches_up() {
+        let mut m = CallMachine::<u64>::default();
+        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
         assert!(m.on_joined());
         m.on_leaving();
-        assert_eq!(m.on_left(true), Transition::StartJoin);
-        assert!(m.on_joined());
-
-        m.on_leaving();
-        assert_eq!(m.set_wanted(false), Transition::None);
         assert_eq!(m.on_left(true), Transition::None);
+        assert_eq!(m.set_membership(Some(1)), Transition::None);
+        assert_eq!(m.set_membership(None), Transition::None);
+        assert_eq!(m.set_membership(Some(2)), Transition::StartJoin);
     }
 
     #[test]
-    fn abnormal_exit_does_not_rejoin_until_membership_cycles() {
-        let mut m = CallMachine::default();
-        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+    fn spontaneous_leave_rejoins_when_a_newer_membership_arrives_during_leave() {
+        let mut m = CallMachine::<u64>::default();
+        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
+        assert!(m.on_joined());
+        m.on_leaving();
+        assert_eq!(m.set_membership(Some(2)), Transition::None);
+        assert_eq!(m.on_left(true), Transition::StartJoin);
+        assert!(m.on_joined());
+    }
+
+    #[test]
+    fn abnormal_exit_does_not_rejoin_until_membership_changes() {
+        let mut m = CallMachine::<u64>::default();
+        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
         assert_eq!(m.on_left(false), Transition::None);
-        assert_eq!(m.set_wanted(true), Transition::None);
-        assert_eq!(m.set_wanted(false), Transition::None);
-        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+        assert_eq!(m.set_membership(Some(1)), Transition::None);
+        assert_eq!(m.set_membership(None), Transition::None);
+        assert_eq!(m.set_membership(Some(2)), Transition::StartJoin);
 
         assert!(m.on_joined());
         m.on_leaving();
         assert_eq!(m.on_left(false), Transition::None);
-        assert_eq!(m.set_wanted(true), Transition::None);
-        assert_eq!(m.set_wanted(false), Transition::None);
-        assert_eq!(m.set_wanted(true), Transition::StartJoin);
+        assert_eq!(m.set_membership(Some(2)), Transition::None);
+        assert_eq!(m.set_membership(Some(3)), Transition::StartJoin);
     }
 }

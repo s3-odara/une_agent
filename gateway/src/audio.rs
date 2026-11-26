@@ -25,6 +25,7 @@ pub struct VadConfig {
     pub pre_roll_ms: u32,
 }
 
+/// Keep defaults in step with `voice.call.vad` in `src/config.ts`.
 impl Default for VadConfig {
     fn default() -> Self {
         Self { threshold: 0.5, start_ms: 208, end_silence_ms: 1400, max_ms: 30_000, pre_roll_ms: 300 }

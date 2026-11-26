@@ -121,6 +121,7 @@ const ConfigSchema = obj({
 				obj({
 					maxChars: count(300),
 					chime: flag(true),
+					// Keep defaults in step with `VadConfig::default` in `gateway/src/audio.rs`.
 					vad: section(
 						obj({
 							threshold: num({ exclusiveMinimum: 0, exclusiveMaximum: 1, default: 0.5 }),
