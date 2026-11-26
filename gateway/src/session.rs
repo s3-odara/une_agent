@@ -8,6 +8,7 @@ use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::encryption::recovery::RecoveryState;
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
+use matrix_sdk_crypto::{CollectStrategy, DecryptionSettings, TrustRequirement};
 
 use crate::config::Config;
 
@@ -27,6 +28,10 @@ async fn build_client(config: &Config) -> Result<Client> {
             backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
             auto_enable_backups: true,
         })
+        .with_decryption_settings(DecryptionSettings {
+            sender_device_trust_requirement: TrustRequirement::CrossSigned,
+        })
+        .with_room_key_recipient_strategy(CollectStrategy::IdentityBasedStrategy)
         .build()
         .await
         .context("building the Matrix client")?;

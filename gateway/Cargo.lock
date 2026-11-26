@@ -2455,6 +2455,7 @@ dependencies = [
  "matrix-rtc-core",
  "matrix-rtc-transport",
  "matrix-sdk",
+ "matrix-sdk-crypto",
  "mime",
  "mime_guess",
  "rustls",

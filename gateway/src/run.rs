@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
 use matrix_sdk::config::SyncSettings;
+use matrix_sdk::deserialized_responses::EncryptionInfo;
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
@@ -127,7 +128,7 @@ fn without_reply_fallback(body: &str) -> &str {
 const MAX_MEDIA_BYTES: u64 = 20 * 1024 * 1024;
 
 /// A voice or media message is downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
-async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
+async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Client, encryption_info: Option<EncryptionInfo>, Ctx(shared): Ctx<Shared>) {
     let ts: u64 = event.origin_server_ts.0.into();
     // An edit is not a new request.
     if !shared.accepts(&room, &client, &event.sender, ts) || matches!(event.content.relates_to, Some(Relation::Replacement(_))) {
@@ -135,6 +136,10 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
     }
     let room_id = room.room_id().to_string();
     let event_id = event.event_id.to_string();
+    if encryption_info.is_none() {
+        warn!("ignoring unencrypted message {event_id} in {room_id}");
+        return;
+    }
     // Already passed on: a sync can repeat.
     if shared.state.lock().unwrap().has(&event_id) {
         return;
@@ -247,8 +252,12 @@ async fn on_undecryptable(event: OriginalSyncRoomEncryptedEvent, room: Room, cli
 }
 
 /// The agent answers approval requests with them.
-async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
+async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Client, encryption_info: Option<EncryptionInfo>, Ctx(shared): Ctx<Shared>) {
     if !shared.accepts(&room, &client, &event.sender, event.origin_server_ts.0.into()) {
+        return;
+    }
+    if encryption_info.is_none() {
+        warn!("ignoring unencrypted reaction {} in {}", event.event_id, room.room_id());
         return;
     }
     let room_id = room.room_id().to_string();

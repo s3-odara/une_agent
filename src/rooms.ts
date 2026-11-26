@@ -116,7 +116,12 @@ export class Bridge {
 				return;
 			case "undecryptable":
 				this.#track(
-					this.#send(event.roomId, `utd:${event.eventId}`, "このメッセージを復号できませんでした。もう一度送ってください。", true).then(
+					this.#send(
+						event.roomId,
+						`utd:${event.eventId}`,
+						"このメッセージを復号できませんでした。デバイスが検証済みか確認して、もう一度送ってください。",
+						true,
+					).then(
 						() => {},
 						(error) => this.#log(`notice for ${event.eventId} failed: ${errorMessage(error)}`),
 					),
