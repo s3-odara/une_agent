@@ -8,3 +8,4 @@ stt/models/
 result*
 .direnv/
 /.agents/
+_apalache-out/

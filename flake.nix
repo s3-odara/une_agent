@@ -90,6 +90,9 @@
           curl
           radicale
           vulkan-tools
+          quint
+          # Apalache, which `quint verify` fetches on its first run, runs on the JVM.
+          jre_headless
         ];
         LK_CUSTOM_WEBRTC = libwebrtc;
         AGENT_POPPLER_BIN = "${pkgs.poppler-utils}/bin";

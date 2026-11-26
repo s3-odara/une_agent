@@ -25,6 +25,24 @@ test *files: sandbox
 test-gateway:
     cargo test --manifest-path gateway/Cargo.toml
 
+# Typecheck and simulate the formal Quint models under spec/.
+spec:
+    quint typecheck spec/delivery.qnt
+    quint typecheck spec/proactive.qnt
+    quint typecheck spec/call.qnt
+    quint typecheck spec/approval.qnt
+    quint run spec/delivery.qnt --max-samples=5000 --max-steps=25 --invariant=allInvariants --verbosity=1
+    quint run spec/proactive.qnt --max-samples=5000 --max-steps=25 --invariant=allInvariants --verbosity=1
+    quint run spec/call.qnt --max-samples=5000 --max-steps=25 --invariant=allInvariants --verbosity=1
+    quint run spec/approval.qnt --max-samples=5000 --max-steps=25 --invariant=allInvariants --verbosity=1
+
+# Run bounded model checking (Apalache) on the Quint models.
+verify steps="8":
+    quint verify spec/delivery.qnt --max-steps={{ steps }} --invariant=allInvariants --verbosity=1
+    quint verify spec/proactive.qnt --max-steps={{ steps }} --invariant=allInvariants --verbosity=1
+    quint verify spec/call.qnt --max-steps={{ steps }} --invariant=allInvariants --verbosity=1
+    quint verify spec/approval.qnt --max-steps={{ steps }} --invariant=allInvariants --verbosity=1
+
 # Run the CalDAV tests against a Radicale started for them.
 test-caldav:
     #!/usr/bin/env bash
