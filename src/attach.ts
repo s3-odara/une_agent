@@ -3,21 +3,23 @@ import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, section, type ToolExecutionApi } from "@earendil-works/pi-durable";
-import { int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
-import { readPdf, type PdfMode } from "./pdf.ts";
+import { int, obj, opt, str } from "@earendil-works/pi-schema";
+import { readPdfImage, readPdfText, type PdfMode } from "./pdf.ts";
 import { fileSizeOf, textOutput } from "./text.ts";
 import type { HostDb } from "./hostdb.ts";
-import { type BinarySource } from "./web-assets.ts";
+import { ReadError } from "./web-assets.ts";
+import { pdfParameters, slicePart, validateCrop } from "./web-tools.ts";
 
 export type AttachOptions = {
 	readonly db: HostDb;
-	/** Sends to the room the call is in; answered with the event's ID. */
 	readonly send: (roomId: string, txnId: string, file: { readonly path: string; readonly name: string; readonly mimeType: string }) => Promise<string>;
 	/** The largest upload the homeserver accepts, when it says; without it nothing is refused in advance. */
 	readonly uploadLimit: () => number | undefined;
+	readonly maxChars?: number;
 };
 
-/** What a file's extension suggests it is; a kindless one goes as an octet stream. */
+const DEFAULT_PDF_MAX_CHARS = 15_000;
+
 const MIME_BY_EXTENSION: ReadonlyMap<string, string> = new Map([
 	["png", "image/png"],
 	["jpg", "image/jpeg"],
@@ -59,6 +61,7 @@ export function mimeTypeOf(name: string): string {
 
 export function createAttachExtension(options: AttachOptions) {
 	const { db } = options;
+	const maxChars = options.maxChars ?? DEFAULT_PDF_MAX_CHARS;
 	const roomOf = (api: Pick<ToolExecutionApi, "conversationId">) => db.requireRoom(Number(api.conversationId));
 	/** Like the other tools see a path: a relative one of the conversation's working directory, as `bash` has it. */
 	const absolute = async (api: Pick<ToolExecutionApi, "env">, path: string, context: Context) => {
@@ -81,9 +84,10 @@ export function createAttachExtension(options: AttachOptions) {
 				execute: async (args, api, context) => {
 					const path = await absolute(api, args.path, context);
 					const name = args.name ?? basename(path);
-					const size = await stat(path).then((info) => info.size, () => Promise.reject(new Error(`${path} は読めません。`)));
+					const info = await stat(path).catch(() => Promise.reject(new Error(`${path} は読めません。`)));
+					if (!info.isFile()) throw new Error(`${path} はファイルではありません。`);
 					const limit = options.uploadLimit();
-					if (limit !== undefined && size > limit) throw new Error(`ファイルは ${fileSizeOf(size)} で、homeserver の上限（${fileSizeOf(limit)}）を超えています。`);
+					if (limit !== undefined && info.size > limit) throw new Error(`ファイルは ${fileSizeOf(info.size)} で、homeserver の上限（${fileSizeOf(limit)}）を超えています。`);
 					// Remembered with the call, so a rerun after a crash sends under the same transaction ID and the homeserver sends one event.
 					const txnId = `file:${await api.memo("txn", randomUUID(), context)}`;
 					const eventId = await options.send(roomOf(api), txnId, { path, name, mimeType: mimeTypeOf(name) });
@@ -93,18 +97,38 @@ export function createAttachExtension(options: AttachOptions) {
 			defineTool({
 				name: "read_pdf",
 				description:
-					"ローカルの PDF を読む。page を省略すると全ページのテキスト（上限あり）。表は page と pdfMode=layout、数式・図・スキャンは page と pdfMode=image で確認できる。",
+					"ローカルの PDF を読む。page を省略すると全ページのテキスト。長いテキストの続きは offset で読む。表は page と pdfMode=layout、数式・図・スキャンは page と pdfMode=image（必要なら crop で拡大）で確認できる。",
 				parameters: obj({
 					path: str({ description: "PDF のパス", minLength: 1 }),
-					page: opt(int({ description: "PDF の先頭を 1 とするページ番号。省略時は複数ページのテキストを読む", minimum: 1 })),
-					pdfMode: opt(oneOf(["text", "layout", "image"], { description: "text は既定、layout は配置を保つ。layout / image は page 必須" })),
+					offset: opt(int({ description: "続きを読むとき、前の結果が示した文字位置", minimum: 0 })),
+					...pdfParameters,
 				}),
+				replay: "safe",
 				execute: async (args, api, context) => {
 					const mode = (args.pdfMode ?? "text") as PdfMode;
-					if (mode !== "text" && args.page === undefined) throw new Error("pdfMode=layout と pdfMode=image のときは page を指定してください。");
-					const document: BinarySource = { kind: "pdf", url: "file://", status: 200, body: await readFile(await absolute(api, args.path, context)), mediaType: "application/pdf" };
-					const result = await readPdf(document, mode, args.page);
-					return "markdown" in result ? textOutput(result.markdown) : { output: [{ type: "image" as const, data: result.data, mimeType: result.mimeType }] };
+					const offset = args.offset ?? 0;
+					const { page, crop } = args;
+					validateCrop(crop);
+					if (crop !== undefined && offset > 0) throw new ReadError("crop に offset は使えません。");
+					if (mode !== "text" && page === undefined) throw new ReadError(`pdfMode=${mode} には page が必要です。`);
+					if (mode === "image" && offset > 0) throw new ReadError("pdfMode=image に offset は使えません。");
+					if (crop !== undefined && mode !== "image") throw new ReadError("PDF の crop には page と pdfMode=image が必要です。");
+
+					const path = await absolute(api, args.path, context);
+					const body = await readFile(path);
+					if (mode === "image") {
+						const image = await readPdfImage(body, page!, context.abortSignal, crop);
+						const region =
+							crop === undefined
+								? `細部が読めなければ、同じ path、page=${page}、pdfMode=image に crop を指定して拡大できます。`
+								: `切り出し範囲: x=${crop.x}, y=${crop.y}, width=${crop.width}, height=${crop.height}（元画像全体に対する割合）`;
+						return { output: [{ type: "text" as const, text: `PDF ${page} ページ目\n${region}` }, { type: "image" as const, ...image }] };
+					}
+					const { markdown } = await readPdfText(body, mode, page, context.abortSignal);
+					const flags = `${page === undefined ? "" : `、page=${page}`}${mode === "text" ? "" : `、pdfMode=${mode}`}`;
+					const sliced = slicePart(markdown, offset, maxChars, (next) => `read_pdf を同じ path${flags}、offset=${next} で呼ぶ`);
+					if ("error" in sliced) return textOutput(sliced.error);
+					return textOutput(sliced.foot === undefined ? sliced.body : `${sliced.body}\n\n${sliced.foot}`);
 				},
 			}),
 		],

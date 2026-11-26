@@ -1,5 +1,5 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { arr, nullable, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { formatThreeHourForecast } from "./weather-details.ts";
 import { formatWeatherDistribution, jmaWeatherDistribution, jmaWeatherDistributionGrid, WEATHER_GRID_MAX_METERS } from "./weather-distribution.ts";
 import { formatRain, jmaRain, jmaRainGrid, RAIN_HORIZONS } from "./weather-rain.ts";
@@ -52,36 +52,46 @@ export function createWeatherExtension(
 	});
 }
 
-const numberType = { type: "number" };
-const stringType = { type: "string" };
-const arrayOf = (items: object) => ({ type: "array", items });
-const recordOf = (properties: Record<string, object>, required = Object.keys(properties)) => ({ type: "object", properties, required });
-const rainGridSchema = recordOf({
-	bounds: recordOf({ west: numberType, south: numberType, east: numberType, north: numberType }),
-	grids: arrayOf(recordOf({ id: stringType, longitudeEdges: arrayOf(numberType), latitudeEdges: arrayOf(numberType) })),
-	cellType: { enum: ["intensityBand", "hourlyAmount"] },
-	unit: { enum: ["mm/h", "mm"] },
-	legend: arrayOf(stringType),
-	frames: arrayOf(recordOf({
-		gridId: stringType, baseAt: stringType, validAt: stringType, startAt: stringType,
-		status: { enum: ["available", "unavailable"] },
-		rows: arrayOf(arrayOf({ type: ["number", "null"] })),
-	}, ["gridId", "baseAt", "validAt", "status"])),
-}, ["bounds", "grids", "cellType", "unit", "frames"]);
+const boundsSchema = obj({ west: num(), south: num(), east: num(), north: num() });
+const cellRowsSchema = arr(arr(nullable(num())));
+const rainGridSchema = obj({
+	bounds: boundsSchema,
+	grids: arr(obj({ id: str(), longitudeEdges: arr(num()), latitudeEdges: arr(num()) })),
+	cellType: oneOf(["intensityBand", "hourlyAmount"]),
+	unit: oneOf(["mm/h", "mm"]),
+	legend: opt(arr(str())),
+	frames: arr(obj({
+		gridId: str(),
+		baseAt: str(),
+		validAt: str(),
+		startAt: opt(str()),
+		status: oneOf(["available", "unavailable"]),
+		rows: opt(cellRowsSchema),
+	})),
+});
 
-const distributionLayerSchema = recordOf({
-	status: { enum: ["available", "unavailable"] },
-	rows: arrayOf(arrayOf({ type: ["number", "null"] })),
-}, ["status"]);
-const distributionGridSchema = recordOf({
-	bounds: recordOf({ west: numberType, south: numberType, east: numberType, north: numberType }),
-	longitudeEdges: arrayOf(numberType),
-	latitudeEdges: arrayOf(numberType),
-	legends: recordOf({ weather: arrayOf(stringType), rain: arrayOf(stringType), snow: arrayOf(stringType) }),
-	frames: arrayOf(recordOf({
-		baseAt: stringType, validAt: stringType, startAt: stringType,
-		layers: recordOf(Object.fromEntries(["weather", "rain", "snow", "temperature", "high", "low"].map((key) => [key, distributionLayerSchema])), []),
-	}, ["baseAt", "validAt", "layers"])),
+const distributionLayerSchema = obj({
+	status: oneOf(["available", "unavailable"]),
+	rows: opt(cellRowsSchema),
+});
+const distributionGridSchema = obj({
+	bounds: boundsSchema,
+	longitudeEdges: arr(num()),
+	latitudeEdges: arr(num()),
+	legends: obj({ weather: arr(str()), rain: arr(str()), snow: arr(str()) }),
+	frames: arr(obj({
+		baseAt: str(),
+		validAt: str(),
+		startAt: opt(str()),
+		layers: obj({
+			weather: opt(distributionLayerSchema),
+			rain: opt(distributionLayerSchema),
+			snow: opt(distributionLayerSchema),
+			temperature: opt(distributionLayerSchema),
+			high: opt(distributionLayerSchema),
+			low: opt(distributionLayerSchema),
+		}),
+	})),
 });
 
 const coordinateParameters = {

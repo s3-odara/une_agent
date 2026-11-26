@@ -9,7 +9,7 @@ import { type CodeRequests, noCode } from "./codes.ts";
 import type { Credentials } from "./credentials.ts";
 import type { HostDb } from "./hostdb.ts";
 import { startedByUser } from "./run.ts";
-import { textOutput } from "./text.ts";
+import { elide, textOutput } from "./text.ts";
 import { UNTRUSTED } from "./untrusted.ts";
 import { httpUrl } from "./urls.ts";
 import { readParameters, renderPart } from "./web-tools.ts";
@@ -53,10 +53,7 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 	const { browsers, credentials, db, profileOf, codes, screenshots } = options;
 	const maxChars = options.maxChars ?? 25_000;
 
-	const clip = (text: string): string => {
-		const points = [...text];
-		return points.length <= maxChars ? text : `${points.slice(0, maxChars).join("")}\n…（長いので ${points.length - maxChars} 文字を省略）`;
-	};
+	const clip = (text: string): string => elide(text, maxChars, (omitted) => `\n…（長いので ${omitted} 文字を省略）`);
 
 	const roomOf = (api: Pick<ToolExecutionApi, "conversationId">) => db.requireRoom(Number(api.conversationId));
 

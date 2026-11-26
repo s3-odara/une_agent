@@ -14,7 +14,6 @@ import type { Transcriber } from "./stt.ts";
 import { fileSizeOf } from "./text.ts";
 import { formatStamp } from "./time.ts";
 import { type Synthesizer, toSpeech } from "./tts.ts";
-import { type BinarySource } from "./web-assets.ts";
 
 type ConversationId = Conversation["id"];
 type SubmissionId = Parameters<Harness["submission"]>[0];
@@ -231,9 +230,8 @@ export class Bridge {
 				return;
 			}
 			if (attachment.mimeType === "application/pdf") {
-				const document: BinarySource = { kind: "pdf", url: "file://", status: 200, body: await readFile(attachment.path), mediaType: attachment.mimeType };
-				const text = (await readPdfText(document)).markdown;
-				const body = text.length <= FILE_TEXT_MAX ? `\n${text}` : `（${text.length} 字のため本文省略。read_pdf で確認してください）`;
+				const { markdown, pages } = await readPdfText(await readFile(attachment.path));
+				const body = markdown.length <= FILE_TEXT_MAX ? `\n${markdown}` : `（全 ${pages} ページ、${markdown.length} 字のため本文省略。read_pdf で確認してください）`;
 				await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${kept}${body}`);
 				return;
 			}

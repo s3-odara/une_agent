@@ -1,7 +1,7 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { bool, int, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { ReadError, type PageReader, type ReadPage } from "./extract.ts";
-import { readPdf } from "./pdf.ts";
+import { readPdfImage, readPdfText } from "./pdf.ts";
 import type { BinarySource, Crop, Image } from "./web-assets.ts";
 import { UNTRUSTED } from "./untrusted.ts";
 import { httpUrl } from "./urls.ts";
@@ -20,6 +20,40 @@ const ASSET_CACHE_BYTES = 40 * 1024 * 1024;
 const ASSET_CACHE_ENTRIES = 20;
 const fraction = num({ minimum: 0, maximum: 1 });
 const REFETCHED = "（キャッシュになかったため URL から取得しました。以前と同じ版とは限りません。）\n\n";
+
+export const cropParameter = opt(
+	obj({ x: fraction, y: fraction, width: fraction, height: fraction }, { description: "画像 URL または PDF の image モードのみ。元画像全体を基準に左上原点の 0〜1 の割合で切り出す" }),
+);
+
+export const pdfParameters = {
+	page: opt(int({ description: "PDF の先頭を 1 とするページ番号。省略時は複数ページのテキストを読む", minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+	pdfMode: opt(oneOf(["text", "layout", "image"], { description: "PDF のみ。text は既定、layout は配置を保つ。layout / image は page 必須" })),
+	crop: cropParameter,
+};
+
+export function validateCrop(crop: Crop | undefined): void {
+	if (crop !== undefined && (crop.width <= 0 || crop.height <= 0 || crop.x + crop.width > 1 || crop.y + crop.height > 1)) {
+		throw new ReadError("crop は元画像の範囲内で、幅と高さが 0 より大きい必要があります。");
+	}
+}
+
+export function slicePart(text: string, offset: number, maxChars: number, again: (offset: number) => string): { readonly body: string; readonly foot?: string } | { readonly error: string } {
+	if (offset >= text.length && text.length > 0) return { error: `このページは全 ${text.length} 文字で、offset=${offset} から先はありません。` };
+	const start = onCharacter(text, offset);
+	let end = onCharacter(text, Math.min(text.length, start + maxChars));
+	if (end === start && start < text.length) end = start + (text.codePointAt(start)! > 0xffff ? 2 : 1);
+	if (end < text.length) {
+		const newline = text.lastIndexOf("\n", end - 1);
+		if (newline > start + maxChars / 2) end = newline + 1;
+	}
+	const foot =
+		end < text.length
+			? `（全 ${text.length} 文字のうち ${start}〜${end} 文字目。続きは ${again(end)}）`
+			: start > 0
+				? `（全 ${text.length} 文字のうち ${start}〜${end} 文字目。ここで終わり）`
+				: undefined;
+	return { body: text.slice(start, end), ...(foot === undefined ? {} : { foot }) };
+}
 
 function imageOutput(source: BinarySource, image: Image, notice: string, crop: Crop | undefined, page?: number) {
 	const status = source.status === undefined ? "" : `\nHTTP ステータス: ${source.status}`;
@@ -40,17 +74,9 @@ export const readParameters = {
 	whole: opt(bool({ description: "本文と判定した部分ではなく、ページ全体を読む" })),
 };
 
-/** One part of a page, up to `maxChars`, with how to ask for the next: `again` gives the call for an offset. */
 export function renderPart(page: ReadPage, whole: boolean, offset: number, maxChars: number, again: (offset: number) => string): string {
-	const text = page.markdown;
-	if (offset >= text.length && text.length > 0) return `このページは全 ${text.length} 文字で、offset=${offset} から先はありません。`;
-	const start = onCharacter(text, offset);
-	let end = onCharacter(text, Math.min(text.length, start + maxChars));
-	if (end === start && start < text.length) end = start + (text.codePointAt(start)! > 0xffff ? 2 : 1);
-	if (end < text.length) {
-		const newline = text.lastIndexOf("\n", end - 1);
-		if (newline > start + maxChars / 2) end = newline + 1;
-	}
+	const sliced = slicePart(page.markdown, offset, maxChars, again);
+	if ("error" in sliced) return sliced.error;
 	const scope = page.scope === "article" ? "本文と判定した部分（ページ全体は whole=true で読める）" : whole ? "ページ全体" : "ページ全体（本文を判定できなかった）";
 	const head = [
 		`URL: ${page.url}`,
@@ -58,14 +84,7 @@ export function renderPart(page: ReadPage, whole: boolean, offset: number, maxCh
 		...(page.status === undefined ? [] : [`HTTP ステータス: ${page.status}（エラーのページの可能性があります）`]),
 		page.mediaType === undefined ? `範囲: ${scope}` : `形式: ${page.mediaType}`,
 	];
-	const part = text.slice(start, end);
-	const foot =
-		end < text.length
-			? `（全 ${text.length} 文字のうち ${start}〜${end} 文字目。続きは ${again(end)}）`
-			: start > 0
-				? `（全 ${text.length} 文字のうち ${start}〜${end} 文字目。ここで終わり）`
-				: undefined;
-	return [...head, "", UNTRUSTED, "", part === "" ? "（本文がありません）" : part, ...(foot === undefined ? [] : ["", foot])].join("\n");
+	return [...head, "", UNTRUSTED, "", sliced.body === "" ? "（本文がありません）" : sliced.body, ...(sliced.foot === undefined ? [] : ["", sliced.foot])].join("\n");
 }
 
 /** It only reads, so it is rerun after a crash, and works in runs the scheduler started too. */
@@ -130,9 +149,7 @@ export function createWebExtension(options: WebToolsOptions) {
 				parameters: obj({
 					url: str({ description: "http または https の URL", minLength: 1 }),
 					...readParameters,
-					page: opt(int({ description: "PDF の先頭を 1 とするページ番号。省略時は複数ページのテキストを読む", minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
-					pdfMode: opt(oneOf(["text", "layout", "image"], { description: "PDF のみ。text は既定、layout は配置を保つ。layout / image は page 必須" })),
-					crop: opt(obj({ x: fraction, y: fraction, width: fraction, height: fraction }, { description: "画像 URL または PDF の image モードのみ。元画像全体を基準に左上原点の 0〜1 の割合で切り出す" })),
+					...pdfParameters,
 				}),
 				replay: "safe",
 				execute: async (args, _api, context) => {
@@ -141,9 +158,7 @@ export function createWebExtension(options: WebToolsOptions) {
 					const whole = args.whole === true;
 					const { page, pdfMode, crop } = args;
 					const mode = pdfMode ?? "text";
-					if (crop !== undefined && (crop.width <= 0 || crop.height <= 0 || crop.x + crop.width > 1 || crop.y + crop.height > 1)) {
-						throw new ReadError("crop は元画像の範囲内で、幅と高さが 0 より大きい必要があります。");
-					}
+					validateCrop(crop);
 					if (crop !== undefined && offset > 0) throw new ReadError("crop に offset は使えません。");
 					if (mode !== "text" && page === undefined) throw new ReadError(`pdfMode=${mode} には page が必要です。`);
 					if (mode === "image" && offset > 0) throw new ReadError("pdfMode=image に offset は使えません。");
@@ -175,10 +190,11 @@ export function createWebExtension(options: WebToolsOptions) {
 					}
 
 					if (crop !== undefined && mode !== "image") throw new ReadError("PDF の crop には page と pdfMode=image が必要です。");
-					const result = await readPdf(file, mode, page, signal, crop);
-					if ("data" in result) return imageOutput(file, result, notice, crop, page);
+					if (mode === "image") return imageOutput(file, await readPdfImage(file.body, page!, signal, crop), notice, crop, page);
+					const { markdown } = await readPdfText(file.body, mode, page, signal);
+					const pageResult: ReadPage = { url: file.url, ...(file.status === undefined ? {} : { status: file.status }), title: "", scope: "page", mediaType: "application/pdf", markdown };
 					const flags = `${page === undefined ? "" : `、page=${page}`}${mode === "text" ? "" : `、pdfMode=${mode}`}`;
-					return showText(result, notice, false, flags);
+					return showText(pageResult, notice, false, flags);
 				},
 			}),
 		],

@@ -82,6 +82,14 @@ test("a file that is not there is refused", async () => {
 	assert.deepEqual(t.sent, []);
 });
 
+test("a directory is refused", async () => {
+	const t = await setup();
+	const result = await t.say("送って", { path: t.env.dir });
+	assert.equal(result.isError, true);
+	assert.match(result.text, /ファイルではありません/);
+	assert.deepEqual(t.sent, []);
+});
+
 test("what a name's extension suggests it is", () => {
 	assert.equal(mimeTypeOf("shot.png"), "image/png");
 	assert.equal(mimeTypeOf("REPORT.PDF"), "application/pdf");
@@ -90,9 +98,9 @@ test("what a name's extension suggests it is", () => {
 
 const withPoppler = process.env.AGENT_POPPLER_BIN ? test : test.skip;
 
-async function readPdfTool(args: Parameters<typeof call>[1]) {
+async function readPdfTool(args: Parameters<typeof call>[1], maxChars?: number) {
 	await using env = await agentEnv({
-		extensions: ({ db }) => [createAttachExtension({ db, send: async () => "$attached", uploadLimit: () => undefined })],
+		extensions: ({ db }) => [createAttachExtension({ db, send: async () => "$attached", uploadLimit: () => undefined, ...(maxChars === undefined ? {} : { maxChars }) })],
 	});
 	const path = join(env.dir, "doc.pdf");
 	writeFileSync(path, samplePdf());
@@ -107,18 +115,30 @@ async function readPdfTool(args: Parameters<typeof call>[1]) {
 	]);
 	env.link.emit(message(ROOM, "$1", "読んで"));
 	await bridge.idle();
-	return lastToolResult(request!);
+	return { result: lastToolResult(request!), request: request! };
 }
 
-withPoppler("a PDF is read as its text", async () => {
-	const result = await readPdfTool({});
-	assert.ok(!result.isError, result.text);
-	assert.match(result.text, /--- PDF 1 ページ目 \/ 全 2 ページ ---/);
-	assert.match(result.text, /left column/);
+test("read_pdf validates page, offset, and crop before invoking Poppler", async () => {
+	assert.equal((await readPdfTool({ pdfMode: "image" })).result.isError, true);
+	assert.match((await readPdfTool({ pdfMode: "image" })).result.text, /page/);
+	assert.match((await readPdfTool({ page: 1, crop: { x: 0, y: 0, width: 0.5, height: 0.5 } })).result.text, /pdfMode=image/);
+	assert.match((await readPdfTool({ page: 1, pdfMode: "image", crop: { x: 0.9, y: 0, width: 0.2, height: 1 } })).result.text, /範囲内/);
+	assert.match((await readPdfTool({ page: 1, pdfMode: "image", offset: 10 })).result.text, /offset/);
 });
 
-withPoppler("an image of a PDF needs a page", async () => {
-	const result = await readPdfTool({ pdfMode: "image" });
-	assert.equal(result.isError, true);
-	assert.match(result.text, /page/);
+withPoppler("a PDF is read as its text, and paginates with offset", async () => {
+	const { result: first } = await readPdfTool({}, 80);
+	assert.ok(!first.isError, first.text);
+	assert.match(first.text, /--- PDF 1 ページ目 \/ 全 2 ページ ---/);
+	const next = Number(/offset=(\d+)/.exec(first.text)?.[1]);
+	assert.ok(next > 0);
+	const { result: rest } = await readPdfTool({ offset: next }, 80);
+	assert.ok(!rest.isError, rest.text);
+	assert.match(rest.text, /PDF 2 ページ目/);
+});
+
+withPoppler("a PDF page can be rendered and cropped as an image", async () => {
+	const { result } = await readPdfTool({ page: 2, pdfMode: "image", crop: { x: 0.5, y: 0, width: 0.5, height: 1 } });
+	assert.ok(!result.isError, result.text);
+	assert.match(result.text, /切り出し範囲/);
 });

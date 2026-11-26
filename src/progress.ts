@@ -4,7 +4,7 @@ import { AssistantEntry, type Conversation, type EntryId, type EntryRecord, type
 import { CODEMODE_TOOL_NAME, type CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import type { Settled, Submission } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
-import { oneLine, onCharacter } from "./text.ts";
+import { elide, oneLine, onCharacter } from "./text.ts";
 
 export const TOOL_RUNNING = "⏳";
 export const TOOL_DONE = "✅";
@@ -41,19 +41,14 @@ function resultsOf(entries: readonly EntryRecord[]): Results {
 	return results;
 }
 
-/** The head of `text`, cut on a character boundary, with an ellipsis when it was longer. */
-function elided(text: string, max: number): string {
-	return text.length > max ? `${text.slice(0, onCharacter(text, max))}…` : text;
-}
-
 function clipped(text: string, max: number): string {
-	return elided(oneLine(text), max);
+	return elide(oneLine(text), max);
 }
 
 function thinkingBlock(thinking: string, redacted: boolean): string {
 	const text = redacted ? "（非公開）" : thinking.trim();
 	if (text === "") return "";
-	return elided(text, MAX_THINKING_CHARS)
+	return elide(text, MAX_THINKING_CHARS)
 		.split("\n")
 		.map((line, i) => `> ${i === 0 ? "💭 " : ""}${line}`)
 		.join("\n");

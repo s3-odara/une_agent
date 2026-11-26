@@ -128,6 +128,7 @@ const extensions = [
 		db,
 		send: (roomId, txnId, file) => viaBridge().sendAttachment(roomId, txnId, file),
 		uploadLimit: () => bridge?.uploadLimit(),
+		...(config.web === undefined ? {} : { maxChars: config.web.maxChars }),
 	}),
 	...(browsers === undefined
 		? []
