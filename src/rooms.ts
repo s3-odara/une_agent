@@ -23,15 +23,10 @@ type Attachment = NonNullable<MessageEvent["attachment"]>;
 
 /** What a picture is allowed to weigh before it is left out of the conversation: it goes through base64 there. */
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-/** What a PDF or a text contributes to the conversation at most; the rest is read with the `read_pdf` tool. */
-const FILE_TEXT_MAX = 30_000;
+/** Longer text or PDF attachments are left on disk without inlining so they do not bloat the conversation history. */
+const FILE_TEXT_MAX = 5_000;
 /** What the model sees of an image; the same kinds the Anthropic API takes. */
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-
-function clipped(text: string, max: number, whereTo: string): string {
-	if (text.length <= max) return text;
-	return `${text.slice(0, max)}\n…（以下、${text.length - max} 文字省略。${whereTo}）`;
-}
 
 /** pi-durable IDs are branded numbers; the ledger stores the number. */
 function idFromNumber<I extends ConversationId | SubmissionId>(value: number): I {
@@ -129,6 +124,14 @@ export class Bridge {
 					),
 				);
 				return;
+			case "mediaFailed":
+				this.#track(
+					this.#send(event.roomId, `mediafail:${event.eventId}`, `添付ファイルを取得できませんでした（${event.reason}）。`, true).then(
+						() => {},
+						(error) => this.#log(`notice for ${event.eventId} failed: ${errorMessage(error)}`),
+					),
+				);
+				return;
 			case "sent":
 				this.#sends.get(event.requestId)?.resolve(event.eventId);
 				return;
@@ -205,10 +208,8 @@ export class Bridge {
 	}
 
 	/**
-	 * A file that is not a voice message: what the conversation gets of it depends on what it is. A picture the
-	 * provider takes goes to the model as an image; a PDF and a text go in as text; anything else is only announced,
-	 * for the model to read the file itself if it wants to. A PDF and anything not carried in the conversation are
-	 * kept on disk, so the model can look at them later; what is carried there is deleted.
+	 * Every received non-voice file is kept on disk until the scheduler cleans up old files, so the model can inspect
+	 * the original file later even when it was inlined or omitted.
 	 */
 	async #admitFile(message: MessageEvent, attachment: Attachment, time: string | undefined): Promise<void> {
 		const { link } = this.#options;
@@ -217,33 +218,29 @@ export class Bridge {
 		const bytes = await stat(attachment.path).then((info) => info.size, () => 0);
 		const kind = `${name}（${attachment.mimeType}、${fileSizeOf(bytes)}）`;
 		const stamp = time === undefined ? "" : `${time} `;
-		// Every kind says what became of the file in the same place: kept ones give the path, ones whose content is
-		// carried in the conversation say they are deleted, so the model never reads after a gone file.
 		const kept = `（保存先: ${attachment.path}）`;
-		const deleted = `（処理後に削除しました）`;
-		const asImage = () => ({ type: "image" as const, data: "", mimeType: attachment.mimeType });
 
 		link.send({ type: "typing", roomId: message.roomId, on: true });
 		try {
 			if (IMAGE_TYPES.has(attachment.mimeType) && bytes <= MAX_IMAGE_BYTES) {
-				const image = asImage();
-				image.data = (await readFile(attachment.path)).toString("base64");
-				const content: UserInput = [{ type: "text", text: `[${stamp}画像添付] ${kind} ${deleted}` }, image];
+				const content: UserInput = [
+					{ type: "text", text: `[${stamp}画像添付] ${kind} ${kept}` },
+					{ type: "image", data: (await readFile(attachment.path)).toString("base64"), mimeType: attachment.mimeType },
+				];
 				await this.#submit(message.roomId, message.eventId, content);
-				await rm(attachment.path, { force: true });
 				return;
 			}
 			if (attachment.mimeType === "application/pdf") {
-				// The file is kept: the rest of it, and a scanned page as an image, are the `read_pdf` tool's to read.
 				const document: BinarySource = { kind: "pdf", url: "file://", status: 200, body: await readFile(attachment.path), mediaType: attachment.mimeType };
-				const text = clipped((await readPdfText(document)).markdown, FILE_TEXT_MAX, "続きは read_pdf ツールで読めます");
-				await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${kept}\n${text}`);
+				const text = (await readPdfText(document)).markdown;
+				const body = text.length <= FILE_TEXT_MAX ? `\n${text}` : `（${text.length} 字のため本文省略。read_pdf で確認してください）`;
+				await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${kept}${body}`);
 				return;
 			}
 			if (attachment.mimeType.startsWith("text/") || attachment.mimeType === "application/json") {
-				const text = clipped((await readFile(attachment.path, "utf8")).trim(), FILE_TEXT_MAX, `続きは read で ${attachment.path} を読めます`);
-				await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${deleted}\n${text}`);
-				await rm(attachment.path, { force: true });
+				const text = (await readFile(attachment.path, "utf8")).trim();
+				const body = text.length <= FILE_TEXT_MAX ? `\n${text}` : `（${text.split("\n").length} 行、${text.length} 字のため本文省略。必要に応じて read や bash で確認してください）`;
+				await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${kept}${body}`);
 				return;
 			}
 			const note = IMAGE_TYPES.has(attachment.mimeType) ? `大きすぎるため会話に載せられません。` : "";
@@ -544,17 +541,12 @@ export class Bridge {
 		const path = join(dir, `${delivery.eventId.replace(/[^A-Za-z0-9_-]/g, "_")}.ogg`);
 		await writeFile(path, speech.ogg);
 		try {
-			const txnId = `voice:${delivery.eventId}`;
-			await this.#request({
-			type: "sendAttachment",
-			requestId: txnId,
-			roomId: delivery.roomId,
-			txnId,
-			path,
-			name: "voice-message.ogg",
-			mimeType: "audio/ogg",
-			voice: { durationMs: speech.durationMs, waveform: speech.waveform },
-		});
+			await this.sendAttachment(delivery.roomId, `voice:${delivery.eventId}`, {
+				path,
+				name: "voice-message.ogg",
+				mimeType: "audio/ogg",
+				voice: { durationMs: speech.durationMs, waveform: speech.waveform },
+			});
 		} finally {
 			await rm(path, { force: true });
 		}

@@ -148,32 +148,30 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
         MessageType::Text(text) => (text.body.clone(), None),
         MessageType::Audio(content) => {
             let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
-            match download_media(&client, &shared.media_dir, &event_id, content, mimetype, content.voice.is_some()).await {
-                Ok(media) => (content.body.clone(), Some(media)),
-                Err(error) => {
-                    failed_media(&shared, &room_id, &event_id, error);
-                    return;
-                }
+            match receive_media(&client, &shared, &room_id, &event_id, &content.body, content, mimetype, content.voice.is_some()).await {
+                Some(pair) => pair,
+                None => return,
+            }
+        }
+        MessageType::Image(content) => {
+            let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
+            match receive_media(&client, &shared, &room_id, &event_id, &content.body, content, mimetype, false).await {
+                Some(pair) => pair,
+                None => return,
             }
         }
         MessageType::File(content) => {
             let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
-            match download_media(&client, &shared.media_dir, &event_id, content, mimetype, false).await {
-                Ok(media) => (content.body.clone(), Some(media)),
-                Err(error) => {
-                    failed_media(&shared, &room_id, &event_id, error);
-                    return;
-                }
+            match receive_media(&client, &shared, &room_id, &event_id, &content.body, content, mimetype, false).await {
+                Some(pair) => pair,
+                None => return,
             }
         }
         MessageType::Video(content) => {
             let mimetype = content.info.as_deref().and_then(|info| info.mimetype.as_deref());
-            match download_media(&client, &shared.media_dir, &event_id, content, mimetype, false).await {
-                Ok(media) => (content.body.clone(), Some(media)),
-                Err(error) => {
-                    failed_media(&shared, &room_id, &event_id, error);
-                    return;
-                }
+            match receive_media(&client, &shared, &room_id, &event_id, &content.body, content, mimetype, false).await {
+                Some(pair) => pair,
+                None => return,
             }
         }
         _ => return,
@@ -188,23 +186,38 @@ async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Cli
     }
 }
 
-/// A download that failed is told as an undecryptable one is, and the message is not passed on: the sync offers it
-/// again, so the room hears why once more rather than what was not read of it.
-fn failed_media(shared: &Shared, room_id: &str, event_id: &str, error: anyhow::Error) {
-    warn!("downloading the media of {event_id} failed: {error:#}");
-    shared.emit(Event::Undecryptable { room_id: room_id.to_string(), event_id: event_id.to_string() });
+async fn receive_media(
+    client: &Client,
+    shared: &Shared,
+    room_id: &str,
+    event_id: &str,
+    body: &str,
+    content: &impl MediaEventContent,
+    mimetype: Option<&str>,
+    voice: bool,
+) -> Option<(String, Option<Media>)> {
+    match download_media(client, &shared.media_dir, event_id, content, mimetype, voice).await {
+        Ok(media) => Some((body.to_owned(), Some(media))),
+        Err(error) => {
+            warn!("downloading the media of {event_id} failed: {error:#}");
+            shared.emit(Event::MediaFailed { room_id: room_id.to_owned(), event_id: event_id.to_owned(), reason: format!("{error:#}") });
+            None
+        }
+    }
+}
+
+fn parse_mime(mimetype: Option<&str>) -> mime::Mime {
+    mimetype
+        .filter(|mime| mime.contains('/') && !mime.eq_ignore_ascii_case("application/octet-stream"))
+        .and_then(|mime| mime.parse::<mime::Mime>().ok())
+        .unwrap_or(mime::APPLICATION_OCTET_STREAM)
 }
 
 /// A media message is downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
 async fn download_media(client: &Client, dir: &Path, event_id: &str, content: &impl MediaEventContent, mimetype: Option<&str>, voice: bool) -> Result<Media> {
     let data = client.media().get_file(content, false).await?.context("the message has no file")?;
     anyhow::ensure!(data.len() as u64 <= MAX_MEDIA_BYTES, "the attachment is {} bytes, more than {MAX_MEDIA_BYTES}", data.len());
-    // The kind of the file comes with the message; without one that says anything it is kept as an octet stream.
-    let mime = mimetype
-        .filter(|mime| mime.contains('/') && !mime.eq_ignore_ascii_case("application/octet-stream"))
-        .map(|mime| mime.parse::<mime::Mime>())
-        .transpose()?
-        .unwrap_or(mime::APPLICATION_OCTET_STREAM);
+    let mime = parse_mime(mimetype);
     let filename = if voice { format!("{}.audio", file_stem(event_id)) } else { format!("{}.{}", file_stem(event_id), extension(&mime)) };
     let path = dir.join(filename);
     tokio::fs::create_dir_all(dir).await.with_context(|| format!("creating {}", dir.display()))?;
@@ -418,12 +431,19 @@ fn set_typing(client: &Client, shared: &Shared, room_id: String, on: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::without_reply_fallback;
+    use super::{parse_mime, without_reply_fallback};
 
     #[test]
     fn a_reply_loses_the_quote_it_starts_with() {
         assert_eq!(without_reply_fallback("> <@bot:example.org> コードを送って\n> 二行目\n\nAB12"), "AB12");
         assert_eq!(without_reply_fallback("AB12"), "AB12");
         assert_eq!(without_reply_fallback("a > b"), "a > b");
+    }
+
+    #[test]
+    fn invalid_or_missing_mime_falls_back_to_octet_stream() {
+        assert_eq!(parse_mime(Some("image/png")).essence_str(), "image/png");
+        assert_eq!(parse_mime(Some("not a mime/type; broken=")).essence_str(), "application/octet-stream");
+        assert_eq!(parse_mime(None).essence_str(), "application/octet-stream");
     }
 }

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readdir, rm, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { type CalItem, type Calendars, type EventItem, formatEvent, formatTodo, normalizeEtag, type TodoItem } from "./calendar.ts";
 import type { Config } from "./config.ts";
 import { errorMessage } from "./errors.ts";
@@ -74,6 +76,9 @@ export type SchedulerOptions = {
 	readonly weigh?: () => void;
 	readonly notice: (roomId: string, key: string, body: string) => Promise<void>;
 	readonly tidy?: { fingerprint(): string; run(date: string): Promise<TidyChange[]> };
+	/** Directory of received attachment files; entries older than the TTL are removed on ticks. */
+	readonly filesDir?: string;
+	readonly filesTtlMs?: number;
 	readonly now?: () => number;
 	/** The gateway needs a moment before it can send. */
 	readonly startDelayMs?: number;
@@ -85,6 +90,7 @@ const MAX_WAIT_MS = 3_600_000;
 
 /** A check found this late, after the agent was down, is skipped: it would come at a time no one asked for. */
 const CHECK_LATENESS_MS = 60 * 60_000;
+const DEFAULT_FILES_TTL_MS = 7 * 86_400_000;
 
 /** What every wake is, whatever it is for. When to speak is said by each kind of wake. */
 const ASIDE = [
@@ -152,6 +158,7 @@ export class Scheduler {
 		this.#running = true;
 		try {
 			const now = this.#now();
+			await this.#cleanFiles(now).catch((error) => this.#log(`cleaning received files failed: ${errorMessage(error)}`));
 			await this.#tidy(now).catch((error) => this.#log(`memory tidy failed: ${errorMessage(error)}`));
 			await this.#dueTimers(now).catch((error) => this.#log(`timers failed: ${errorMessage(error)}`));
 			await this.#proactive(now).catch((error) => this.#log(`proactive check failed: ${errorMessage(error)}`));
@@ -164,6 +171,24 @@ export class Scheduler {
 
 	#wake(now: number, wake: Omit<Wake, "aside" | "createdAt">): void {
 		this.#options.db.addWake({ ...wake, createdAt: now });
+	}
+
+	async #cleanFiles(now: number): Promise<void> {
+		const dir = this.#options.filesDir;
+		if (dir === undefined) return;
+		const cutoff = now - (this.#options.filesTtlMs ?? DEFAULT_FILES_TTL_MS);
+		let names: string[];
+		try {
+			names = await readdir(dir);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw error;
+		}
+		for (const name of names) {
+			const path = join(dir, name);
+			const info = await stat(path).catch(() => undefined);
+			if (info?.isFile() && info.mtimeMs < cutoff) await rm(path, { force: true });
+		}
 	}
 
 	async #tidy(now: number): Promise<void> {

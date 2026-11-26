@@ -199,6 +199,7 @@ scheduler = new Scheduler({
 	// Weighing takes a model request or more for each wake; the tick does not wait for it.
 	weigh: () => void proactive.run(),
 	notice: (roomId, key, body) => bridge.notice(roomId, key, body),
+	filesDir: join(config.dataDir, "files", "in"),
 	tidy: {
 		fingerprint: () => memoryFingerprint(store, personas),
 		run: (date) => tidyMemory({ harness, store, personas, model: modelRef(config.model), context }, date),

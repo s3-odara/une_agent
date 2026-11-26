@@ -13,7 +13,10 @@ const me = "@me:example.org";
 const vad = { threshold: 0.5, startMs: 200, endSilenceMs: 700, maxMs: 20_000, preRollMs: 250 };
 
 export const events: Examples<GatewayEvent> = {
-	ready: [{ type: "ready", userId: "@agent:example.org", deviceId: "DEVICE" }],
+	ready: [
+		{ type: "ready", userId: "@agent:example.org", deviceId: "DEVICE" },
+		{ type: "ready", userId: "@agent:example.org", deviceId: "DEVICE", uploadLimit: 52_428_800 },
+	],
 	message: [
 		{ type: "message", roomId: room, eventId: "$text", body: "hi", ts: 5 },
 		{ type: "message", roomId: room, eventId: "$voice", body: "Voice message.ogg", ts: 6, attachment: { path: "/d/v.ogg", mimeType: "audio/ogg", voice: true } },
@@ -21,6 +24,7 @@ export const events: Examples<GatewayEvent> = {
 		{ type: "message", roomId: room, eventId: "$reply", body: "AB12CD", ts: 8, replyTo: "$p" },
 	],
 	undecryptable: [{ type: "undecryptable", roomId: room, eventId: "$e" }],
+	mediaFailed: [{ type: "mediaFailed", roomId: room, eventId: "$m", reason: "too large" }],
 	sent: [{ type: "sent", requestId: "q", eventId: "$s" }],
 	error: [
 		{ type: "error", requestId: "q", message: "boom" },

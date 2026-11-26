@@ -14,7 +14,7 @@ import { answer, call, everything, inputImages, instructionsOf, lastInput, messa
 const ROOM = "!a:example.org";
 const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 2, 128, 0, 0, 1, 224])]);
 
-test("a picture goes to the model as an image, and is deleted once carried in", async () => {
+test("a picture goes to the model as an image, and is kept on disk with its path", async () => {
 	await using env = await agentEnv();
 	const requests: Request[] = [];
 	env.faux.setResponses([answer("きれいな写真ですね", requests)]);
@@ -25,11 +25,12 @@ test("a picture goes to the model as an image, and is deleted once carried in", 
 	await bridge.idle();
 
 	assert.deepEqual(inputImages(requests[0]!), [{ type: "image", data: PNG.toString("base64"), mimeType: "image/png" }]);
-	assert.match(lastInput(requests[0]!), /画像添付\] photo\.png（image\/png、\d+ B\）/);
-	assert.equal(existsSync(path), false);
+	assert.match(lastInput(requests[0]!), /画像添付\] photo\.png（image\/png、\d+ B）/);
+	assert.match(lastInput(requests[0]!), /保存先: /);
+	assert.equal(existsSync(path), true);
 });
 
-test("a text file is carried into the conversation, and deleted", async () => {
+test("a short text file is carried into the conversation, and kept on disk", async () => {
 	await using env = await agentEnv();
 	const requests: Request[] = [];
 	env.faux.setResponses([answer("読みました", requests)]);
@@ -41,8 +42,26 @@ test("a text file is carried into the conversation, and deleted", async () => {
 
 	const input = lastInput(requests[0]!);
 	assert.match(input, /ファイル添付\] notes\.txt（text\/plain、\d+ B）/);
+	assert.match(input, /保存先: /);
 	assert.match(input, /買い物リスト\n牛乳$/);
-	assert.equal(existsSync(path), false);
+	assert.equal(existsSync(path), true);
+});
+
+test("a long text file is announced by path without inlining its body", async () => {
+	await using env = await agentEnv();
+	const requests: Request[] = [];
+	env.faux.setResponses([answer("確認します", requests)]);
+	const bridge = env.bridge();
+	const path = join(env.dir, "huge.txt");
+	writeFileSync(path, "あいうえお\n".repeat(1000));
+	env.link.emit({ type: "message", roomId: ROOM, eventId: "$t2", body: "huge.txt", ts: 0, attachment: { path, mimeType: "text/plain" } });
+	await bridge.idle();
+
+	const input = lastInput(requests[0]!);
+	assert.match(input, /保存先: /);
+	assert.match(input, /1000 行/);
+	assert.doesNotMatch(input, /あいうえお/);
+	assert.equal(existsSync(path), true);
 });
 
 test("a file of a kind the conversation cannot carry is only announced, and kept for the model to read", async () => {
@@ -56,14 +75,26 @@ test("a file of a kind the conversation cannot carry is only announced, and kept
 	await bridge.idle();
 
 	const input = lastInput(requests[0]!);
-	assert.match(input, /ファイル添付\] data\.zip（application\/zip、2 B\）/);
+	assert.match(input, /ファイル添付\] data\.zip（application\/zip、2 B）/);
 	assert.match(input, /保存先: /);
 	assert.equal(existsSync(path), true);
 });
 
+test("a failed media download tells the room why as a notice", async () => {
+	await using env = await agentEnv();
+	const bridge = env.bridge();
+	env.link.emit({ type: "mediaFailed", roomId: ROOM, eventId: "$big", reason: "the attachment is 25000000 bytes, more than 20971520" });
+	await bridge.idle();
+
+	const [notice] = env.link.of("send");
+	assert.equal(notice?.notice, true);
+	assert.match(notice?.body ?? "", /添付ファイルを取得できませんでした/);
+	assert.match(notice?.body ?? "", /25000000/);
+});
+
 const withPoppler = process.env.AGENT_POPPLER_BIN ? test : test.skip;
 
-withPoppler("a PDF is carried into the conversation as its text, and kept for read_pdf", async () => {
+withPoppler("a short PDF is carried into the conversation as its text, and kept for read_pdf", async () => {
 	await using env = await agentEnv();
 	const requests: Request[] = [];
 	env.faux.setResponses([answer("読みました", requests)]);
@@ -77,6 +108,24 @@ withPoppler("a PDF is carried into the conversation as its text, and kept for re
 	assert.match(input, /PDF添付\] doc\.pdf（application\/pdf、\d+(\.\d)? (KB|B)）/);
 	assert.match(input, /--- PDF 1 ページ目 \/ 全 2 ページ ---/);
 	assert.match(input, /left column/);
+	assert.equal(existsSync(path), true);
+});
+
+withPoppler("a long PDF is announced by path without inlining its text", async () => {
+	await using env = await agentEnv();
+	const requests: Request[] = [];
+	env.faux.setResponses([answer("確認します", requests)]);
+	const bridge = env.bridge();
+	const path = join(env.dir, "long.pdf");
+	writeFileSync(path, samplePdf("LongText ".repeat(350)));
+	env.link.emit({ type: "message", roomId: ROOM, eventId: "$d2", body: "long.pdf", ts: 0, attachment: { path, mimeType: "application/pdf" } });
+	await bridge.idle();
+
+	const input = lastInput(requests[0]!);
+	assert.match(input, /PDF添付\] long\.pdf/);
+	assert.match(input, /保存先: /);
+	assert.match(input, /read_pdf/);
+	assert.doesNotMatch(input, /LongText/);
 	assert.equal(existsSync(path), true);
 });
 

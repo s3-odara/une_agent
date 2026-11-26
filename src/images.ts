@@ -1,8 +1,7 @@
 import type { Message } from "@earendil-works/pi-ai";
 import { defineExtension, GenerationTask, hook } from "@earendil-works/pi-durable";
 
-/** What an image that is no longer sent is replaced by. */
-export const OMITTED = "（古い画面の画像。省略）";
+export const OMITTED = "（古い画像。省略）";
 
 export type ImageWindowOptions = {
 	/** The newest images sent as they are. */

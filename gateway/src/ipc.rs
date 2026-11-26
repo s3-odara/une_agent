@@ -18,6 +18,7 @@ pub enum Event {
     },
     Message(Message),
     Undecryptable { room_id: String, event_id: String },
+    MediaFailed { room_id: String, event_id: String, reason: String },
     Sent { request_id: String, event_id: String },
     Error {
         #[serde(skip_serializing_if = "Option::is_none")]

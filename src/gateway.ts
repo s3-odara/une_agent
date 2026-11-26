@@ -16,6 +16,7 @@ export type GatewayEvent =
 			readonly replyTo?: string;
 	  }
 	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string }
+	| { readonly type: "mediaFailed"; readonly roomId: string; readonly eventId: string; readonly reason: string }
 	| { readonly type: "sent"; readonly requestId: string; readonly eventId: string }
 	| { readonly type: "error"; readonly requestId?: string; readonly message: string }
 	/** Not stored by the gateway: one missed while it was down is not offered again. */

@@ -6,6 +6,12 @@
 			"deviceId": "DEVICE"
 		},
 		{
+			"type": "ready",
+			"userId": "@agent:example.org",
+			"deviceId": "DEVICE",
+			"uploadLimit": 52428800
+		},
+		{
 			"type": "message",
 			"roomId": "!r:example.org",
 			"eventId": "$text",
@@ -47,6 +53,12 @@
 			"type": "undecryptable",
 			"roomId": "!r:example.org",
 			"eventId": "$e"
+		},
+		{
+			"type": "mediaFailed",
+			"roomId": "!r:example.org",
+			"eventId": "$m",
+			"reason": "too large"
 		},
 		{
 			"type": "sent",

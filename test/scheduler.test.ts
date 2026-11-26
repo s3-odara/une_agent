@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { buildEvent, buildTodo, Calendars } from "../src/calendar.ts";
@@ -430,4 +431,27 @@ test("another room's check leaves the calendar to the calendar's room", async ()
 	const other = t.woken.find((wake) => wake.roomId === "!butler:example.org");
 	assert.ok(other !== undefined);
 	assert.ok(!other.content.includes("定例"));
+});
+
+test("old received files are cleaned up on tick while recent ones stay", async () => {
+	using dir = tempDir();
+	const filesDir = join(dir.path, "files");
+	mkdirSync(filesDir, { recursive: true });
+	const now = at("2026-11-17T10:00");
+	const oldFile = join(filesDir, "old.pdf");
+	const recentFile = join(filesDir, "recent.pdf");
+	writeFileSync(oldFile, "old");
+	writeFileSync(recentFile, "recent");
+	utimesSync(oldFile, (now - 8 * 86_400_000) / 1000, (now - 8 * 86_400_000) / 1000);
+	utimesSync(recentFile, (now - 2 * 86_400_000) / 1000, (now - 2 * 86_400_000) / 1000);
+
+	const db = new HostDb(join(dir.path, "host.sqlite"));
+	try {
+		const scheduler = new Scheduler({ config: testConfig(dir.path), db, filesDir, notice: async () => {}, now: () => now, log: () => {} });
+		await scheduler.tick();
+		assert.equal(existsSync(oldFile), false);
+		assert.equal(existsSync(recentFile), true);
+	} finally {
+		db.close();
+	}
 });
