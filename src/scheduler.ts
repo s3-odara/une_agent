@@ -28,21 +28,9 @@ function dueReminders(todos: readonly TodoItem[], today: string, leadDays: reado
 	return todos.flatMap((todo) => {
 		if (todo.done || todo.due === undefined) return [];
 		const days = daysBetween(today, todo.due.date);
-		// The day itself is the scheduler's own wake, at the task's due hour (or `dueTime`), not a lead.
-		if (days === 0 || !leadDays.includes(days)) return [];
-		const when = days === 1 ? "明日が期日" : `${days}日後が期日`;
+		if (!leadDays.includes(days)) return [];
+		const when = days === 0 ? "今日が期日" : days === 1 ? "明日が期日" : `${days}日後が期日`;
 		return [{ kind: "reminder" as const, key: `due:${todo.id}:${todo.due.date}:${days}`, line: `${when}: ${formatTodo(todo, tz)}` }];
-	});
-}
-
-/** A task falls due on its own: at the time of day its `due` names, or, without one, at the configured hour. */
-function dueTimeTriggers(todos: readonly TodoItem[], now: number, today: string, tz: string, dueClock: string): Trigger[] {
-	return todos.flatMap((todo) => {
-		if (todo.done || todo.due === undefined || todo.due.date !== today) return [];
-		const dueAt = todo.due.at ?? localToEpoch(`${today}T${dueClock}`, tz);
-		if (now < dueAt) return [];
-		const when = todo.due.at === undefined ? "期日当日です" : "期日の時刻です";
-		return [{ kind: "reminder" as const, key: `dueAt:${todo.id}:${todo.due.at ?? todo.due.date}`, line: `${when}: ${formatTodo(todo, tz)}` }];
 	});
 }
 
@@ -74,6 +62,8 @@ export type SchedulerOptions = {
 	readonly weather?: WeatherSource;
 	/** Starts weighing the open wakes, those of this tick and those left open before, such as one whose room was busy. */
 	readonly weigh?: () => void;
+	/** Runs a user-scheduled timer directly in its room without aside restrictions. */
+	readonly runTimer?: (roomId: string, id: string, content: string) => Promise<void>;
 	readonly notice: (roomId: string, key: string, body: string) => Promise<void>;
 	readonly tidy?: { fingerprint(): string; run(date: string): Promise<TidyChange[]> };
 	/** Directory of received attachment files; entries older than the TTL are removed on ticks. */
@@ -97,7 +87,7 @@ const ASIDE = [
 	"これはユーザーの発言ではなく、自分から話しかけるかを決める確認。返答はそのままユーザーへのメッセージとしてルームに送られ、通知が鳴る。",
 	"- 話しかけないなら、文章を書かずに stay_silent を呼ぶ（「特にありません」とも書かない）。",
 	"- この確認の間は、書き込むツール（記憶、カレンダー、timer、bash など）と、ページを書き換えるブラウザ操作（クリック、入力、ログイン）は使えない。読むだけのブラウザ操作はできる。",
-	"- 書き込みや実行が必要なら、返答の最後の行を「実行継続」だけにする。この行はルームには届かず、返答のあと、その会話で書き込み制限なく続きが実行される。",
+	"- 書き込みや実行が必要なら、ユーザーに話しかけて確認を取ってから実行する。",
 ];
 
 /** A check comes several times a day whether or not there is anything to say. */
@@ -210,21 +200,21 @@ export class Scheduler {
 		db.setValue("tidy.date", today);
 	}
 
-	/** At any hour: the user set the time. */
+	/** At any hour: the user set the time. Runs directly in the room with full tools instead of an aside. */
 	async #dueTimers(now: number): Promise<void> {
-		const { config, db } = this.#options;
+		const { config, db, runTimer } = this.#options;
+		if (runTimer === undefined) return;
 		const tz = config.timezone;
 		for (const timer of db.timers().filter((item) => item.dueAt <= now)) {
 			const content = [
 				`[約束の時刻 ${formatStamp(now, tz)}]`,
-				...ASIDE,
+				`timer_add で ${formatStamp(timer.createdAt, tz)} に登録した時刻（${formatStamp(timer.dueAt, tz)}）が来た。登録した内容を実行または確認し、結果をユーザーに伝える。`,
+				"すでに会話の中で済んでいる（ユーザーがもう済ませた、要らなくなったと言った）場合は実行せず、その旨を短く触れるだけでよい。",
 				"",
-				`timer_add で ${formatStamp(timer.createdAt, tz)} に登録した時刻（${formatStamp(timer.dueAt, tz)}）が来た。登録した内容:`,
+				"登録した内容:",
 				timer.note,
-				"",
-				"これを伝える。ただし会話の中ですでに済んでいる（ユーザーがもう済ませた、要らなくなったと言った）なら stay_silent を呼ぶ。",
 			].join("\n");
-			this.#wake(now, { key: `timer:${timer.id}`, roomId: timer.roomId, kind: "timer", content });
+			await runTimer(timer.roomId, timer.id, content);
 			db.markTimerFired(timer.id);
 		}
 	}
@@ -243,24 +233,21 @@ export class Scheduler {
 			const late = now - localToEpoch(`${today}T${time}`, tz);
 			return late >= 0 && late < CHECK_LATENESS_MS && !db.wasNotified(`check:${today}:${time}`);
 		});
+		if (!inWindow && !briefDue && checkDue === undefined) return;
+		// Other rooms do not use the calendar, so a CalDAV outage must not hold up their checks.
+		if (checkDue !== undefined) await this.#otherRooms(now, today, checkDue);
 
-		// A task's due hour is a wake of its own, at any hour, so the tasks are read at every tick. The events are
-		// only weighed inside the window, so outside it they are not read at all. When the calendar cannot be
-		// reached the room is told only while the window is open: a failure at night says nothing.
-		const weighing = inWindow || briefDue;
+		const watching = inWindow || briefDue;
 		let events: EventItem[] = [];
 		let todos: TodoItem[] = [];
 		if (calendars !== undefined) {
 			try {
-				[events, todos] = await Promise.all([
-					weighing ? calendars.events(startOfDay(today, tz), startOfDay(addDays(today, LOOKAHEAD_DAYS), tz)) : Promise.resolve([]),
-					calendars.todos(),
-				]);
+				[events, todos] = await Promise.all([calendars.events(startOfDay(today, tz), startOfDay(addDays(today, LOOKAHEAD_DAYS), tz)), calendars.todos()]);
 			} catch (error) {
 				// Said once a day: a brief that silently never comes is worse than one message about why.
 				const key = `caldav-down:${today}`;
 				this.#log(`calendar fetch failed: ${errorMessage(error)}`);
-				if ((inWindow || briefDue) && !db.wasNotified(key)) {
+				if (watching && !db.wasNotified(key)) {
 					await this.#options.notice(proactive.roomId, key, `カレンダー（CalDAV）に接続できません: ${errorMessage(error)}\n復旧するまで、ブリーフと定時の確認はしません。`);
 					db.markNotified([key], now);
 				}
@@ -268,24 +255,17 @@ export class Scheduler {
 			}
 		}
 
-		const dueNow = dueTimeTriggers(todos, now, today, tz, proactive.dueTime).filter((trigger) => !db.wasNotified(trigger.key));
-		if (!inWindow && !briefDue && checkDue === undefined && dueNow.length === 0) return;
-		if (checkDue !== undefined) await this.#otherRooms(now, today, checkDue);
-
 		const upcoming = events.filter((event) => event.end > now);
 		const since = db.value("calendar.checked");
 		// Outside the window the calendar is not weighed for news, so what changed meanwhile is still news when it opens.
-		const watching = calendars !== undefined && (inWindow || briefDue);
-		const triggers = [
-			...(watching
-				? [
-						...eventReminders(upcoming, now, proactive.eventLeadMinutes, tz),
-						...dueReminders(todos, today, proactive.dueLeadDays, tz),
-						...changedItems([...upcoming, ...todos], db.seenItems(), since === undefined ? undefined : Number(since), tz),
-					]
-				: []),
-			...dueNow,
-		].filter((trigger) => !db.wasNotified(trigger.key));
+		const watchCalendar = calendars !== undefined && watching;
+		const triggers = watchCalendar
+			? [
+					...eventReminders(upcoming, now, proactive.eventLeadMinutes, tz),
+					...dueReminders(todos, today, proactive.dueLeadDays, tz),
+					...changedItems([...upcoming, ...todos], db.seenItems(), since === undefined ? undefined : Number(since), tz),
+				].filter((trigger) => !db.wasNotified(trigger.key))
+			: [];
 		const stamp = formatStamp(now, tz);
 		const keys = triggers.map((trigger) => trigger.key).sort();
 
@@ -299,7 +279,7 @@ export class Scheduler {
 			db.markNotified([...(checkDue === undefined ? [] : [key]), ...keys], now);
 		}
 
-		if (watching) {
+		if (watchCalendar) {
 			db.replaceSeenItems(new Map([...upcoming, ...todos].flatMap((item) => (normalizeEtag(item.etag) === "" ? [] : [[item.id, normalizeEtag(item.etag)] as const]))));
 			db.setValue("calendar.checked", String(now));
 		}

@@ -59,7 +59,7 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 
 	const pageFor = async (api: Pick<ToolExecutionApi, "conversationId" | "snapshot">, context: Context): Promise<BrowserPage> => {
 		// While a check is weighed the writing tools are refused before they reach here, so what arrives is a reading
-		// tool, or a run that carries on after the check was adopted (which is in the delivery ledger as its input was).
+		// tool; user messages and user-scheduled timers are in the delivery ledger.
 		if (!db.isWeighing(Number(api.conversationId)) && !(await startedByUser(api, db, context)))
 			throw new BrowserError("ユーザーの発言で始まった実行でなければ、ブラウザは使えません。");
 		const profile = profileOf(Number(api.conversationId));

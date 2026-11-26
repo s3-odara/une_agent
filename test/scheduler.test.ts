@@ -28,6 +28,7 @@ function setup(proactive: Record<string, unknown> = {}, extra: Record<string, un
 	/** Wakes asked for before this many are not looked at any more. */
 	let seen = 0;
 	const notices: string[] = [];
+	const timerRuns: { readonly roomId: string; readonly id: string; readonly content: string }[] = [];
 	let now = at("2026-11-17T05:00");
 	const scheduler = new Scheduler({
 		config,
@@ -35,6 +36,7 @@ function setup(proactive: Record<string, unknown> = {}, extra: Record<string, un
 		...(config.caldav === undefined ? {} : { calendars: new Calendars(backend, config.caldav.calendars, tz) }),
 		weather: weather ?? (async () => ({ area: "東京地方", reportedAt: "2026-11-17T05:00:00+09:00", days: [{ date: "2026-11-17", weather: "くもり昼過ぎから雨", rain: ["12-18時 70%"], maxTemp: "15" }] })),
 
+		runTimer: async (roomId, id, content) => void timerRuns.push({ roomId, id, content }),
 		notice: async (_room, _key, body) => void notices.push(body),
 		now: () => now,
 		log: () => {},
@@ -43,6 +45,7 @@ function setup(proactive: Record<string, unknown> = {}, extra: Record<string, un
 		config,
 		db,
 		backend,
+		timerRuns,
 		/** The wakes asked for since the last `forget()`, in order. */
 		get woken(): Wake[] {
 			return db.openWakes().slice(seen);
@@ -166,7 +169,7 @@ test("an all-day event does not wake the model", async () => {
 	assert.equal(t.submitted.length, 0);
 });
 
-test("the model is woken for a task three days and one day before its due date, and on the day itself at its due hour", async () => {
+test("the model is woken for a task three days and one day before its due date, and not on the due day itself", async () => {
 	// The brief comes after the first check, so the reminders wake the model on their own.
 	using t = setup({ briefTime: "20:00", windowStart: "07:00" });
 	t.task("report", "レポート提出", "2026-11-21");
@@ -177,51 +180,8 @@ test("the model is woken for a task three days and one day before its due date, 
 	};
 	assert.deepEqual(
 		[await remindedOn("2026-11-17"), await remindedOn("2026-11-18"), await remindedOn("2026-11-19"), await remindedOn("2026-11-20"), await remindedOn("2026-11-21")],
-		[false, true, false, true, true],
+		[false, true, false, true, false],
 	);
-});
-
-test("a task without a time of day falls due at the due hour that day, outside the window too, once", async () => {
-	using t = setup({ briefTime: "08:00", windowStart: "08:00" });
-	t.task("report", "レポート提出", "2026-11-17");
-	await t.tickAt("2026-11-17T06:45");
-	assert.equal(t.woken.length, 0);
-	await t.tickAt("2026-11-17T07:00");
-	assert.equal(t.woken.length, 1);
-	assert.equal(t.woken[0]!.kind, "check");
-	assert.match(t.submitted[0]!, /期日当日です/);
-	assert.match(t.submitted[0]!, /レポート提出/);
-	await t.tickAt("2026-11-17T07:15");
-	await t.tickAt("2026-11-18T07:00");
-	assert.equal(t.woken.length, 1);
-});
-
-test("a task with a time of day falls due at that time, not at the configured hour", async () => {
-	using t = setup({ briefTime: "20:00", windowStart: "07:00" });
-	t.task("report", "レポート提出", "2026-11-17T10:30");
-	await t.ticksFrom("2026-11-17T07:00", "2026-11-17T10:15");
-	assert.equal(t.woken.length, 0);
-	await t.tickAt("2026-11-17T10:30");
-	assert.equal(t.woken.length, 1);
-	assert.match(t.submitted[0]!, /期日の時刻です/);
-});
-
-test("a due hour missed while the agent was down is woken for later that day, and not after the day", async () => {
-	using t = setup({ briefTime: "08:00", windowStart: "08:00" });
-	t.task("report", "レポート提出", "2026-11-17");
-	await t.tickAt("2026-11-17T09:00");
-	assert.equal(t.woken.length, 1);
-	assert.match(t.submitted[0]!, /レポート提出/);
-	await t.tickAt("2026-11-18T07:00");
-	assert.equal(t.woken.length, 1);
-});
-
-test("a completed task falls due no more", async () => {
-	using t = setup({ briefTime: "08:00", windowStart: "08:00" });
-	t.task("report", "レポート提出", "2026-11-17");
-	t.backend.put("ToDo", "report.ics", ics("BEGIN:VTODO", "UID:report", "SUMMARY:レポート提出", "STATUS:COMPLETED", "DUE;VALUE=DATE:20261117", "DTSTAMP:20261116T090000Z", "END:VTODO"));
-	await t.tickAt("2026-11-17T07:00");
-	assert.equal(t.woken.length, 0);
 });
 
 test("a task added after the day's brief still wakes the model that day", async () => {
@@ -373,18 +333,19 @@ test("a check time the agent was down for is skipped once an hour has gone by", 
 	assert.equal(t.woken.length, 0);
 });
 
-test("a timer wakes the model in the room it was set in, at any hour, once, with what was asked", async () => {
+test("a timer runs directly in the room it was set in, at any hour, once, with what was asked", async () => {
 	using t = setup();
 	t.db.addTimer({ id: "t1", roomId: "!other:example.org", dueAt: at("2026-11-17T23:30"), note: "面接の結果を聞く", createdAt: at("2026-11-16T21:00") });
 	await t.tickAt("2026-11-17T23:15");
-	assert.equal(t.woken.length, 0);
+	assert.equal(t.timerRuns.length, 0);
 	await t.tickAt("2026-11-17T23:30");
 	await t.tickAt("2026-11-17T23:45");
+	assert.equal(t.woken.length, 0);
 	assert.deepEqual(
-		t.woken.map((wake) => [wake.roomId, wake.kind]),
-		[["!other:example.org", "timer"]],
+		t.timerRuns.map((run) => [run.roomId, run.id]),
+		[["!other:example.org", "t1"]],
 	);
-	assert.match(t.submitted[0]!, /面接の結果を聞く/);
+	assert.match(t.timerRuns[0]!.content, /面接の結果を聞く/);
 });
 
 test("without a calendar the model is still woken for the brief and the checks", async () => {
@@ -431,6 +392,14 @@ test("another room's check leaves the calendar to the calendar's room", async ()
 	const other = t.woken.find((wake) => wake.roomId === "!butler:example.org");
 	assert.ok(other !== undefined);
 	assert.ok(!other.content.includes("定例"));
+});
+
+test("another room's check still runs when the calendar cannot be reached", async () => {
+	using t = setup({ checkTimes: ["12:00"] });
+	t.db.noteActivity("!butler:example.org");
+	t.backend.down = true;
+	await t.tickAt("2026-11-17T12:00");
+	assert.ok(t.woken.some((wake) => wake.roomId === "!butler:example.org"));
 });
 
 test("old received files are cleaned up on tick while recent ones stay", async () => {

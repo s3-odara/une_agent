@@ -10,13 +10,10 @@ import type { Aside, HostDb, Wake } from "./hostdb.ts";
 import { textOutput } from "./text.ts";
 import { formatStamp, localToEpoch } from "./time.ts";
 
-/** What `Proactive` needs of the bridge to the rooms. */
 export interface Rooms {
 	startAside(roomId: string): Promise<Aside | undefined>;
 	adopt(roomId: string, aside: Aside): Promise<boolean>;
 	say(roomId: string, txnId: string, body: string): Promise<string>;
-	/** Runs the room's conversation on from what the aside answered, with every tool there is. */
-	continueRun(roomId: string, key: string): Promise<void>;
 }
 
 export type ProactiveOptions = {
@@ -28,20 +25,8 @@ export type ProactiveOptions = {
 	readonly log?: (message: string) => void;
 };
 
-/** The line an aside's answer ends with to have what it weighed up carried out once its conversation is the room's. */
-const CONTINUATION = "実行継続";
-
-/** The last non-empty line is checked, so anything above it is the answer. */
-export function withoutContinuation(text: string): { readonly body: string; readonly continues: boolean } {
-	const last = text.split("\n").findLast((line) => line.trim() !== "");
-	if (last === undefined || last.trim() !== CONTINUATION) return { body: text, continues: false };
-	return { body: text.slice(0, text.lastIndexOf(last)).trimEnd(), continues: true };
-}
-
 /** A brief or a check not weighed by then is of no use any more. */
 const CHECK_STALE_MS = 3 * 3_600_000;
-/** A timer is kept longer: the user asked for it, and late is better than never, though not days late. */
-const TIMER_STALE_MS = 24 * 3_600_000;
 
 /**
  * Whether to speak is the model's to decide, in a conversation made aside from the room's: a check that ends in silence
@@ -93,7 +78,7 @@ export class Proactive {
 		const { harness, db, rooms, context } = this.#options;
 		let aside = wake.aside;
 		if (aside === undefined) {
-			if (this.#now() - wake.createdAt > (wake.kind === "timer" ? TIMER_STALE_MS : CHECK_STALE_MS)) return db.endWake(wake.key, "expired");
+			if (this.#now() - wake.createdAt > CHECK_STALE_MS) return db.endWake(wake.key, "expired");
 			aside = await rooms.startAside(wake.roomId);
 			// The room's conversation is at work; the next run tries again.
 			if (aside === undefined) return;
@@ -119,11 +104,8 @@ export class Proactive {
 			this.#again = true;
 			return;
 		}
-		const { body, continues } = withoutContinuation(answer.text);
-		if (body !== "") await rooms.say(wake.roomId, `reply:wake:${wake.key}`, body);
+		await rooms.say(wake.roomId, `reply:wake:${wake.key}`, answer.text);
 		db.endWake(wake.key, "sent");
-		// The conversation is the room's now, so what the aside weighed up is carried out with every tool there is.
-		if (continues) await rooms.continueRun(wake.roomId, wake.key).catch((error) => this.#log(`continuing ${wake.key} failed: ${errorMessage(error)}`));
 	}
 }
 
@@ -135,6 +117,7 @@ export class Proactive {
  */
 const READS: ReadonlySet<string> = new Set([
 	"read",
+	"read_pdf",
 	"calendar_list",
 	"weather_forecast",
 	"weather_forecast_area",
@@ -153,7 +136,7 @@ const READS: ReadonlySet<string> = new Set([
 	TOOL_SEARCH_TOOL_NAME,
 ]);
 
-export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。実行が必要なら、返答の最後の行を「実行継続」だけにしてください。";
+export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。書き込みが必要なら、ユーザーに話しかけて確認を取ってから実行してください。";
 
 export type ProactiveExtensionOptions = {
 	readonly db: HostDb;
@@ -178,8 +161,8 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 		sections: [
 			section("proactive", () =>
 				[
-					"朝のブリーフ、定時の確認、カレンダーの動き、約束の時刻に起こされ、この会話を読み返して、伝えることがあれば自分から話しかける。",
-					"- ユーザーが時刻を決めて頼んだこと（「20時に教えて」「金曜の夜に結果を聞いて」）は timer_add で登録する。",
+					"朝のブリーフ、定時の確認、カレンダーの動きに起こされ、この会話を読み返して、伝えることがあれば自分から話しかける。",
+					"- ユーザーが時刻を決めて頼んだこと（「20時に教えて」「金曜の夜に結果を聞いて」「明日の朝9時にデプロイして」）は timer_add で登録する。登録した時刻には通常どおりツールを使って実行・報告できる。",
 					"- 時刻の決まっていない「あとで聞く」は登録しない。定時の確認で会話から拾う。",
 					"- 予定やタスクそのものはカレンダーに登録する。予定の前の知らせは、決まった時刻を頼まれたときだけ timer で足す。",
 				].join("\n"),
@@ -198,7 +181,7 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 			}),
 			defineTool({
 				name: "timer_add",
-				description: "決まった時刻に自分から話しかけるよう登録する。",
+				description: "決まった時刻に自分から実行・報告するよう登録する。",
 				parameters: obj({
 					at: str({ description: "時刻。ユーザーの現地時刻で YYYY-MM-DDTHH:MM", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$" }),
 					note: str({ description: "その時刻に何をするか。会話を読み返さなくても分かるように具体的に（例: 14時の面接の結果を聞く）", minLength: 1 }),

@@ -199,6 +199,7 @@ scheduler = new Scheduler({
 	weather: config.weather === undefined ? undefined : () => weather(),
 	// Weighing takes a model request or more for each wake; the tick does not wait for it.
 	weigh: () => void proactive.run(),
+	runTimer: (roomId, id, content) => bridge.runTimer(roomId, id, content),
 	notice: (roomId, key, body) => bridge.notice(roomId, key, body),
 	filesDir: join(config.dataDir, "files", "in"),
 	tidy: {

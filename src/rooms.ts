@@ -251,16 +251,15 @@ export class Bridge {
 		}
 	}
 
-	/** What a person said, into the room's conversation; counted, so a check knows something was said in the room. */
-	async #submitToRoom(roomId: string, key: string, content: string | UserInput) {
+	async #submitToRoom(roomId: string, key: string, content: string | UserInput, noteActivity = true) {
 		const submission = await (await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key, whenBusy: "steer" }, this.#options.context);
-		this.#options.db.noteActivity(roomId);
+		if (noteActivity) this.#options.db.noteActivity(roomId);
 		return submission;
 	}
 
-	async #submit(roomId: string, key: string, content: string | UserInput, voice = false): Promise<void> {
+	async #submit(roomId: string, key: string, content: string | UserInput, voice = false, noteActivity = true): Promise<void> {
 		const { db } = this.#options;
-		const submission = await this.#submitToRoom(roomId, key, content);
+		const submission = await this.#submitToRoom(roomId, key, content, noteActivity);
 		const delivery: Delivery = { eventId: key, roomId, submissionId: Number(submission.id), voice };
 		db.addDelivery(delivery);
 		this.#startDelivery(delivery);
@@ -329,17 +328,9 @@ export class Bridge {
 		return this.#retrying(`the message ${txnId}`, () => this.#send(roomId, txnId, body, false));
 	}
 
-	/**
-	 * Runs the room's conversation on from what an aside answered, as the input its continuation line stands for. An
-	 * input rather than a bare run, so what comes of it reaches the room like any other answer.
-	 */
-	continueRun(roomId: string, key: string): Promise<void> {
-		return this.#serial(roomId, async () => {
-			const submission = await this.#submitToRoom(roomId, `continue:${key}`, "[確認の後続] 直前の返答が「実行継続」で終わっていたので、その続きをここで実行する。ユーザーの発言ではない。");
-			const delivery: Delivery = { eventId: `continue:${key}`, roomId, submissionId: Number(submission.id), voice: false };
-			this.#options.db.addDelivery(delivery);
-			this.#startDelivery(delivery);
-		});
+	/** Runs a user-scheduled timer directly in the room's conversation with all tools and progress reporting, without bumping room activity. */
+	runTimer(roomId: string, id: string, content: string): Promise<void> {
+		return this.#serial(roomId, () => this.#submit(roomId, `timer:${id}`, content, false, false));
 	}
 
 	/**

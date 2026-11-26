@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { createAttachExtension } from "../src/attach.ts";
 import { createProactiveExtension, Proactive, WEIGHING_REFUSAL } from "../src/proactive.ts";
 import { Scheduler } from "../src/scheduler.ts";
 import { localToEpoch } from "../src/time.ts";
@@ -13,7 +14,16 @@ const at = (local: string) => localToEpoch(local, "Asia/Tokyo");
 
 async function setup(config: Record<string, unknown> = {}) {
 	let now = at("2026-11-17T10:00");
-	const env = await agentEnv({ config, souls: { "butler.md": "執事" }, extensions: ({ db }) => [createProactiveExtension({ db, tz: "Asia/Tokyo" })], now: () => now, codemode: {} });
+	const env = await agentEnv({
+		config,
+		souls: { "butler.md": "執事" },
+		extensions: ({ db }) => [
+			createProactiveExtension({ db, tz: "Asia/Tokyo" }),
+			createAttachExtension({ db, send: async () => "$attached", uploadLimit: () => undefined }),
+		],
+		now: () => now,
+		codemode: {},
+	});
 	const bridge = env.bridge();
 	const proactive = new Proactive({ harness: env.harness, db: env.db, rooms: bridge, context, now: () => now, log: () => {} });
 	let n = 0;
@@ -92,27 +102,24 @@ test("a tool that writes is refused while a check is weighed, and does nothing",
 	assert.deepEqual(t.env.db.timers(), []);
 });
 
-test("an answer that ends with the continuation line does not send it, and runs on with every tool", async () => {
+test("read_pdf is allowed while a check is weighed, while send_file is refused", async () => {
 	await using t = await setup();
 	const requests: Request[] = [];
 	t.env.faux.setResponses([
-		answer("報告です\n実行継続"),
-		call("timer_add", { at: "2026-11-17T20:00", note: "夜に聞く" }),
-		answer("20時に聞きますね", requests),
+		call("read_pdf", { path: "doc.pdf", pdfMode: "image" }),
+		(request) => {
+			requests.push(request);
+			return call("send_file", { path: "doc.pdf" });
+		},
+		(request) => {
+			requests.push(request);
+			return call("stay_silent", {});
+		},
 	]);
 	await t.check();
-	await t.bridge.idle();
-	// The middle sends are the progress notices of the continuation's run.
-	assert.deepEqual([t.sent().at(0)?.[0], t.sent().at(-1)?.[0]], ["報告です", "20時に聞きますね"]);
-	// The continuation runs in the room's conversation, where writing is allowed again.
-	assert.deepEqual(t.env.db.timers().map((timer) => timer.note), ["夜に聞く"]);
-});
-
-test("a continuation that was not asked for changes nothing: the line is sent as it is", async () => {
-	await using t = await setup();
-	t.env.faux.setResponses([answer("実行継続の結果です。問題ありません。")]);
-	await t.check();
-	assert.deepEqual(t.sent(), [["実行継続の結果です。問題ありません。", false]]);
+	// read_pdf reached its own parameter check instead of being blocked by the weighing hook.
+	assert.doesNotMatch(lastToolResult(requests[0]!).text, /書き込むツールは使えません/);
+	assert.ok(lastToolResult(requests[1]!).text.includes(WEIGHING_REFUSAL));
 });
 
 test("a script that writes is refused while a check is weighed, and does nothing", async () => {
@@ -208,25 +215,33 @@ test("a check the room's conversation never became free for is given up once it 
 	assert.deepEqual(t.sent(), []);
 });
 
-test("a time the model sets with the user brings it back then, in that room, with what was asked", async () => {
+test("a time the model sets with the user runs directly in that room with full tools", async () => {
 	await using t = await setup();
 	const requests: Request[] = [];
-	t.env.faux.setResponses([call("timer_add", { at: "2026-11-17T20:00", note: "面接の結果を聞く" }), answer("20時に聞きますね"), answer("面接の結果はどうだった？", requests)]);
+	t.env.faux.setResponses([
+		call("timer_add", { at: "2026-11-17T20:00", note: "面接の結果を聞いて、必要なら次のタイマーを入れる" }),
+		answer("20時に聞きますね"),
+		call("timer_add", { at: "2026-11-17T21:00", note: "さらに確認する" }),
+		answer("面接の結果はどうだった？", requests),
+	]);
 	await t.say("20時に面接の結果を聞いて");
 
 	const scheduler = new Scheduler({
 		config: t.env.config,
 		db: t.env.db,
 		weigh: () => void t.proactive.run(),
+		runTimer: (roomId, id, content) => t.bridge.runTimer(roomId, id, content),
 		notice: async () => {},
 		now: () => at("2026-11-17T20:00"),
 		log: () => {},
 	});
 	t.setClock("2026-11-17T20:00");
 	await scheduler.tick();
-	await t.proactive.run();
+	await t.bridge.idle();
 	assert.deepEqual(t.sent().at(-1), ["面接の結果はどうだった？", false]);
-	assert.match(everything(requests[0]!), /面接の結果を聞く/);
+	assert.match(everything(requests[0]!), /面接の結果を聞いて/);
+	// A writing tool succeeded during the timer run because timers run directly rather than in an aside.
+	assert.deepEqual(t.env.db.timers().map((timer) => timer.note), ["さらに確認する"]);
 });
 
 test("a time already past is refused", async () => {

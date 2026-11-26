@@ -11,7 +11,7 @@ export type Delivery = {
 export type Wake = {
 	readonly key: string;
 	readonly roomId: string;
-	readonly kind: "brief" | "check" | "timer";
+	readonly kind: "brief" | "check";
 	readonly content: string;
 	readonly createdAt: number;
 	/** Set once the conversation it is weighed in has been made. */

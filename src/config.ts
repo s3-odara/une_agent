@@ -144,9 +144,6 @@ const ConfigSchema = obj({
 			windowEnd: clock("21:00"),
 			tickMinutes: count(15),
 			eventLeadMinutes: count(120),
-			// What a task with no time of day falls due at; one with a time falls due at that time. Past this hour the
-			// day's first tick wakes the model, outside the window too.
-			dueTime: clock("07:00"),
 			dueLeadDays: arr(int({ minimum: 0 }), { default: [3, 1] }),
 		}),
 	),
