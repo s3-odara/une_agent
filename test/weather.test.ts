@@ -73,7 +73,7 @@ test("the model can request a municipality without changing the default forecast
 	assert.match(results[0]?.text ?? "", /伊豆諸島北部の天気予報.*気温：大島地点/);
 	assert.equal(results[1]?.isError, false);
 	assert.match(results[1]?.text ?? "", /東京地方の天気予報.*気温：東京地点.*日本時間/);
-	assert.match(results[1]?.text ?? "", /2026-11-18 晴れ.*00-06時 10%/);
+	assert.match(results[1]?.text ?? "", /\| 2026-11-18 \| 晴れ \| 9 \| 21 \| 00-06時 10% \|/);
 });
 
 test("without a default, a prefecture-qualified municipality sends only its forecast office code to JMA", async () => {
@@ -171,8 +171,8 @@ test("a weekly request uses the covering region and labels its actual temperatur
 	const forecast = results[0]?.text ?? "";
 	assert.match(forecast, /神奈川県の週間天気予報/);
 	assert.match(forecast, /横浜地点/);
-	const day = forecast.split("\n").find((line) => line.includes("2026-11-19")) ?? "";
-	for (const field of [/曇後一時雨/, /最低\s*8℃/, /最高\s*18℃/, /50%/, /信頼度\s*B/]) assert.match(day, field);
+	assert.ok(forecast.split("\n").includes("| 日付 | 天気 | 最低(℃) | 最高(℃) | 降水確率 | 信頼度 |"));
+	assert.ok(forecast.split("\n").includes("| 2026-11-19 | 曇後一時雨 | 8 | 18 | 50% | B |"));
 });
 
 test("three-hour queries in one office disclose the same areas but show the requested area locally", async () => {
@@ -214,14 +214,15 @@ test("three-hour queries in one office disclose the same areas but show the requ
 	const west = results[0]?.text ?? "";
 	assert.match(west, /神奈川県・西部/);
 	assert.match(west, /小田原地点/);
-	const slot = west.split("\n").find((line) => line.includes("15:00")) ?? "";
-	for (const field of [/18:00/, /雨/, /北/, /3\D+5\s*m\/s/, /10℃/, /開始時点/]) assert.match(slot, field);
-	assert.ok(west.split("\n").some((line) => line.includes("18:00") && line.includes("8℃") && !line.includes("15:00")));
+	const westLines = west.split("\n");
+	assert.ok(westLines.includes("| 期間 | 天気 | 風 | 気温(開始時点, ℃) |"));
+	assert.ok(westLines.some((line) => /\| .*15:00〜.*18:00 \| 雨 \| 北 3〜5 m\/s \| 10 \|/.test(line)));
+	assert.ok(westLines.some((line) => /\| .*18:00 \| — \| — \| 8 \|/.test(line) && !line.includes("15:00")));
 	assert.equal(results[1]?.isError, false);
 	const east = results[1]?.text ?? "";
 	assert.match(east, /神奈川県・東部/);
 	assert.match(east, /横浜地点/);
-	assert.ok(east.split("\n").some((line) => line.includes("15:00") && line.includes("晴れ")));
+	assert.ok(east.split("\n").some((line) => line.includes("15:00") && line.includes("| 晴れ |")));
 });
 
 test("an unknown place is not treated as the default area", async () => {

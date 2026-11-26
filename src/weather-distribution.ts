@@ -121,36 +121,82 @@ export function jmaWeatherDistributionGrid(fetchForecast = fetch) {
 	};
 }
 
-const labels: Record<Layer, string> = { weather: "天気", rain: "降水", snow: "降雪", temperature: "気温", high: "日中の最高気温", low: "朝の最低気温" };
-const units: Record<Layer, string> = { weather: "", rain: " mm", snow: " cm", temperature: "℃", high: "℃", low: "℃" };
+const labels: Record<Layer, string> = {
+	weather: "天気",
+	rain: "降水(mm)",
+	snow: "降雪(cm)",
+	temperature: "気温(開始時点, ℃)",
+	high: "日中の最高気温",
+	low: "朝の最低気温",
+};
 const clock = (value: string) => value.slice(5, 16).replace("T", " ");
+
+function formatLayerCell(key: Layer, layer: LayerResult | undefined): string {
+	if (layer === undefined) return "—";
+	if (layer.status === "unavailable") return "取得・判定できず";
+	const value = layer.rows[0]?.[0];
+	if (value == null) return "欠測";
+	return key === "weather" || key === "rain" || key === "snow" ? legends[key][value]! : String(value);
+}
 
 export function formatWeatherDistribution(report: Awaited<ReturnType<ReturnType<typeof jmaWeatherDistribution>>>, point: Point) {
 	const first = report[0];
 	if (first === undefined) return "気象庁の天気分布予報に利用できる時刻が見つかりませんでした。";
 	const daily = new Map<string, string[]>();
-	const lines = report.flatMap(({ startAt, validAt, layers }) => {
-		const fields = (keys: readonly Layer[]) => keys.flatMap((key) => {
+	const temps = new Map<string, LayerResult>();
+	const intervals: { startAt: string; validAt: string; layers: Partial<Record<Layer, LayerResult>> }[] = [];
+
+	for (const { startAt, validAt, layers } of report) {
+		if (layers.temperature !== undefined) temps.set(validAt, layers.temperature);
+		if (startAt !== undefined && (layers.weather !== undefined || layers.rain !== undefined || layers.snow !== undefined)) {
+			intervals.push({ startAt, validAt, layers });
+		}
+		const extremes = (["low", "high"] as const).flatMap((key) => {
 			const layer = layers[key];
 			if (layer === undefined) return [];
-			if (layer.status === "unavailable") return [`${labels[key]}：取得・判定できず`];
-			const value = layer.rows[0]?.[0];
-			if (value == null) return [`${labels[key]}：欠測`];
-			const display = key === "weather" || key === "rain" || key === "snow" ? legends[key][value] : value;
-			return [`${labels[key]}：${display}${units[key]}`];
-		}).join("、");
-		const interval = fields(["weather", "rain", "snow"]);
-		const temperature = fields(["temperature"]);
-		const extremes = fields(["high", "low"]);
-		if (extremes) {
+			const formatted = formatLayerCell(key, layer);
+			return [`${labels[key]} ${/^-?\d+$/.test(formatted) ? `${formatted}℃` : formatted}`];
+		});
+		if (extremes.length > 0) {
 			const day = validAt.slice(5, 10);
-			daily.set(day, [...(daily.get(day) ?? []), extremes]);
+			daily.set(day, [...(daily.get(day) ?? []), ...extremes]);
 		}
-		return [
-			...(startAt === undefined || !interval ? [] : [`- ${clock(startAt)}〜${clock(validAt)}：${interval}`]),
-			...(temperature ? [`- ${clock(validAt)}：${temperature}`] : []),
-		];
+	}
+
+	const usedTemps = new Set<string>();
+	const entries: { sortKey: string; period: string; layers: Partial<Record<Layer, LayerResult>> }[] = intervals.map(({ startAt, validAt, layers }) => {
+		const temperature = temps.get(startAt);
+		if (temperature !== undefined) usedTemps.add(startAt);
+		return {
+			sortKey: startAt,
+			period: `${clock(startAt)}〜${clock(validAt)}`,
+			layers: {
+				...(layers.weather !== undefined && { weather: layers.weather }),
+				...(layers.rain !== undefined && { rain: layers.rain }),
+				...(layers.snow !== undefined && { snow: layers.snow }),
+				...(temperature !== undefined && { temperature }),
+			},
+		};
 	});
+	for (const [validAt, temperature] of temps) {
+		if (usedTemps.has(validAt)) continue;
+		entries.push({ sortKey: validAt, period: clock(validAt), layers: { temperature } });
+	}
+	entries.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+
+	const tableLayers = (["weather", "rain", "snow", "temperature"] as const).filter((key) => entries.some(({ layers }) => layers[key] !== undefined));
+	const row = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
+	const table = entries.length === 0 ? [] : [
+		"",
+		row(["期間", ...tableLayers.map((key) => labels[key])]),
+		row(["---", ...tableLayers.map(() => "---")]),
+		...entries.map(({ period, layers }) => row([period, ...tableLayers.map((key) => formatLayerCell(key, layers[key]))])),
+	];
 	const dailyLines = [...daily].map(([day, extremes]) => `- ${day}：${extremes.join("、")}`);
-	return [`気象庁｜天気分布予報（日本時間、約5 km格子）｜緯度 ${point.lat}、経度 ${point.lon}`, `発表 ${clock(first.baseAt)}`, ...lines, ...dailyLines].join("\n");
+	return [
+		`気象庁｜天気分布予報（日本時間、約5 km格子）｜緯度 ${point.lat}、経度 ${point.lon}`,
+		`発表 ${clock(first.baseAt)}`,
+		...table,
+		...(dailyLines.length === 0 ? [] : ["", ...dailyLines]),
+	].join("\n");
 }

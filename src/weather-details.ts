@@ -95,11 +95,31 @@ export function parseThreeHourForecast(json: unknown, target: ForecastArea): Thr
 export function formatThreeHourForecast(forecast: ThreeHourForecast): string {
 	if (forecast.slots.length === 0) return "指定区域の3時間ごとの予報を取得できませんでした。";
 	const date = new Intl.DateTimeFormat("ja-JP", { timeZone: JMA_TIME_ZONE, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-	const station = forecast.temperatureStation && forecast.slots.some((slot) => slot.temperature !== undefined) ? `、気温：${forecast.temperatureStation}地点` : "";
+	const hasTemp = forecast.slots.some((slot) => slot.temperature !== undefined);
+	const hasWind = forecast.slots.some((slot) => slot.wind !== undefined);
+	const station = forecast.temperatureStation && hasTemp ? `、気温：${forecast.temperatureStation}地点` : "";
 	const report = forecast.reportedAt === undefined ? "" : `、${forecast.reportedAt} 発表`;
-	return [`${forecast.area}の3時間ごとの予報（気象庁${report}${station}、日本時間）`, ...forecast.slots.map(({ start, end, weather, wind, temperature }) => {
-		const interval = end === undefined ? "" : `〜${date.format(end)}`;
-		const temp = temperature === undefined ? "" : ` 気温${temperature}℃${end === undefined ? "" : "（開始時点）"}`;
-		return `- ${date.format(start)}${interval}${weather === undefined ? "" : ` ${weather}`}${wind === undefined ? "" : ` 風 ${wind}`}${temp}`;
-	})].join("\n");
+	const columns = [
+		"期間",
+		"天気",
+		...(hasWind ? ["風"] : []),
+		...(hasTemp ? ["気温(開始時点, ℃)"] : []),
+	];
+	const row = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
+	const rows = forecast.slots.map(({ start, end, weather, wind, temperature }) => {
+		const period = end === undefined ? date.format(start) : `${date.format(start)}〜${date.format(end)}`;
+		return row([
+			period,
+			weather ?? "—",
+			...(hasWind ? [wind ?? "—"] : []),
+			...(hasTemp ? [temperature === undefined ? "—" : String(temperature)] : []),
+		]);
+	});
+	return [
+		`${forecast.area}の3時間ごとの予報（気象庁${report}${station}、日本時間）`,
+		"",
+		row(columns),
+		row(columns.map(() => "---")),
+		...rows,
+	].join("\n");
 }

@@ -133,12 +133,23 @@ export function formatForecast(forecast: Forecast, dates?: readonly string[]): s
 	const days = forecast.days.filter((day) => dates === undefined || dates.includes(day.date));
 	const name = forecast.period === "week" ? "週間天気予報" : "天気予報";
 	if (days.length === 0) return `${name}を取得できませんでした。`;
-	const lines = days.map((day) => {
-		const temp = [day.minTemp === undefined ? "" : ` 最低${day.minTemp}℃`, day.maxTemp === undefined ? "" : ` 最高${day.maxTemp}℃`].join("");
-		const rain = day.rain.length === 0 ? "" : ` 降水確率 ${day.rain.join("、")}`;
-		const confidence = day.reliability === undefined ? "" : ` 降水の信頼度 ${day.reliability}`;
-		return `- ${day.date} ${day.weather ?? "（天気は未発表）"}${temp}${rain}${confidence}`;
-	});
+	const hasReliability = forecast.period === "week" || days.some((day) => day.reliability !== undefined);
 	const station = forecast.temperatureStation && days.some((day) => day.minTemp !== undefined || day.maxTemp !== undefined) ? `、気温：${forecast.temperatureStation}地点` : "";
-	return [`${forecast.area}の${name}（気象庁、${forecast.reportedAt} 発表${station}、日本時間）`, ...lines].join("\n");
+	const columns = ["日付", "天気", "最低(℃)", "最高(℃)", "降水確率", ...(hasReliability ? ["信頼度"] : [])];
+	const row = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
+	const rows = days.map((day) => row([
+		day.date,
+		day.weather ?? "—",
+		day.minTemp ?? "—",
+		day.maxTemp ?? "—",
+		day.rain.length === 0 ? "—" : day.rain.join("、"),
+		...(hasReliability ? [day.reliability ?? "—"] : []),
+	]));
+	return [
+		`${forecast.area}の${name}（気象庁、${forecast.reportedAt} 発表${station}、日本時間）`,
+		"",
+		row(columns),
+		row(columns.map(() => "---")),
+		...rows,
+	].join("\n");
 }

@@ -53,13 +53,11 @@ test("the point forecast shows mesh weather, rainfall bands, and distinct interv
 
 	assert.equal(results[0]?.isError, false);
 	const lines = (results[0]?.text ?? "").split("\n");
-	const afternoon = lines.find((line) => line.includes("11-23 15:00") && line.includes("11-23 18:00")) ?? "";
-	for (const field of [/天気.*晴/, /降水.*\b0\s*mm/, /降雪.*取得・判定できず/]) assert.match(afternoon, field);
-	const evening = lines.find((line) => line.includes("11-23 21:00") && line.includes("11-24 00:00")) ?? "";
-	assert.match(evening, /降水.*取得・判定できず/);
-	const temperature = lines.find((line) => line.includes("11-23 18:00") && line.includes("-2℃")) ?? "";
-	assert.match(temperature, /気温.*-2℃/);
-	assert.doesNotMatch(temperature, /最高|最低/);
+	assert.ok(lines.includes("| 期間 | 天気 | 降水(mm) | 降雪(cm) | 気温(開始時点, ℃) |"));
+	assert.ok(lines.includes("| 11-23 15:00〜11-23 18:00 | 晴 | 0 | 取得・判定できず | — |"));
+	assert.ok(lines.includes("| 11-23 18:00 | — | — | — | -2 |"));
+	assert.ok(lines.includes("| 11-23 21:00〜11-24 00:00 | 晴 | 取得・判定できず | — | — |"));
+	assert.ok(lines.includes("| 11-24 00:00 | — | — | — | -2 |"));
 	const daily = lines.filter((line) => /最高|最低/.test(line));
 	assert.ok(daily.some((line) => /最低気温.*-4℃/.test(line)));
 	assert.ok(daily.some((line) => /最高気温.*7℃/.test(line)));
@@ -68,9 +66,8 @@ test("the point forecast shows mesh weather, rainfall bands, and distinct interv
 		assert.doesNotMatch(line, /\d{2}:\d{2}/);
 	}
 	const neighbor = results[1]?.text ?? "";
-	assert.match(neighbor, /天気.*雨/);
-	assert.match(neighbor, /降水.*1〜4\s*mm/);
-	assert.match(neighbor, /日中の最高気温.*欠測/);
+	assert.match(neighbor, /\| 11-23 15:00〜11-23 18:00 \| 雨 \| 1〜4 \|/);
+	assert.match(neighbor, /日中の最高気温 欠測/);
 });
 
 test("the point forecast does not disclose the requested coordinates to JMA", async () => {
