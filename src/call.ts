@@ -39,6 +39,7 @@ export class Calls {
 	readonly #options: CallsOptions;
 	readonly #log: (message: string) => void;
 	readonly #rooms = new Map<string, RoomCall>();
+	readonly #wanted = new Set<string>();
 	readonly #work = new Set<Promise<void>>();
 	#chime: Promise<string> | undefined;
 
@@ -55,16 +56,23 @@ export class Calls {
 		while (this.#work.size > 0) await Promise.allSettled([...this.#work]);
 	}
 
-	#onEvent(event: GatewayEvent): void {
+	#join(roomId: string): void {
 		const { link, config } = this.#options;
+		this.#rooms.set(roomId, { joined: false, turn: 0, tail: Promise.resolve(), overtaken: false, spoken: new Map() });
+		link.send({ type: "joinCall", roomId, vad: (config.voice?.call ?? fail()).vad });
+	}
+
+	#onEvent(event: GatewayEvent): void {
+		const { link } = this.#options;
 		switch (event.type) {
 			case "callMembers": {
 				const room = this.#rooms.get(event.roomId);
-				if (event.userIds.length > 0 && room === undefined) {
-					this.#rooms.set(event.roomId, { joined: false, turn: 0, tail: Promise.resolve(), overtaken: false, spoken: new Map() });
-					link.send({ type: "joinCall", roomId: event.roomId, vad: (config.voice?.call ?? fail()).vad });
-				} else if (event.userIds.length === 0 && room !== undefined) {
-					link.send({ type: "leaveCall", roomId: event.roomId });
+				if (event.userIds.length > 0) {
+					this.#wanted.add(event.roomId);
+					if (room === undefined) this.#join(event.roomId);
+				} else {
+					this.#wanted.delete(event.roomId);
+					if (room !== undefined) link.send({ type: "leaveCall", roomId: event.roomId });
 				}
 				return;
 			}
@@ -72,13 +80,18 @@ export class Calls {
 				const room = this.#rooms.get(event.roomId);
 				if (room !== undefined) room.joined = true;
 				this.#log(`joined the call in ${event.roomId}`);
+				if (!this.#wanted.has(event.roomId)) link.send({ type: "leaveCall", roomId: event.roomId });
 				return;
 			}
 			case "callLeft": {
 				const room = this.#rooms.get(event.roomId);
 				this.#rooms.delete(event.roomId);
 				for (const resolve of room?.spoken.values() ?? []) resolve();
-				if (event.reason === "") return this.#log(`left the call in ${event.roomId}`);
+				if (event.reason === "") {
+					this.#log(`left the call in ${event.roomId}`);
+					if (this.#wanted.has(event.roomId)) this.#join(event.roomId);
+					return;
+				}
 				this.#log(`left the call in ${event.roomId}: ${event.reason}`);
 				this.#track(this.#options.notice(event.roomId, `callleft:${randomUUID()}`, `通話から抜けました（${event.reason}）。`));
 				return;
@@ -127,8 +140,11 @@ export class Calls {
 		// Not into the user's next utterance: the gateway would stop listening to it.
 		if (call.chime && this.#rooms.get(roomId) === room && room.turn === turn) {
 			try {
-				// Nobody waits for it to finish, so `callSpoken` for it finds no listener and the file is kept for next time.
-				this.#options.link.send({ type: "callSpeak", roomId, id: randomUUID(), path: await this.#chimeFile() });
+				const chimePath = await this.#chimeFile();
+				if (this.#rooms.get(roomId) === room && room.turn === turn) {
+					// Nobody waits for it to finish, so `callSpoken` for it finds no listener and the file is kept for next time.
+					this.#options.link.send({ type: "callSpeak", roomId, id: randomUUID(), path: chimePath });
+				}
 			} catch (error) {
 				this.#log(`playing the chime in ${roomId} failed: ${errorMessage(error)}`);
 			}
@@ -171,8 +187,10 @@ export class Calls {
 		const id = randomUUID();
 		const path = join(outDir, `call-${id}.wav`);
 		await writeFile(path, wav);
-		const spoken = new Promise<void>((resolve) => room.spoken.set(id, resolve));
 		try {
+			// `callLeft` may have arrived while writing the file; registering on a removed room would never be resolved.
+			if (this.#rooms.get(roomId) !== room) return;
+			const spoken = new Promise<void>((resolve) => room.spoken.set(id, resolve));
 			this.#options.link.send({ type: "callSpeak", roomId, id, path });
 			return await spoken;
 		} finally {

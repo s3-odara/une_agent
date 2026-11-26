@@ -359,15 +359,31 @@ export class HostDb {
 	}
 
 	undecidedApprovals(roomId: string): ApprovalRow[] {
-		return this.#db.prepare("SELECT * FROM approvals WHERE room_id = ? AND decision IS NULL ORDER BY created_at, rowid").all(roomId).map(approvalRow);
+		return this.#db
+			.prepare("SELECT * FROM approvals WHERE room_id = ? AND decision IS NULL AND prompt_event_id IS NOT NULL ORDER BY created_at, rowid")
+			.all(roomId)
+			.map(approvalRow);
 	}
 
 	setApprovalPrompt(id: string, promptEventId: string): void {
 		this.#db.prepare("UPDATE approvals SET prompt_event_id = ? WHERE id = ?").run(promptEventId, id);
 	}
 
-	decideApproval(id: string, decision: Decision, reason?: string): boolean {
-		return this.#db.prepare("UPDATE approvals SET decision = ?, reason = ? WHERE id = ? AND decision IS NULL").run(decision, reason ?? null, id).changes > 0;
+	decideApproval(id: string, decision: Decision, reason?: string, at?: number): boolean {
+		this.#db.exec("BEGIN");
+		try {
+			const changed = this.#db.prepare("UPDATE approvals SET decision = ?, reason = ? WHERE id = ? AND decision IS NULL").run(decision, reason ?? null, id).changes > 0;
+			if (changed && decision === "approve_always") {
+				this.#db
+					.prepare("INSERT OR IGNORE INTO approval_rules (tool, created_at) SELECT tool, ? FROM approvals WHERE id = ?")
+					.run(at ?? Date.now(), id);
+			}
+			this.#db.exec("COMMIT");
+			return changed;
+		} catch (error) {
+			this.#db.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	approvedForRun(runKey: string, tool: string): boolean {

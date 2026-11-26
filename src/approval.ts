@@ -134,10 +134,7 @@ export class Approvals implements MessageHandler {
 	}
 
 	#decide(id: string, decision: Decision, reason?: string): boolean {
-		const { db } = this.#options;
-		if (!db.decideApproval(id, decision, reason)) return false;
-		const row = db.approval(id);
-		if (decision === "approve_always" && row !== undefined) db.setAlwaysApproved(row.tool, true, this.#now());
+		if (!this.#options.db.decideApproval(id, decision, reason, this.#now())) return false;
 		for (const wake of this.#waiting.get(id) ?? []) wake();
 		return true;
 	}
