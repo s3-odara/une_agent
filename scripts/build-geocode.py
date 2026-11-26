@@ -209,7 +209,7 @@ def facility(builder, feature):
     address = p.get('addr:full') or province + city + suburb + p.get('addr:street', '') + p.get('addr:housenumber', '')
     aliases = {a.strip() for n in names for a in n.split(';') if a.strip()}
     # OSM の駅は名前に「駅」を付けない慣習（name=赤羽）なので、「赤羽駅」という呼び方でも引けるよう別名を足す。
-    if p.get('railway') in ('station', 'halt', 'tram_stop') and not name.endswith('駅'):
+    if (p.get('railway') in ('station', 'halt', 'tram_stop') or p.get('aerialway') == 'station') and not name.endswith('駅'):
         aliases.add(f'{name}駅')
     builder.add(name, address, point, 'facility', aliases)
 

@@ -89,15 +89,13 @@ export function lookupPlace(path: string, query: string): Lookup {
 			}
 			return null;
 		};
-		const primaryKeys = [key, ...(key.endsWith("駅") && key.length > 1 ? [key.slice(0, -1)] : [])];
 		const strippedKeys = (): string[] => {
-			const seen = new Set(primaryKeys);
-			const queue = [...primaryKeys];
+			const seen = new Set([key]);
+			const queue = [key];
 			const fallback: string[] = [];
 			for (let i = 0; i < queue.length && queue.length < KEYS_MAX; i++) {
 				const k = queue[i]!;
-				const withoutStation = k.endsWith("駅") ? k.slice(0, -1) : null;
-				for (const stripped of [stripPrefecture(k), stripMunicipality(k), withoutStation]) {
+				for (const stripped of [stripPrefecture(k), stripMunicipality(k)]) {
 					if (stripped && !seen.has(stripped)) {
 						seen.add(stripped);
 						queue.push(stripped);
@@ -155,7 +153,7 @@ export function lookupPlace(path: string, query: string): Lookup {
 		// 元のクエリで候補が見つかったときは、都道府県・市区町村を外したフォールバックで別地域の候補を混ぜない。
 		function* items(): Generator<Item> {
 			let found = false;
-			for (const item of matchKeys(primaryKeys)) {
+			for (const item of matchKeys([key])) {
 				found = true;
 				yield item;
 			}

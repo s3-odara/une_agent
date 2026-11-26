@@ -35,6 +35,7 @@ function fixture(dir: string): string {
 		{ properties: { natural: "peak", name: "試験山" }, geometry: { type: "Point", coordinates: [138.474, 36.406] } },
 		{ properties: { railway: "halt", name: "試験駅" }, geometry: { type: "Point", coordinates: [138.46, 36.38] } },
 		{ properties: { railway: "halt", name: "北試験" }, geometry: { type: "Point", coordinates: [138.48, 36.39] } },
+		{ properties: { aerialway: "station", name: "山頂試験" }, geometry: { type: "Point", coordinates: [138.49, 36.4] } },
 		{ properties: { highway: "traffic_signals", name: "試験交差点" }, geometry: { type: "Point", coordinates: [138.47, 36.38] } },
 		{ properties: { place: "square", name: "試験広場" }, geometry: { type: "Polygon", coordinates: [[[138, 36], [138.25, 36], [138.25, 36.25], [138, 36.25], [138, 36]]] } },
 		{ properties: { natural: "wood", name: "試験林" }, geometry: { type: "Polygon", coordinates: [[[138, 36], [138.25, 36], [138.25, 36.25], [138, 36.25], [138, 36]]] } },
@@ -165,8 +166,9 @@ test("prefecture and municipality names are stripped when nothing matches", (t) 
 	assert.deepEqual(municipality.candidates.map(({ lon }) => lon), [141.36, 141.362]);
 	const station = lookupPlace(path, "北試験駅");
 	assert.deepEqual(station.candidates.map(({ lon, lat, name }) => [lon, lat, name]), [[138.48, 36.39, "北試験"]]);
-	const park = lookupPlace(path, "架空公園駅");
-	assert.deepEqual(park.candidates.map(({ address }) => address).sort(), ["旭川市", "札幌市"]);
+	const ropeway = lookupPlace(path, "山頂試験駅");
+	assert.deepEqual(ropeway.candidates.map(({ lon, lat, name }) => [lon, lat, name]), [[138.49, 36.4, "山頂試験"]]);
+	assert.deepEqual(lookupPlace(path, "架空公園駅").candidates, []);
 });
 
 test("a station drawn as a line can be found near its shape", (t) => {
