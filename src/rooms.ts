@@ -149,6 +149,11 @@ export class Bridge {
 
 	async #admit(message: MessageEvent): Promise<void> {
 		const { db, link, config } = this.#options;
+		// A command whose side effect already ran before a failed reply or crash must not run again on replay.
+		if (db.wasNotified(`cmd:${message.eventId}`)) {
+			link.send({ type: "ack", eventId: message.eventId });
+			return;
+		}
 		// The time it was sent, so "tomorrow" means something. A system prompt that changed every minute would
 		// defeat the provider's prompt cache; a stamp on the message does not.
 		const time = message.ts > 0 ? formatStamp(message.ts, config.timezone) : undefined;
@@ -160,6 +165,7 @@ export class Bridge {
 			} else {
 				const command = await this.#command({ roomId: message.roomId, body: message.body, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) });
 				if (command !== undefined) {
+					db.markNotified([`cmd:${message.eventId}`], Date.now());
 					if (command.reply !== undefined) await this.#send(message.roomId, `cmd:${message.eventId}`, command.reply, true);
 					link.send({ type: "ack", eventId: message.eventId });
 					return;
@@ -257,10 +263,26 @@ export class Bridge {
 	}
 
 	async #submit(roomId: string, key: string, content: string | UserInput, voice = false, noteActivity = true): Promise<void> {
-		const { db } = this.#options;
-		const submission = await this.#submitToRoom(roomId, key, content, noteActivity);
-		const delivery: Delivery = { eventId: key, roomId, submissionId: Number(submission.id), voice };
+		const { db, harness, context } = this.#options;
+		if (db.hasDelivery(key)) return;
+		const conversation = await this.#conversationFor(roomId);
+		const priorConv = db.pendingSubmissionConversation(key);
+		let submissionId: number | undefined;
+		if (priorConv !== undefined && priorConv !== Number(conversation.id)) {
+			// A crash between submit and addDelivery followed by adopt() moves the room to a new conversation,
+			// whose requestId scope does not see the prior submission.
+			const existing = await harness.commit((tx) => tx.submissionByRequest(idFromNumber<ConversationId>(priorConv), key), context);
+			if (existing !== undefined) submissionId = Number(existing.id);
+		}
+		if (submissionId === undefined) {
+			db.setPendingSubmission(key, Number(conversation.id));
+			const submission = await conversation.submit({ type: "input", content, requestId: key, whenBusy: "steer" }, context);
+			if (noteActivity) db.noteActivity(roomId);
+			submissionId = Number(submission.id);
+		}
+		const delivery: Delivery = { eventId: key, roomId, submissionId, voice };
 		db.addDelivery(delivery);
+		db.clearPendingSubmission(key);
 		this.#startDelivery(delivery);
 	}
 

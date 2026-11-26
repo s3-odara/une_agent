@@ -66,6 +66,10 @@ export class HostDb {
 				reply_event_id TEXT,
 				voice INTEGER NOT NULL DEFAULT 0
 			);
+			CREATE TABLE IF NOT EXISTS pending_submissions (
+				event_id TEXT PRIMARY KEY,
+				conversation_id INTEGER NOT NULL
+			);
 			CREATE TABLE IF NOT EXISTS answers (
 				answer INTEGER PRIMARY KEY,
 				event_id TEXT NOT NULL
@@ -192,9 +196,15 @@ export class HostDb {
 		this.#db.prepare("UPDATE wakes SET outcome = ? WHERE key = ?").run(outcome, key);
 	}
 
-	/** Whether the conversation is one made aside to weigh a wake in, and the wake is not settled. */
+	/** Whether the conversation is one made aside to weigh a wake in, and has not been adopted or settled. */
 	isWeighing(conversationId: number): boolean {
-		return this.#db.prepare("SELECT 1 FROM wakes WHERE aside_id = ? AND outcome IS NULL").get(conversationId) !== undefined;
+		return (
+			this.#db
+				.prepare(
+					"SELECT 1 FROM wakes WHERE aside_id = ? AND outcome IS NULL AND NOT EXISTS (SELECT 1 FROM rooms WHERE conversation_id = ?)",
+				)
+				.get(conversationId, conversationId) !== undefined
+		);
 	}
 
 	/** Counts what people said in the room, so a check can tell whether anything was said since the last. */
@@ -243,6 +253,21 @@ export class HostDb {
 		this.#db
 			.prepare("INSERT OR IGNORE INTO deliveries (event_id, room_id, submission_id, voice) VALUES (?, ?, ?, ?)")
 			.run(delivery.eventId, delivery.roomId, delivery.submissionId, delivery.voice === true ? 1 : 0);
+	}
+
+	pendingSubmissionConversation(eventId: string): number | undefined {
+		const row = this.#db.prepare("SELECT conversation_id FROM pending_submissions WHERE event_id = ?").get(eventId);
+		return row === undefined ? undefined : Number(row.conversation_id);
+	}
+
+	setPendingSubmission(eventId: string, conversationId: number): void {
+		this.#db
+			.prepare("INSERT INTO pending_submissions (event_id, conversation_id) VALUES (?, ?) ON CONFLICT (event_id) DO UPDATE SET conversation_id = excluded.conversation_id")
+			.run(eventId, conversationId);
+	}
+
+	clearPendingSubmission(eventId: string): void {
+		this.#db.prepare("DELETE FROM pending_submissions WHERE event_id = ?").run(eventId);
 	}
 
 	/**
