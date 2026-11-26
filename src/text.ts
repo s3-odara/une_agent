@@ -23,3 +23,8 @@ export function fileSizeOf(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+export function markdownTable(headers: readonly string[], rows: readonly (readonly string[])[]): string[] {
+	const row = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
+	return [row(headers), row(headers.map(() => "---")), ...rows.map(row)];
+}

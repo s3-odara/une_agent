@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
-import { JMA_TIME_ZONE, forecastAreaName, type ForecastArea } from "./weather-areas.ts";
+import { clockJst, inJst } from "./jma-grid.ts";
+import { markdownTable } from "./text.ts";
+import { forecastAreaName, type ForecastArea } from "./weather-areas.ts";
 import type { DayForecast, Forecast } from "./weather.ts";
 
 const weekCodes = JSON.parse(readFileSync(new URL("./jma/week_area05.json", import.meta.url), "utf8")) as Record<string, string[]>;
@@ -94,7 +96,7 @@ export function parseThreeHourForecast(json: unknown, target: ForecastArea): Thr
 
 export function formatThreeHourForecast(forecast: ThreeHourForecast): string {
 	if (forecast.slots.length === 0) return "指定区域の3時間ごとの予報を取得できませんでした。";
-	const date = new Intl.DateTimeFormat("ja-JP", { timeZone: JMA_TIME_ZONE, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+	const stamp = (ms: number) => clockJst(inJst(ms));
 	const hasTemp = forecast.slots.some((slot) => slot.temperature !== undefined);
 	const hasWind = forecast.slots.some((slot) => slot.wind !== undefined);
 	const station = forecast.temperatureStation && hasTemp ? `、気温：${forecast.temperatureStation}地点` : "";
@@ -105,21 +107,18 @@ export function formatThreeHourForecast(forecast: ThreeHourForecast): string {
 		...(hasWind ? ["風"] : []),
 		...(hasTemp ? ["気温(開始時点, ℃)"] : []),
 	];
-	const row = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
 	const rows = forecast.slots.map(({ start, end, weather, wind, temperature }) => {
-		const period = end === undefined ? date.format(start) : `${date.format(start)}〜${date.format(end)}`;
-		return row([
+		const period = end === undefined ? stamp(start) : `${stamp(start)}〜${stamp(end)}`;
+		return [
 			period,
 			weather ?? "—",
 			...(hasWind ? [wind ?? "—"] : []),
-			...(hasTemp ? [temperature === undefined ? "—" : String(temperature)] : []),
-		]);
+			...(hasTemp ? [temperature ?? "—"] : []),
+		];
 	});
 	return [
 		`${forecast.area}の3時間ごとの予報（気象庁${report}${station}、日本時間）`,
 		"",
-		row(columns),
-		row(columns.map(() => "---")),
-		...rows,
+		...markdownTable(columns, rows),
 	].join("\n");
 }

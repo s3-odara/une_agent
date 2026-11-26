@@ -1,3 +1,4 @@
+import { markdownTable } from "./text.ts";
 import { dateOf } from "./time.ts";
 import { JMA_TIME_ZONE, forecastAreaCodes, resolveForecastArea, type ForecastArea } from "./weather-areas.ts";
 import { parseThreeHourForecast, parseWeeklyForecast, type ThreeHourForecast } from "./weather-details.ts";
@@ -136,20 +137,17 @@ export function formatForecast(forecast: Forecast, dates?: readonly string[]): s
 	const hasReliability = forecast.period === "week" || days.some((day) => day.reliability !== undefined);
 	const station = forecast.temperatureStation && days.some((day) => day.minTemp !== undefined || day.maxTemp !== undefined) ? `、気温：${forecast.temperatureStation}地点` : "";
 	const columns = ["日付", "天気", "最低(℃)", "最高(℃)", "降水確率", ...(hasReliability ? ["信頼度"] : [])];
-	const row = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
-	const rows = days.map((day) => row([
+	const rows = days.map((day) => [
 		day.date,
 		day.weather ?? "—",
 		day.minTemp ?? "—",
 		day.maxTemp ?? "—",
 		day.rain.length === 0 ? "—" : day.rain.join("、"),
 		...(hasReliability ? [day.reliability ?? "—"] : []),
-	]));
+	]);
 	return [
 		`${forecast.area}の${name}（気象庁、${forecast.reportedAt} 発表${station}、日本時間）`,
 		"",
-		row(columns),
-		row(columns.map(() => "---")),
-		...rows,
+		...markdownTable(columns, rows),
 	].join("\n");
 }

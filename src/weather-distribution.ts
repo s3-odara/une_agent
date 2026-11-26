@@ -1,4 +1,5 @@
-import { coordinates, features, frames, gridFor, inBatches, inJst, jmaPolygons, missingCoverage, object, polygonLocation, square, validatePoint, type Frame, type Point } from "./jma-grid.ts";
+import { clockJst, coordinates, features, frames, gridFor, inBatches, inJst, JMA_5KM_MESH, jmaPolygons, meshCell, missingCoverage, object, polygonLocation, square, validatePoint, type Cell, type Frame, type Point } from "./jma-grid.ts";
+import { markdownTable } from "./text.ts";
 
 const ROOT = "https://www.jma.go.jp/bosai/jmatile/data/wdist";
 const HOUR = 3_600_000;
@@ -21,14 +22,7 @@ const elements: Record<Layer, string> = {
 	weather: "wm", rain: "r3", snow: "s3", temperature: "temp_point", high: "max_temp_point", low: "min_temp_point",
 };
 
-const mesh = {
-	x: (lon: number) => lon * 16,
-	y: (lat: number) => -lat * 20,
-	lon: (col: number) => col / 16,
-	lat: (row: number) => -row / 20,
-};
 const cellKey = (col: number, row: number) => `${col},${row}`;
-type Cell = Point & { col: number; row: number };
 
 function pointValues(value: unknown) {
 	const values = new Map<string, number>();
@@ -37,10 +31,10 @@ function pointValues(value: unknown) {
 		const shape = object(geometry);
 		if (shape.type !== "Point") throw new Error("Unexpected JMA temperature geometry");
 		const [lon, lat] = coordinates(shape.coordinates);
-		const col = Math.round(mesh.x(lon) - 0.5);
-		const row = Math.round(mesh.y(lat) - 0.5);
+		const col = Math.round(JMA_5KM_MESH.x(lon) - 0.5);
+		const row = Math.round(JMA_5KM_MESH.y(lat) - 0.5);
 		// The GeoJSON rounds mesh-center longitudes to three decimal places.
-		if (Math.abs(lon - mesh.lon(col + 0.5)) > 0.00051 || Math.abs(lat - mesh.lat(row + 0.5)) > 0.00051) throw new Error("Unexpected JMA temperature mesh");
+		if (Math.abs(lon - JMA_5KM_MESH.lon(col + 0.5)) > 0.00051 || Math.abs(lat - JMA_5KM_MESH.lat(row + 0.5)) > 0.00051) throw new Error("Unexpected JMA temperature mesh");
 		const raw = object(properties).value;
 		const celsius = typeof raw === "string" && /^-?\d+$/.test(raw) ? Number(raw) : raw;
 		if (typeof celsius !== "number" || !Number.isSafeInteger(celsius)) throw new Error("Unexpected JMA temperature value");
@@ -104,9 +98,7 @@ export function jmaWeatherDistribution(fetchForecast = fetch) {
 	const read = client(fetchForecast);
 	return async (point: Point) => {
 		validatePoint(point);
-		const col = Math.floor(mesh.x(point.lon));
-		const row = Math.floor(mesh.y(point.lat));
-		return read([[{ col, row, lon: mesh.lon(col + 0.5), lat: mesh.lat(row + 0.5) }]]);
+		return read([[meshCell(point)]]);
 	};
 }
 
@@ -114,9 +106,8 @@ export function jmaWeatherDistributionGrid(fetchForecast = fetch) {
 	const read = client(fetchForecast);
 	return async (query: GridQuery) => {
 		validatePoint(query);
-		if (!Number.isInteger(query.sizeMeters) || query.sizeMeters < 1 || query.sizeMeters > WEATHER_GRID_MAX_METERS) throw new Error("一辺は1〜50000 mの整数で指定してください。");
-		const bounds = square(query);
-		const { grid: { longitudeEdges, latitudeEdges }, cells } = gridFor("wdist", bounds, mesh, 0);
+		const bounds = square(query, WEATHER_GRID_MAX_METERS);
+		const { grid: { longitudeEdges, latitudeEdges }, cells } = gridFor("wdist", bounds, JMA_5KM_MESH, 0);
 		return { bounds, longitudeEdges, latitudeEdges, legends, frames: await read(cells) };
 	};
 }
@@ -129,33 +120,42 @@ const labels: Record<Layer, string> = {
 	high: "日中の最高気温",
 	low: "朝の最低気温",
 };
-const clock = (value: string) => value.slice(5, 16).replace("T", " ");
 
-function formatLayerCell(key: Layer, layer: LayerResult | undefined): string {
+function formatLayerCell(key: Layer, layer: LayerResult | undefined, unit = ""): string {
 	if (layer === undefined) return "—";
 	if (layer.status === "unavailable") return "取得・判定できず";
 	const value = layer.rows[0]?.[0];
 	if (value == null) return "欠測";
-	return key === "weather" || key === "rain" || key === "snow" ? legends[key][value]! : String(value);
+	return key === "weather" || key === "rain" || key === "snow" ? legends[key][value]! : `${value}${unit}`;
 }
 
 export function formatWeatherDistribution(report: Awaited<ReturnType<ReturnType<typeof jmaWeatherDistribution>>>, point: Point) {
 	const first = report[0];
 	if (first === undefined) return "気象庁の天気分布予報に利用できる時刻が見つかりませんでした。";
 	const daily = new Map<string, string[]>();
-	const temps = new Map<string, LayerResult>();
-	const intervals: { startAt: string; validAt: string; layers: Partial<Record<Layer, LayerResult>> }[] = [];
+	const byTime = new Map<string, { period: string; layers: Partial<Record<Layer, LayerResult>> }>();
 
 	for (const { startAt, validAt, layers } of report) {
-		if (layers.temperature !== undefined) temps.set(validAt, layers.temperature);
+		if (layers.temperature !== undefined) {
+			const entry = byTime.get(validAt) ?? { period: clockJst(validAt), layers: {} };
+			entry.layers.temperature = layers.temperature;
+			byTime.set(validAt, entry);
+		}
 		if (startAt !== undefined && (layers.weather !== undefined || layers.rain !== undefined || layers.snow !== undefined)) {
-			intervals.push({ startAt, validAt, layers });
+			const existing = byTime.get(startAt);
+			byTime.set(startAt, {
+				period: `${clockJst(startAt)}〜${clockJst(validAt)}`,
+				layers: {
+					...existing?.layers,
+					...(layers.weather !== undefined && { weather: layers.weather }),
+					...(layers.rain !== undefined && { rain: layers.rain }),
+					...(layers.snow !== undefined && { snow: layers.snow }),
+				},
+			});
 		}
 		const extremes = (["low", "high"] as const).flatMap((key) => {
 			const layer = layers[key];
-			if (layer === undefined) return [];
-			const formatted = formatLayerCell(key, layer);
-			return [`${labels[key]} ${/^-?\d+$/.test(formatted) ? `${formatted}℃` : formatted}`];
+			return layer === undefined ? [] : [`${labels[key]} ${formatLayerCell(key, layer, "℃")}`];
 		});
 		if (extremes.length > 0) {
 			const day = validAt.slice(5, 10);
@@ -163,39 +163,19 @@ export function formatWeatherDistribution(report: Awaited<ReturnType<ReturnType<
 		}
 	}
 
-	const usedTemps = new Set<string>();
-	const entries: { sortKey: string; period: string; layers: Partial<Record<Layer, LayerResult>> }[] = intervals.map(({ startAt, validAt, layers }) => {
-		const temperature = temps.get(startAt);
-		if (temperature !== undefined) usedTemps.add(startAt);
-		return {
-			sortKey: startAt,
-			period: `${clock(startAt)}〜${clock(validAt)}`,
-			layers: {
-				...(layers.weather !== undefined && { weather: layers.weather }),
-				...(layers.rain !== undefined && { rain: layers.rain }),
-				...(layers.snow !== undefined && { snow: layers.snow }),
-				...(temperature !== undefined && { temperature }),
-			},
-		};
-	});
-	for (const [validAt, temperature] of temps) {
-		if (usedTemps.has(validAt)) continue;
-		entries.push({ sortKey: validAt, period: clock(validAt), layers: { temperature } });
-	}
-	entries.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-
+	const entries = [...byTime].sort(([a], [b]) => a.localeCompare(b)).map(([, entry]) => entry);
 	const tableLayers = (["weather", "rain", "snow", "temperature"] as const).filter((key) => entries.some(({ layers }) => layers[key] !== undefined));
-	const row = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
 	const table = entries.length === 0 ? [] : [
 		"",
-		row(["期間", ...tableLayers.map((key) => labels[key])]),
-		row(["---", ...tableLayers.map(() => "---")]),
-		...entries.map(({ period, layers }) => row([period, ...tableLayers.map((key) => formatLayerCell(key, layers[key]))])),
+		...markdownTable(
+			["期間", ...tableLayers.map((key) => labels[key])],
+			entries.map(({ period, layers }) => [period, ...tableLayers.map((key) => formatLayerCell(key, layers[key]))]),
+		),
 	];
 	const dailyLines = [...daily].map(([day, extremes]) => `- ${day}：${extremes.join("、")}`);
 	return [
 		`気象庁｜天気分布予報（日本時間、約5 km格子）｜緯度 ${point.lat}、経度 ${point.lon}`,
-		`発表 ${clock(first.baseAt)}`,
+		`発表 ${clockJst(first.baseAt)}`,
 		...table,
 		...(dailyLines.length === 0 ? [] : ["", ...dailyLines]),
 	].join("\n");

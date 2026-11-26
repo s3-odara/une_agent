@@ -71,7 +71,7 @@ const rainGridSchema = obj({
 	})),
 });
 
-const distributionLayerSchema = obj({
+const layerResultSchema = obj({
 	status: oneOf(["available", "unavailable"]),
 	rows: opt(cellRowsSchema),
 });
@@ -85,12 +85,12 @@ const distributionGridSchema = obj({
 		validAt: str(),
 		startAt: opt(str()),
 		layers: obj({
-			weather: opt(distributionLayerSchema),
-			rain: opt(distributionLayerSchema),
-			snow: opt(distributionLayerSchema),
-			temperature: opt(distributionLayerSchema),
-			high: opt(distributionLayerSchema),
-			low: opt(distributionLayerSchema),
+			weather: opt(layerResultSchema),
+			rain: opt(layerResultSchema),
+			snow: opt(layerResultSchema),
+			temperature: opt(layerResultSchema),
+			high: opt(layerResultSchema),
+			low: opt(layerResultSchema),
 		}),
 	})),
 });
@@ -133,10 +133,6 @@ export function createRainExtension(rain = jmaRain(), rainGrid = jmaRainGrid()) 
 	});
 }
 
-const snowLayerSchema = obj({
-	status: oneOf(["available", "unavailable"]),
-	rows: opt(cellRowsSchema),
-});
 const snowGridSchema = obj({
 	bounds: boundsSchema,
 	longitudeEdges: arr(num()),
@@ -155,13 +151,13 @@ const snowGridSchema = obj({
 		baseAt: str(),
 		validAt: str(),
 		layers: obj({
-			depth: opt(snowLayerSchema),
-			snowfall3h: opt(snowLayerSchema),
-			snowfall6h: opt(snowLayerSchema),
-			snowfall12h: opt(snowLayerSchema),
-			snowfall24h: opt(snowLayerSchema),
-			snowfall48h: opt(snowLayerSchema),
-			snowfall72h: opt(snowLayerSchema),
+			depth: opt(layerResultSchema),
+			snowfall3h: opt(layerResultSchema),
+			snowfall6h: opt(layerResultSchema),
+			snowfall12h: opt(layerResultSchema),
+			snowfall24h: opt(layerResultSchema),
+			snowfall48h: opt(layerResultSchema),
+			snowfall72h: opt(layerResultSchema),
 		}),
 	})),
 });

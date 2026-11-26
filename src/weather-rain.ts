@@ -1,5 +1,4 @@
-import { ffmpeg } from "./ffmpeg.ts";
-import { coordinates, features, frames, gridFor, inBatches, inJst, inRing, jmaPolygons, missingCoverage, object, square, validatePoint, type Bounds, type Frame, type Point } from "./jma-grid.ts";
+import { coordinates, decodePngTile, features, frames, gridFor, inBatches, inJst, inRing, mercatorPixels, noDataMask, object, square, tileAt, tileOf, validatePoint, type Bounds, type Frame, type Point } from "./jma-grid.ts";
 import { dateOf } from "./time.ts";
 import { JMA_TIME_ZONE } from "./weather-areas.ts";
 
@@ -11,9 +10,6 @@ export type RainSource = (query: RainQuery) => Promise<readonly Sample[]>;
 
 const ROOT = "https://www.jma.go.jp/bosai/jmatile/data";
 const MINUTE = 60_000;
-const TILE_SIZE = 256;
-const ZOOM = 10;
-const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
 const INTENSITIES = new Map([
 	["242,242,255", "1未満"], ["160,210,255", "1以上5未満"], ["33,140,255", "5以上10未満"], ["0,65,255", "10以上20未満"],
 	["250,245,0", "20以上30未満"], ["255,245,0", "20以上30未満"], ["255,153,0", "30以上50未満"], ["255,40,0", "50以上80未満"], ["180,0,104", "80以上"],
@@ -69,25 +65,6 @@ function amounts(value: unknown, member: string): (col: number, row: number) => 
 	return (col, row) => values.get(`${col},${row}`) ?? 0;
 }
 
-const world = TILE_SIZE * 2 ** ZOOM;
-const pixels = {
-	x: (lon: number) => (lon + 180) / 360 * world,
-	y: (lat: number) => (1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * world,
-	lon: (col: number) => col / world * 360 - 180,
-	lat: (row: number) => Math.atan(Math.sinh(Math.PI * (1 - 2 * row / world))) * 180 / Math.PI,
-};
-
-function tile(col: number, row: number) {
-	return { path: `${ZOOM}/${Math.floor(col / TILE_SIZE)}/${Math.floor(row / TILE_SIZE)}.png`, offset: ((row % TILE_SIZE) * TILE_SIZE + (col % TILE_SIZE)) * 4 };
-}
-
-async function decodePng(png: Buffer): Promise<Buffer> {
-	if (png.length < 24 || png.length > 300_000 || !png.subarray(0, 8).equals(PNG_SIGNATURE) || png.readUInt32BE(16) !== TILE_SIZE || png.readUInt32BE(20) !== TILE_SIZE) throw new Error("Unexpected JMA tile");
-	const rgba = await ffmpeg(["-f", "png_pipe", "-c:v", "png", "-i", "pipe:0", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"], png);
-	if (rgba.length !== TILE_SIZE ** 2 * 4) throw new Error("Unexpected JMA tile size");
-	return rgba;
-}
-
 function intensity(rgba: Buffer, offset: number): Reading {
 	const [r, g, b, alpha] = rgba.subarray(offset, offset + 4);
 	if (alpha === 0) return { kind: "clear" };
@@ -136,14 +113,9 @@ function client(fetchRain: typeof fetch) {
 		const layer = nowcast ? "hrpns_nd" : "rasrf_nd";
 		if (!frame.elements.includes(layer)) throw new Error("JMA rain: missing coverage layer");
 		const data = await geo(rootOf(frame, nowcast), layer);
-		if (nowcast) return coverage(data);
-		return missingCoverage(features(data).flatMap((entry) => {
-			const { geometry, properties } = object(entry);
-			if (object(properties).level !== "NoData") throw new Error("Unexpected JMA coverage level");
-			return jmaPolygons(geometry, true);
-		}));
+		return nowcast ? coverage(data) : noDataMask(data);
 	};
-	const readTile = async (root: string, path: string) => decodePng(Buffer.from(await (await get(`${root}/hrpns/${path}`)).arrayBuffer()));
+	const readTile = async (root: string, path: string) => decodePngTile(Buffer.from(await (await get(`${root}/hrpns/${path}`)).arrayBuffer()));
 	return { select, rootOf, geo, readCoverage, readTile };
 }
 
@@ -154,7 +126,7 @@ export function jmaRain(fetchRain = fetch): RainSource {
 		const point = { lat: query.lat, lon: query.lon };
 		const nowcast = query.horizon === "1h";
 		const ordered = await select(nowcast);
-		const location = nowcast ? tile(Math.floor(pixels.x(point.lon)), Math.floor(pixels.y(point.lat))) : undefined;
+		const location = nowcast ? tileOf(point) : undefined;
 		const readReading = async (frame: Frame): Promise<Reading> => {
 			const { member } = frame;
 			const root = rootOf(frame, nowcast);
@@ -179,10 +151,10 @@ export function jmaRain(fetchRain = fetch): RainSource {
 
 const BIN_SIZE = 2;
 const nowcastBins = {
-	x: (lon: number) => pixels.x(lon) / BIN_SIZE,
-	y: (lat: number) => pixels.y(lat) / BIN_SIZE,
-	lon: (col: number) => pixels.lon(col * BIN_SIZE),
-	lat: (row: number) => pixels.lat(row * BIN_SIZE),
+	x: (lon: number) => mercatorPixels.x(lon) / BIN_SIZE,
+	y: (lat: number) => mercatorPixels.y(lat) / BIN_SIZE,
+	lon: (col: number) => mercatorPixels.lon(col * BIN_SIZE),
+	lat: (row: number) => mercatorPixels.lat(row * BIN_SIZE),
 };
 
 const bands = [...new Set(INTENSITIES.values())];
@@ -190,16 +162,16 @@ const bands = [...new Set(INTENSITIES.values())];
 async function readNowcastBins(
 	layout: ReturnType<typeof gridFor>, bounds: Bounds, missing: (point: Point) => boolean, readTile: (path: string) => Promise<Buffer>,
 ) {
-	const west = Math.floor(pixels.x(bounds.west));
-	const east = Math.ceil(pixels.x(bounds.east));
-	const north = Math.floor(pixels.y(bounds.north));
-	const south = Math.ceil(pixels.y(bounds.south));
+	const west = Math.floor(mercatorPixels.x(bounds.west));
+	const east = Math.ceil(mercatorPixels.x(bounds.east));
+	const north = Math.floor(mercatorPixels.y(bounds.north));
+	const south = Math.ceil(mercatorPixels.y(bounds.south));
 	const paths = new Set<string>();
 	const bins = layout.cells.map((row) => row.map((bin) => {
-		const locations: (ReturnType<typeof tile> | null)[] = [];
+		const locations: (ReturnType<typeof tileAt> | null)[] = [];
 		for (let y = Math.max(north, bin.row * BIN_SIZE); y < Math.min(south, (bin.row + 1) * BIN_SIZE); y++) {
 			for (let x = Math.max(west, bin.col * BIN_SIZE); x < Math.min(east, (bin.col + 1) * BIN_SIZE); x++) {
-				const location = missing({ lat: pixels.lat(y + 0.5), lon: pixels.lon(x + 0.5) }) ? null : tile(x, y);
+				const location = missing({ lat: mercatorPixels.lat(y + 0.5), lon: mercatorPixels.lon(x + 0.5) }) ? null : tileAt(x, y);
 				if (location !== null) paths.add(location.path);
 				locations.push(location);
 			}
@@ -228,8 +200,7 @@ export function jmaRainGrid(fetchRain = fetch) {
 	const { select, rootOf, geo, readCoverage, readTile } = client(fetchRain);
 	return async (query: RainGridQuery) => {
 		validatePoint(query);
-		if (!Number.isInteger(query.sizeMeters) || query.sizeMeters < 1 || query.sizeMeters > 10_000) throw new Error("一辺は1〜10000 mの整数で指定してください。");
-		const bounds = square(query);
+		const bounds = square(query, 10_000);
 		const nowcast = query.horizon === "1h";
 		const selected = await select(nowcast);
 		const layouts = new Map<string, ReturnType<typeof gridFor>>();
