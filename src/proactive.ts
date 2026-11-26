@@ -136,7 +136,7 @@ const READS: ReadonlySet<string> = new Set([
 	TOOL_SEARCH_TOOL_NAME,
 ]);
 
-export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。書き込みが必要なら、ユーザーに話しかけて確認を取ってから実行してください。";
+export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。書き込みや実行が必要なら、この返答でユーザーに提案・確認してください。";
 
 export type ProactiveExtensionOptions = {
 	readonly db: HostDb;
@@ -184,7 +184,7 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 				description: "決まった時刻に自分から実行・報告するよう登録する。",
 				parameters: obj({
 					at: str({ description: "時刻。ユーザーの現地時刻で YYYY-MM-DDTHH:MM", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$" }),
-					note: str({ description: "その時刻に何をするか。会話を読み返さなくても分かるように具体的に（例: 14時の面接の結果を聞く）", minLength: 1 }),
+					note: str({ description: "その時刻に何をするか。会話を読み返さなくても分かるように具体的に（例: 14時の面接の結果を聞く / ~/app のテストが通ればデプロイする）", minLength: 1 }),
 				}),
 				replay: "safe",
 				execute: async (args, api, context) => {

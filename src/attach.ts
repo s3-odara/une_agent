@@ -72,7 +72,7 @@ export function createAttachExtension(options: AttachOptions) {
 
 	return defineExtension({
 		name: "attach",
-		sections: [section("attach", () => "ファイルをルームに添付して送るには send_file を使う。受け取った PDF の続きは read_pdf で読む。")],
+		sections: [section("attach", () => "ファイルをルームに添付して送るには send_file を使う。ローカルの PDF は read_pdf で読む。")],
 		tools: [
 			defineTool({
 				name: "send_file",
@@ -101,7 +101,7 @@ export function createAttachExtension(options: AttachOptions) {
 				parameters: obj({
 					path: str({ description: "PDF のパス", minLength: 1 }),
 					offset: opt(int({ description: "続きを読むとき、前の結果が示した文字位置", minimum: 0 })),
-					...pdfParameters,
+					...pdfParameters(),
 				}),
 				replay: "safe",
 				execute: async (args, api, context) => {

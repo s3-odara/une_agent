@@ -230,13 +230,13 @@ export class Bridge {
 			}
 			if (attachment.mimeType === "application/pdf") {
 				const { markdown, pages } = await readPdfText(await readFile(attachment.path));
-				const body = markdown.length <= FILE_TEXT_MAX ? `\n${markdown}` : `（全 ${pages} ページ、${markdown.length} 字のため本文省略。read_pdf で確認してください）`;
+				const body = markdown.length <= FILE_TEXT_MAX ? `\n${markdown}` : `\n全 ${pages} ページ・${markdown.length} 字のため本文を省略しました。read_pdf で確認してください。`;
 				await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${kept}${body}`);
 				return;
 			}
 			if (attachment.mimeType.startsWith("text/") || attachment.mimeType === "application/json") {
 				const text = (await readFile(attachment.path, "utf8")).trim();
-				const body = text.length <= FILE_TEXT_MAX ? `\n${text}` : `（${text.split("\n").length} 行、${text.length} 字のため本文省略。必要に応じて read や bash で確認してください）`;
+				const body = text.length <= FILE_TEXT_MAX ? `\n${text}` : `\n${text.split("\n").length} 行・${text.length} 字のため本文を省略しました。必要に応じて read や bash で確認してください。`;
 				await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${kept}${body}`);
 				return;
 			}

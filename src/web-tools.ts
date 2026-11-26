@@ -21,15 +21,27 @@ const ASSET_CACHE_ENTRIES = 20;
 const fraction = num({ minimum: 0, maximum: 1 });
 const REFETCHED = "（キャッシュになかったため URL から取得しました。以前と同じ版とは限りません。）\n\n";
 
-export const cropParameter = opt(
-	obj({ x: fraction, y: fraction, width: fraction, height: fraction }, { description: "画像 URL または PDF の image モードのみ。元画像全体を基準に左上原点の 0〜1 の割合で切り出す" }),
-);
-
-export const pdfParameters = {
-	page: opt(int({ description: "PDF の先頭を 1 とするページ番号。省略時は複数ページのテキストを読む", minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
-	pdfMode: opt(oneOf(["text", "layout", "image"], { description: "PDF のみ。text は既定、layout は配置を保つ。layout / image は page 必須" })),
-	crop: cropParameter,
-};
+export function pdfParameters(options: { readonly mixed?: boolean } = {}) {
+	const mixed = options.mixed === true;
+	return {
+		page: opt(int({ description: "PDF の先頭を 1 とするページ番号。省略時は複数ページのテキストを読む", minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+		pdfMode: opt(
+			oneOf(["text", "layout", "image"], {
+				description: `${mixed ? "PDF のみ。" : ""}text は既定、layout は配置を保つ。layout / image は page 必須`,
+			}),
+		),
+		crop: opt(
+			obj(
+				{ x: fraction, y: fraction, width: fraction, height: fraction },
+				{
+					description: mixed
+						? "画像 URL または PDF の image モードのみ。元画像全体を基準に左上原点の 0〜1 の割合で切り出す"
+						: "pdfMode=image のみ。ページ全体を基準に左上原点の 0〜1 の割合で切り出す",
+				},
+			),
+		),
+	};
+}
 
 export function validateCrop(crop: Crop | undefined): void {
 	if (crop !== undefined && (crop.width <= 0 || crop.height <= 0 || crop.x + crop.width > 1 || crop.y + crop.height > 1)) {
@@ -38,7 +50,7 @@ export function validateCrop(crop: Crop | undefined): void {
 }
 
 export function slicePart(text: string, offset: number, maxChars: number, again: (offset: number) => string): { readonly body: string; readonly foot?: string } | { readonly error: string } {
-	if (offset >= text.length && text.length > 0) return { error: `このページは全 ${text.length} 文字で、offset=${offset} から先はありません。` };
+	if (offset >= text.length && text.length > 0) return { error: `全 ${text.length} 文字で、offset=${offset} から先はありません。` };
 	const start = onCharacter(text, offset);
 	let end = onCharacter(text, Math.min(text.length, start + maxChars));
 	if (end === start && start < text.length) end = start + (text.codePointAt(start)! > 0xffff ? 2 : 1);
@@ -149,7 +161,7 @@ export function createWebExtension(options: WebToolsOptions) {
 				parameters: obj({
 					url: str({ description: "http または https の URL", minLength: 1 }),
 					...readParameters,
-					...pdfParameters,
+					...pdfParameters({ mixed: true }),
 				}),
 				replay: "safe",
 				execute: async (args, _api, context) => {

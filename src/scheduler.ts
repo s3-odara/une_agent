@@ -84,7 +84,7 @@ const ASIDE = [
 	"これはユーザーの発言ではなく、自分から話しかけるかを決める確認。返答はそのままユーザーへのメッセージとしてルームに送られ、通知が鳴る。",
 	"- 話しかけないなら、文章を書かずに stay_silent を呼ぶ（「特にありません」とも書かない）。",
 	"- この確認の間は、書き込むツール（記憶、カレンダー、timer、bash など）と、ページを書き換えるブラウザ操作（クリック、入力、ログイン）は使えない。読むだけのブラウザ操作はできる。",
-	"- 書き込みや実行が必要なら、ユーザーに話しかけて確認を取ってから実行する。",
+	"- 書き込みや実行が必要なら、この返答でユーザーに提案・確認する（実行はユーザーの返信後に行う）。",
 ];
 
 /** A check comes several times a day whether or not there is anything to say. */
@@ -205,7 +205,7 @@ export class Scheduler {
 		for (const timer of db.timers().filter((item) => item.dueAt <= now)) {
 			const content = [
 				`[約束の時刻 ${formatStamp(now, tz)}]`,
-				`timer_add で ${formatStamp(timer.createdAt, tz)} に登録した時刻（${formatStamp(timer.dueAt, tz)}）が来た。登録した内容を実行または確認し、結果をユーザーに伝える。`,
+				`これはユーザーの発言ではなく、timer_add で ${formatStamp(timer.createdAt, tz)} に登録した時刻（${formatStamp(timer.dueAt, tz)}）の自動実行。登録した内容を実行または確認し、結果をユーザーに伝える。`,
 				"すでに会話の中で済んでいる（ユーザーがもう済ませた、要らなくなったと言った）場合は実行せず、その旨を短く触れるだけでよい。",
 				"",
 				"登録した内容:",
