@@ -4,6 +4,15 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, stdout};
 use tokio::sync::mpsc;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ErrorCode {
+    TooLarge,
+    Forbidden,
+    NotInRoom,
+    InvalidRequest,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(
     tag = "type",
@@ -36,6 +45,8 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<ErrorCode>,
     },
     /// Not stored: one missed while the gateway was down is not offered again.
     Reaction {

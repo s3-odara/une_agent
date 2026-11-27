@@ -72,6 +72,12 @@
 		},
 		{
 			"type": "error",
+			"requestId": "q",
+			"message": "PDU exceeds 65535 bytes",
+			"code": "tooLarge"
+		},
+		{
+			"type": "error",
 			"message": "boom"
 		},
 		{

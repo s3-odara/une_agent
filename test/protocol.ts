@@ -39,6 +39,7 @@ export const events: Examples<GatewayEvent> = {
 	sent: [{ type: "sent", requestId: "q", eventId: "$s" }],
 	error: [
 		{ type: "error", requestId: "q", message: "boom" },
+		{ type: "error", requestId: "q", message: "PDU exceeds 65535 bytes", code: "tooLarge" },
 		{ type: "error", message: "boom" },
 	],
 	reaction: [{ type: "reaction", roomId: room, eventId: "$x", relatesTo: "$p", key: "✅" }],

@@ -29,7 +29,7 @@ use tracing::{info, warn};
 
 use crate::call::{Calls, now_ms};
 use crate::config::Config;
-use crate::ipc::{Command, Event, File, Media, Message, Outbox, spawn_writer};
+use crate::ipc::{Command, ErrorCode, Event, File, Media, Message, Outbox, spawn_writer};
 use crate::session;
 use crate::state::State;
 
@@ -348,6 +348,7 @@ async fn on_message(
         Err(error) => shared.emit(Event::Error {
             request_id: None,
             message: format!("storing {} failed: {error:#}", message.event_id),
+            code: None,
         }),
     }
 }
@@ -573,6 +574,7 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 shared.emit(Event::Error {
                     request_id: None,
                     message: format!("unreadable command: {error}"),
+                    code: None,
                 });
                 continue;
             }
@@ -583,6 +585,7 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                     shared.emit(Event::Error {
                         request_id: None,
                         message: format!("acking {event_id} failed: {error:#}"),
+                        code: None,
                     });
                 }
             }
@@ -638,6 +641,46 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
+struct CodedError {
+    code: ErrorCode,
+    message: String,
+}
+
+impl std::fmt::Display for CodedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CodedError {}
+
+fn coded(code: ErrorCode, message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(CodedError {
+        code,
+        message: message.into(),
+    })
+}
+
+fn error_code(error: &anyhow::Error) -> Option<ErrorCode> {
+    if let Some(coded) = error.downcast_ref::<CodedError>() {
+        return Some(coded.code);
+    }
+    let kind = error
+        .downcast_ref::<matrix_sdk::Error>()?
+        .client_api_error_kind()?;
+    match kind {
+        ErrorKind::TooLarge => Some(ErrorCode::TooLarge),
+        ErrorKind::Forbidden { .. } => Some(ErrorCode::Forbidden),
+        ErrorKind::NotFound => Some(ErrorCode::NotInRoom),
+        ErrorKind::BadJson
+        | ErrorKind::NotJson
+        | ErrorKind::InvalidParam
+        | ErrorKind::MissingParam => Some(ErrorCode::InvalidRequest),
+        _ => None,
+    }
+}
+
 /// Spawned, so a slow send does not hold back acks or other rooms.
 fn respond(
     shared: &Shared,
@@ -653,6 +696,7 @@ fn respond(
             },
             Err(error) => Event::Error {
                 request_id: Some(request_id),
+                code: error_code(&error),
                 message: format!("{error:#}"),
             },
         };
@@ -661,20 +705,32 @@ fn respond(
 }
 
 fn parse_event_id(id: &str) -> Result<OwnedEventId> {
-    Ok(<&EventId>::try_from(id)
-        .with_context(|| format!("{id} is not an event ID"))?
-        .to_owned())
+    <&EventId>::try_from(id)
+        .map(ToOwned::to_owned)
+        .map_err(|error| {
+            coded(
+                ErrorCode::InvalidRequest,
+                format!("{id} is not an event ID: {error}"),
+            )
+        })
 }
 
 fn joined_room(client: &Client, room_id: &str) -> Result<Room> {
-    let id = <&RoomId>::try_from(room_id).with_context(|| format!("{room_id} is not a room ID"))?;
+    let id = <&RoomId>::try_from(room_id).map_err(|error| {
+        coded(
+            ErrorCode::InvalidRequest,
+            format!("{room_id} is not a room ID: {error}"),
+        )
+    })?;
     let room = client
         .get_room(id)
-        .with_context(|| format!("not in room {room_id}"))?;
-    anyhow::ensure!(
-        room.state() == RoomState::Joined,
-        "not joined to room {room_id}"
-    );
+        .ok_or_else(|| coded(ErrorCode::NotInRoom, format!("not in room {room_id}")))?;
+    if room.state() != RoomState::Joined {
+        return Err(coded(
+            ErrorCode::NotInRoom,
+            format!("not joined to room {room_id}"),
+        ));
+    }
     Ok(room)
 }
 
@@ -807,7 +863,7 @@ fn set_typing(client: &Client, shared: &Shared, room_id: String, on: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_mime, without_reply_fallback};
+    use super::{ErrorCode, coded, error_code, parse_event_id, parse_mime, without_reply_fallback};
 
     #[test]
     fn a_reply_loses_the_quote_it_starts_with() {
@@ -827,5 +883,18 @@ mod tests {
             "application/octet-stream"
         );
         assert_eq!(parse_mime(None).essence_str(), "application/octet-stream");
+    }
+
+    #[test]
+    fn permanent_gateway_errors_carry_their_code() {
+        assert_eq!(
+            error_code(&parse_event_id("not-an-event-id").unwrap_err()),
+            Some(ErrorCode::InvalidRequest)
+        );
+        assert_eq!(
+            error_code(&coded(ErrorCode::NotInRoom, "not in room")),
+            Some(ErrorCode::NotInRoom)
+        );
+        assert_eq!(error_code(&anyhow::anyhow!("transient")), None);
     }
 }

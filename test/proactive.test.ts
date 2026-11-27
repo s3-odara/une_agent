@@ -318,3 +318,50 @@ test("a matter told in another room is followed up at a check in that room, by t
 	assert.deepEqual([last?.roomId, last?.body], [BUTLER, "面接はいかがでしたか"]);
 	assert.match(everything(requests[0]!), /執事[\s\S]*明日は面接なんだ/);
 });
+
+test("a wake whose send fails permanently is closed instead of retrying on later runs", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([answer("おはようございます")]);
+	t.env.link.failSend = () => ({ message: "not in room", code: "notInRoom" });
+
+	await t.check("brief:1");
+	assert.equal(t.env.link.of("send").length, 1);
+
+	t.env.link.failSend = undefined;
+	await t.proactive.run();
+	assert.equal(t.env.link.of("send").length, 1);
+});
+
+test("a wake whose send keeps failing transiently expires once stale even after its aside was adopted", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([answer("まもなく予定です")]);
+	t.env.link.failSends = true;
+	const bridge = t.env.bridge({ sendRetryDelaysMs: [] });
+	const proactive = new Proactive({
+		harness: t.env.harness,
+		db: t.env.db,
+		rooms: bridge,
+		context,
+		now: () => at("2026-11-17T10:00"),
+		log: () => {},
+	});
+	t.env.db.addWake({ key: "check:stale", roomId: ROOM, kind: "check", content: CHECK, createdAt: at("2026-11-17T10:00") });
+	await proactive.run();
+	assert.equal(t.env.link.of("send").length, 1);
+
+	t.env.link.failSends = false;
+	t.setClock("2026-11-17T14:00");
+	await t.proactive.run();
+	assert.equal(t.env.link.of("send").length, 1);
+});
+
+test("a wake rejected as too large is sent as a markdown attachment", async () => {
+	await using t = await setup();
+	t.env.faux.setResponses([answer("長いブリーフ")]);
+	t.env.link.failSend = (command) =>
+		command.type === "send" ? { message: "M_TOO_LARGE", code: "tooLarge" } : undefined;
+
+	await t.check("brief:large");
+	assert.equal(t.env.link.of("sendAttachment").length, 1);
+	assert.equal(t.env.link.of("sendAttachment")[0]?.name, "reply.md");
+});

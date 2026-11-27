@@ -1,11 +1,14 @@
 import { type Context, getCurrentTools, normalizeContext } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { CalDavBackend, RawObject } from "../src/calendar.ts";
-import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.ts";
+import type { GatewayCommand, GatewayErrorCode, GatewayEvent, GatewayLink } from "../src/gateway.ts";
 
 export class FakeLink implements GatewayLink {
 	readonly commands: GatewayCommand[] = [];
 	failSends = false;
+	failSend?: (
+		command: Extract<GatewayCommand, { type: "send" | "sendAttachment" | "react" }>,
+	) => { readonly message: string; readonly code?: GatewayErrorCode } | undefined;
 	beforeSent?: (
 		command: Extract<GatewayCommand, { type: "send" | "sendAttachment" | "react" }>,
 	) => Promise<unknown> | undefined;
@@ -18,9 +21,17 @@ export class FakeLink implements GatewayLink {
 		this.commands.push(command);
 		this.#waiters = this.#waiters.filter((waiter) => !waiter(command));
 		if (command.type === "send" || command.type === "sendAttachment" || command.type === "react") {
-			const reply: GatewayEvent = this.failSends
-				? { type: "error", requestId: command.requestId, message: "the homeserver cannot be reached" }
-				: { type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` };
+			const failure =
+				this.failSend?.(command) ?? (this.failSends ? { message: "the homeserver cannot be reached" } : undefined);
+			const reply: GatewayEvent =
+				failure !== undefined
+					? {
+							type: "error",
+							requestId: command.requestId,
+							message: failure.message,
+							...(failure.code === undefined ? {} : { code: failure.code }),
+						}
+					: { type: "sent", requestId: command.requestId, eventId: `$sent-${command.txnId}` };
 			void Promise.resolve(this.beforeSent?.(command)).then(() => this.emit(reply));
 		}
 		if (command.type === "callSpeak" && this.speak !== undefined) {

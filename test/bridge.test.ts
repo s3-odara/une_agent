@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
@@ -521,4 +521,90 @@ test("a run that a later message joined and that then failed is told once", asyn
 	await bridge.idle();
 
 	assert.equal(env.link.of("send").filter((send) => send.body.includes("the model is down")).length, 1);
+});
+
+test("typing turns off before sending the answer so retries do not hold it on", async () => {
+	await using env = await agentEnv();
+	env.faux.setResponses([fauxAssistantMessage("hello back")]);
+	let attempts = 0;
+	env.link.failSend = (command) =>
+		command.type === "send" && ++attempts === 1 ? { message: "temporary error" } : undefined;
+	const bridge = env.bridge({ sendRetryDelaysMs: [1] });
+
+	env.link.emit(message(ROOM, "$1", "hello"));
+	await bridge.idle();
+
+	const sequence = env.link.commands
+		.filter((command) => command.type === "typing" || command.type === "send")
+		.map((command) => (command.type === "typing" ? `typing:${command.on}` : "send"));
+	assert.deepEqual(sequence, ["typing:true", "typing:false", "send", "send"]);
+});
+
+test("an answer rejected as too large is sent as a markdown attachment without retrying the text send", async () => {
+	await using env = await agentEnv();
+	const longAnswer = "# パッチ\n" + "a".repeat(200);
+	env.faux.setResponses([fauxAssistantMessage(longAnswer)]);
+	let attachedBody: string | undefined;
+	env.link.failSend = (command) =>
+		command.type === "send" ? { message: "[413 / M_TOO_LARGE] PDU exceeds 65535 bytes", code: "tooLarge" } : undefined;
+	env.link.beforeSent = (command) => {
+		if (command.type === "sendAttachment") attachedBody = readFileSync(command.path, "utf8");
+		return undefined;
+	};
+	const bridge = env.bridge({ sendRetryDelaysMs: [60_000] });
+
+	env.link.emit(message(ROOM, "$1", "patch please"));
+	await bridge.idle();
+
+	assert.equal(env.link.of("send").length, 1);
+	const [attachment] = env.link.of("sendAttachment");
+	assert.equal(attachment?.roomId, ROOM);
+	assert.equal(attachment?.name, "reply.md");
+	assert.equal(attachment?.mimeType, "text/markdown");
+	assert.equal(attachedBody, longAnswer);
+	assert.equal(existsSync(attachment!.path), false);
+
+	await env.restart();
+	const second = env.bridge();
+	await second.idle();
+	assert.equal(env.link.of("send").length, 0);
+	assert.equal(env.link.of("sendAttachment").length, 0);
+});
+
+test("when even the markdown attachment is too large, a short notice is sent and the delivery closes", async () => {
+	await using env = await agentEnv();
+	env.faux.setResponses([fauxAssistantMessage("huge answer")]);
+	env.link.failSend = (command) =>
+		command.type === "sendAttachment" || (command.type === "send" && !command.notice)
+			? { message: "M_TOO_LARGE", code: "tooLarge" }
+			: undefined;
+	const bridge = env.bridge({ sendRetryDelaysMs: [60_000] });
+
+	env.link.emit(message(ROOM, "$1", "huge"));
+	await bridge.idle();
+
+	const notices = env.link.of("send").filter((send) => send.notice);
+	assert.equal(notices.length, 1);
+	assert.match(notices[0]!.body, /長すぎて送信できませんでした/);
+
+	await env.restart();
+	const second = env.bridge();
+	await second.idle();
+	assert.equal(env.link.of("send").length, 0);
+});
+
+test("a permanent send error is not retried and does not replay on restart", async () => {
+	await using env = await agentEnv();
+	env.faux.setResponses([fauxAssistantMessage("hello back")]);
+	env.link.failSend = () => ({ message: "not in room", code: "notInRoom" });
+	const bridge = env.bridge({ sendRetryDelaysMs: [60_000] });
+
+	env.link.emit(message(ROOM, "$1", "hello"));
+	await bridge.idle();
+	assert.equal(env.link.of("send").length, 1);
+
+	await env.restart();
+	const second = env.bridge();
+	await second.idle();
+	assert.equal(env.link.of("send").length, 0);
 });

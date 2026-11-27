@@ -6,7 +6,13 @@ import { type Conversation, type Harness, LiveDoc, ProviderDoc, type UserInput }
 import { type Answer, answerOf, type Settled, type Submission } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
 import { type Config, modelFor, persona, personaFor, readSoul, thinkingFor } from "./config.ts";
-import type { GatewayCommand, GatewayEvent, GatewayLink } from "./gateway.ts";
+import {
+	type GatewayCommand,
+	GatewayError,
+	type GatewayEvent,
+	type GatewayLink,
+	isPermanentGatewayError,
+} from "./gateway.ts";
 import type { Aside, Delivery, HostDb } from "./hostdb.ts";
 import { ProgressReport } from "./progress.ts";
 import { readPdfText } from "./pdf.ts";
@@ -80,6 +86,7 @@ export class Bridge {
 	/** Per room, the tail of its admissions, so two messages never race to create the room's conversation. */
 	readonly #admissions = new Map<string, Promise<void>>();
 	readonly #inFlight = new Map<string, string>();
+	readonly #typing = new Map<string, number>();
 	readonly #sends = new Map<string, { resolve: (eventId: string) => void; reject: (error: Error) => void }>();
 	readonly #work = new Set<Promise<void>>();
 
@@ -145,7 +152,7 @@ export class Bridge {
 				return;
 			case "error":
 				if (event.requestId === undefined) this.#log(`gateway: ${event.message}`);
-				else this.#sends.get(event.requestId)?.reject(new Error(event.message));
+				else this.#sends.get(event.requestId)?.reject(new GatewayError(event.message, event.code));
 				return;
 			case "ready":
 				this.#uploadLimit = event.uploadLimit;
@@ -395,7 +402,7 @@ export class Bridge {
 	}
 
 	say(roomId: string, txnId: string, body: string): Promise<string> {
-		return this.#retrying(`the message ${txnId}`, () => this.#send(roomId, txnId, body, false));
+		return this.#deliverText(roomId, txnId, body, false, `the message ${txnId}`);
 	}
 
 	/** Runs a user-scheduled timer directly in the room's conversation with all tools and progress reporting, without bumping room activity. */
@@ -540,30 +547,55 @@ export class Bridge {
 		return harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
 	}
 
+	#typingCount(roomId: string, delta: 1 | -1): void {
+		const before = this.#typing.get(roomId) ?? 0;
+		const after = Math.max(0, before + delta);
+		if (after === 0) this.#typing.delete(roomId);
+		else this.#typing.set(roomId, after);
+		if (before === 0 && after > 0) this.#options.link.send({ type: "typing", roomId, on: true });
+		else if (before > 0 && after === 0) this.#options.link.send({ type: "typing", roomId, on: false });
+	}
+
 	#startDelivery(delivery: Delivery): void {
 		// A resent message can reach here after the delivery the start picked up has already finished.
 		if (this.#inFlight.has(delivery.eventId) || this.#options.db.isDelivered(delivery.eventId)) return;
 		this.#inFlight.set(delivery.eventId, delivery.roomId);
-		this.#options.link.send({ type: "typing", roomId: delivery.roomId, on: true });
 		this.#track(
 			this.#deliver(delivery)
 				.catch((error) => this.#log(`delivering the answer to ${delivery.eventId} failed: ${errorMessage(error)}`))
 				.finally(() => {
 					this.#inFlight.delete(delivery.eventId);
-					if (![...this.#inFlight.values()].includes(delivery.roomId)) {
-						this.#options.link.send({ type: "typing", roomId: delivery.roomId, on: false });
-					}
 				}),
 		);
 	}
 
 	async #deliver(delivery: Delivery): Promise<void> {
 		const { db } = this.#options;
-		const answer = await this.#answerOf(delivery);
+		let answer: { body: string; notice: boolean } | undefined;
+		this.#typingCount(delivery.roomId, 1);
+		try {
+			answer = await this.#answerOf(delivery);
+		} finally {
+			this.#typingCount(delivery.roomId, -1);
+		}
 		if (answer === undefined) return void db.markDelivered(delivery.eventId);
-		const replyEventId = await this.#retrying(`the answer to ${delivery.eventId}`, () =>
-			this.#send(delivery.roomId, `reply:${delivery.eventId}`, answer.body, answer.notice),
-		);
+		let replyEventId: string;
+		try {
+			replyEventId = await this.#deliverText(
+				delivery.roomId,
+				`reply:${delivery.eventId}`,
+				answer.body,
+				answer.notice,
+				`the answer to ${delivery.eventId}`,
+			);
+		} catch (error) {
+			if (isPermanentGatewayError(error)) {
+				this.#log(`giving up delivering the answer to ${delivery.eventId}: ${errorMessage(error)}`);
+				db.markDelivered(delivery.eventId);
+				return;
+			}
+			throw error;
+		}
 		// The text goes first: it is there at once, while speech takes a while to make.
 		if (delivery.voice === true && !answer.notice) {
 			try {
@@ -581,11 +613,50 @@ export class Bridge {
 		db.markDelivered(delivery.eventId, replyEventId);
 	}
 
+	async #deliverText(
+		roomId: string,
+		txnId: string,
+		body: string,
+		notice: boolean,
+		what: string,
+	): Promise<string> {
+		try {
+			return await this.#retrying(what, () => this.#send(roomId, txnId, body, notice));
+		} catch (error) {
+			if (!(error instanceof GatewayError && error.code === "tooLarge")) throw error;
+			return this.#sendAsMarkdown(roomId, txnId, body, what);
+		}
+	}
+
+	async #sendAsMarkdown(roomId: string, txnId: string, body: string, what: string): Promise<string> {
+		const dir = join(this.#options.config.dataDir, "replies");
+		await mkdir(dir, { recursive: true });
+		const path = join(dir, `${txnId.replace(/[^A-Za-z0-9_-]/g, "_")}.md`);
+		await writeFile(path, body, "utf8");
+		try {
+			return await this.#retrying(`${what} as markdown`, () =>
+				this.sendAttachment(roomId, `file:${txnId}`, {
+					path,
+					name: "reply.md",
+					mimeType: "text/markdown",
+				}),
+			);
+		} catch (error) {
+			if (error instanceof GatewayError && error.code === "tooLarge") {
+				return await this.#send(roomId, `toolarge:${txnId}`, "応答が長すぎて送信できませんでした。", true);
+			}
+			throw error;
+		} finally {
+			await rm(path, { force: true });
+		}
+	}
+
 	async #retrying<T>(what: string, attempt: () => Promise<T>): Promise<T> {
 		for (let tries = 0; ; tries++) {
 			try {
 				return await attempt();
 			} catch (error) {
+				if (isPermanentGatewayError(error)) throw error;
 				const delay = this.#retryDelays[tries];
 				if (delay === undefined) throw error;
 				this.#log(`sending ${what} failed, retrying in ${delay} ms: ${errorMessage(error)}`);

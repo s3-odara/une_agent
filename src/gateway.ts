@@ -1,6 +1,22 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
+export type GatewayErrorCode = "tooLarge" | "forbidden" | "notInRoom" | "invalidRequest";
+
+export class GatewayError extends Error {
+	readonly code: GatewayErrorCode | undefined;
+
+	constructor(message: string, code?: GatewayErrorCode) {
+		super(message);
+		this.name = "GatewayError";
+		this.code = code;
+	}
+}
+
+export function isPermanentGatewayError(error: unknown): boolean {
+	return error instanceof GatewayError && error.code !== undefined;
+}
+
 /** Keep in step with `gateway/src/ipc.rs`. */
 export type GatewayEvent =
 	| {
@@ -27,7 +43,12 @@ export type GatewayEvent =
 	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string }
 	| { readonly type: "mediaFailed"; readonly roomId: string; readonly eventId: string; readonly reason: string }
 	| { readonly type: "sent"; readonly requestId: string; readonly eventId: string }
-	| { readonly type: "error"; readonly requestId?: string; readonly message: string }
+	| {
+			readonly type: "error";
+			readonly requestId?: string;
+			readonly message: string;
+			readonly code?: GatewayErrorCode;
+	  }
 	/** Not stored by the gateway: one missed while it was down is not offered again. */
 	| {
 			readonly type: "reaction";

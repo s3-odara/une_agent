@@ -6,6 +6,7 @@ import { TOOL_SEARCH_TOOL_NAME } from "@earendil-works/pi-durable/tool-search";
 import { obj, str } from "@earendil-works/pi-schema";
 import { answerOf } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
+import { isPermanentGatewayError } from "./gateway.ts";
 import type { Aside, HostDb, Wake } from "./hostdb.ts";
 import { textOutput } from "./text.ts";
 import { formatStamp, localToEpoch } from "./time.ts";
@@ -79,9 +80,9 @@ export class Proactive {
 
 	async #weigh(wake: Wake): Promise<void> {
 		const { harness, db, rooms, context } = this.#options;
+		if (this.#now() - wake.createdAt > CHECK_STALE_MS) return db.endWake(wake.key, "expired");
 		let aside = wake.aside;
 		if (aside === undefined) {
-			if (this.#now() - wake.createdAt > CHECK_STALE_MS) return db.endWake(wake.key, "expired");
 			aside = await rooms.startAside(wake.roomId);
 			// The room's conversation is at work; the next run tries again.
 			if (aside === undefined) return;
@@ -110,7 +111,16 @@ export class Proactive {
 			this.#again = true;
 			return;
 		}
-		await rooms.say(wake.roomId, `reply:wake:${wake.key}`, answer.text);
+		try {
+			await rooms.say(wake.roomId, `reply:wake:${wake.key}`, answer.text);
+		} catch (error) {
+			if (isPermanentGatewayError(error)) {
+				this.#log(`giving up ${wake.key}: ${errorMessage(error)}`);
+				db.endWake(wake.key, "expired");
+				return;
+			}
+			throw error;
+		}
 		db.endWake(wake.key, "sent");
 	}
 }
