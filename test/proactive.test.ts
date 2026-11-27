@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { createAttachExtension } from "../src/attach.ts";
 import { createProactiveExtension, Proactive, WEIGHING_REFUSAL } from "../src/proactive.ts";
+import type { BridgeOptions } from "../src/rooms.ts";
 import { Scheduler } from "../src/scheduler.ts";
 import { localToEpoch } from "../src/time.ts";
 import { agentEnv, context } from "./env.ts";
@@ -12,7 +13,7 @@ const ROOM = "!main:example.org";
 const CHECK = "[定時チェック 2026-11-17(火) 12:00] 伝えることがあれば書く。";
 const at = (local: string) => localToEpoch(local, "Asia/Tokyo");
 
-async function setup(config: Record<string, unknown> = {}) {
+async function setup(config: Record<string, unknown> = {}, bridgeOverrides: Partial<BridgeOptions> = {}) {
 	let now = at("2026-11-17T10:00");
 	const env = await agentEnv({
 		config,
@@ -24,7 +25,7 @@ async function setup(config: Record<string, unknown> = {}) {
 		now: () => now,
 		codemode: {},
 	});
-	const bridge = env.bridge();
+	const bridge = env.bridge(bridgeOverrides);
 	const proactive = new Proactive({
 		harness: env.harness,
 		db: env.db,
@@ -333,20 +334,10 @@ test("a wake whose send fails permanently is closed instead of retrying on later
 });
 
 test("a wake whose send keeps failing transiently expires once stale even after its aside was adopted", async () => {
-	await using t = await setup();
+	await using t = await setup({}, { sendRetryDelaysMs: [] });
 	t.env.faux.setResponses([answer("まもなく予定です")]);
 	t.env.link.failSends = true;
-	const bridge = t.env.bridge({ sendRetryDelaysMs: [] });
-	const proactive = new Proactive({
-		harness: t.env.harness,
-		db: t.env.db,
-		rooms: bridge,
-		context,
-		now: () => at("2026-11-17T10:00"),
-		log: () => {},
-	});
-	t.env.db.addWake({ key: "check:stale", roomId: ROOM, kind: "check", content: CHECK, createdAt: at("2026-11-17T10:00") });
-	await proactive.run();
+	await t.check("check:stale");
 	assert.equal(t.env.link.of("send").length, 1);
 
 	t.env.link.failSends = false;
@@ -355,7 +346,7 @@ test("a wake whose send keeps failing transiently expires once stale even after 
 	assert.equal(t.env.link.of("send").length, 1);
 });
 
-test("a wake rejected as too large is sent as a markdown attachment", async () => {
+test("a wake rejected as too large is sent as a markdown attachment and closed", async () => {
 	await using t = await setup();
 	t.env.faux.setResponses([answer("長いブリーフ")]);
 	t.env.link.failSend = (command) =>
@@ -364,4 +355,7 @@ test("a wake rejected as too large is sent as a markdown attachment", async () =
 	await t.check("brief:large");
 	assert.equal(t.env.link.of("sendAttachment").length, 1);
 	assert.equal(t.env.link.of("sendAttachment")[0]?.name, "reply.md");
+
+	await t.proactive.run();
+	assert.equal(t.env.link.of("sendAttachment").length, 1);
 });

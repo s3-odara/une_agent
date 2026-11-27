@@ -529,7 +529,7 @@ test("typing turns off before sending the answer so retries do not hold it on", 
 	let attempts = 0;
 	env.link.failSend = (command) =>
 		command.type === "send" && ++attempts === 1 ? { message: "temporary error" } : undefined;
-	const bridge = env.bridge({ sendRetryDelaysMs: [1] });
+	const bridge = env.bridge({ sendRetryDelaysMs: [0] });
 
 	env.link.emit(message(ROOM, "$1", "hello"));
 	await bridge.idle();
