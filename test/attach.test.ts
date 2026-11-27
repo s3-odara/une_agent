@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { createAttachExtension, mimeTypeOf } from "../src/attach.ts";
 import { agentEnv } from "./env.ts";
+import { noLandlock } from "./landlock.ts";
 import { samplePdf } from "./pdf-fixture.ts";
 import { call, lastToolResult, message, type Request } from "./fakes.ts";
 
@@ -105,7 +106,8 @@ test("what a name's extension suggests it is", () => {
 	assert.equal(mimeTypeOf("plain"), "application/octet-stream");
 });
 
-const withPoppler = process.env.AGENT_POPPLER_BIN ? test : test.skip;
+const noPoppler = process.env.AGENT_POPPLER_BIN ? noLandlock() : "AGENT_POPPLER_BIN is not set (the dev shell sets it)";
+const withPoppler = (name: string, fn: () => Promise<void>) => test(name, { skip: noPoppler }, fn);
 
 async function readPdfTool(args: Parameters<typeof call>[1], maxChars?: number) {
 	await using env = await agentEnv({

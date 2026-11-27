@@ -8,6 +8,7 @@ import { obj } from "@earendil-works/pi-schema";
 import { CodeRequests } from "../src/codes.ts";
 import type { MessageHandler } from "../src/rooms.ts";
 import { agentEnv } from "./env.ts";
+import { noLandlock } from "./landlock.ts";
 import { samplePdf, textPdf } from "./pdf-fixture.ts";
 import { answer, call, everything, inputImages, instructionsOf, lastInput, message, type Request } from "./fakes.ts";
 
@@ -128,7 +129,8 @@ test("a failed media download tells the room why as a notice", async () => {
 	assert.match(notice?.body ?? "", /25000000/);
 });
 
-const withPoppler = process.env.AGENT_POPPLER_BIN ? test : test.skip;
+const noPoppler = process.env.AGENT_POPPLER_BIN ? noLandlock() : "AGENT_POPPLER_BIN is not set (the dev shell sets it)";
+const withPoppler = (name: string, fn: () => Promise<void>) => test(name, { skip: noPoppler }, fn);
 
 withPoppler("a short PDF is carried into the conversation as its text, and kept for read_pdf", async () => {
 	await using env = await agentEnv();
