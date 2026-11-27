@@ -10,9 +10,7 @@ use matrix_sdk::encryption::recovery::RecoveryState;
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk_crypto::{CollectStrategy, DecryptionSettings, TrustRequirement};
 
-use crate::call::now_ms;
 use crate::config::Config;
-use crate::state::State;
 
 fn session_path(data_dir: &Path) -> PathBuf {
     data_dir.join("matrix-session.json")
@@ -83,7 +81,6 @@ pub async fn login(config: &Config, password: &str, recovery_key: Option<&str>) 
     file.sync_all()?;
     eprintln!("logged in as {} (device {})", session.meta.user_id, session.meta.device_id);
 
-    State::load(&config.data_dir().join("gateway-state.json"), now_ms())?;
     client.encryption().wait_for_e2ee_initialization_tasks().await;
     client.sync_once(SyncSettings::default()).await.context("first sync")?;
     verify(&client, recovery_key).await

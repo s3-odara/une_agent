@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::ipc::Message;
 
-/// Sliding sync does not persist its position across restarts, so the latest timeline events arrive again on startup.
-/// `default_cutoff` and per-room `cutoffs` reject already-processed and pre-join history, while `inbox` keeps unacked
-/// messages across crashes.
+/// Exceeds the sliding-sync `timeline_limit` so a reconnect after `M_UNKNOWN_POS` does not replay processed events.
+const MAX_SEEN_PER_ROOM: usize = 128;
+
+/// Sliding sync replays recent timeline events when its session expires (`M_UNKNOWN_POS`), so `default_cutoff`,
+/// `joined_at`, and per-room `seen` reject already-processed and pre-join history while `inbox` keeps unacked messages.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Stored {
@@ -18,15 +20,9 @@ struct Stored {
     #[serde(default)]
     default_cutoff: u64,
     #[serde(default)]
-    cutoffs: BTreeMap<String, Cutoff>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Cutoff {
-    ts: u64,
+    joined_at: BTreeMap<String, u64>,
     #[serde(default)]
-    seen: Vec<String>,
+    seen: BTreeMap<String, VecDeque<String>>,
 }
 
 #[derive(Debug)]
@@ -67,19 +63,22 @@ impl State {
         if self.stored.inbox.contains_key(event_id) {
             return true;
         }
-        match self.stored.cutoffs.get(room_id) {
-            Some(cutoff) => ts < cutoff.ts || (ts == cutoff.ts && cutoff.seen.iter().any(|id| id == event_id)),
-            None => ts < self.stored.default_cutoff,
+        let cutoff = self.stored.joined_at.get(room_id).copied().unwrap_or(self.stored.default_cutoff);
+        if ts < cutoff {
+            return true;
         }
+        self.stored.seen.get(room_id).is_some_and(|ids| ids.iter().any(|id| id == event_id))
     }
 
-    pub fn record_seen(&mut self, room_id: &str, event_id: &str, ts: u64) -> Result<()> {
-        self.advance_cutoff(room_id, ts, Some(event_id));
-        self.save()
+    pub fn record_seen(&mut self, room_id: &str, event_id: &str) -> Result<()> {
+        if self.push_seen(room_id, event_id) {
+            self.save()?;
+        }
+        Ok(())
     }
 
-    pub fn set_room_cutoff(&mut self, room_id: &str, ts: u64) -> Result<()> {
-        self.advance_cutoff(room_id, ts, None);
+    pub fn set_joined_at(&mut self, room_id: &str, ts: u64) -> Result<()> {
+        self.stored.joined_at.entry(room_id.to_owned()).and_modify(|prev| *prev = (*prev).max(ts)).or_insert(ts);
         self.save()
     }
 
@@ -88,7 +87,7 @@ impl State {
             return Ok(false);
         }
         self.stored.inbox.insert(message.event_id.clone(), message.clone());
-        self.advance_cutoff(&message.room_id, message.ts, Some(&message.event_id));
+        self.push_seen(&message.room_id, &message.event_id);
         self.save()?;
         Ok(true)
     }
@@ -106,23 +105,16 @@ impl State {
         messages
     }
 
-    fn advance_cutoff(&mut self, room_id: &str, ts: u64, event_id: Option<&str>) {
-        let cutoff = self.stored.cutoffs.entry(room_id.to_owned()).or_insert_with(|| Cutoff {
-            ts: self.stored.default_cutoff,
-            seen: Vec::new(),
-        });
-        if ts > cutoff.ts {
-            cutoff.ts = ts;
-            cutoff.seen.clear();
-            if let Some(id) = event_id {
-                cutoff.seen.push(id.to_owned());
-            }
-        } else if ts == cutoff.ts
-            && let Some(id) = event_id
-            && !cutoff.seen.iter().any(|seen| seen == id)
-        {
-            cutoff.seen.push(id.to_owned());
+    fn push_seen(&mut self, room_id: &str, event_id: &str) -> bool {
+        let ids = self.stored.seen.entry(room_id.to_owned()).or_default();
+        if ids.iter().any(|id| id == event_id) {
+            return false;
         }
+        ids.push_back(event_id.to_owned());
+        while ids.len() > MAX_SEEN_PER_ROOM {
+            ids.pop_front();
+        }
+        true
     }
 }
 
@@ -167,7 +159,7 @@ mod tests {
         assert!(state.is_seen_or_old("!existing:example.org", "$old", 99));
         assert!(!state.is_seen_or_old("!existing:example.org", "$fresh", 100));
 
-        state.set_room_cutoff("!joined:example.org", 200).unwrap();
+        state.set_joined_at("!joined:example.org", 200).unwrap();
         let reopened = State::load(&path, 500).unwrap();
         assert!(reopened.is_seen_or_old("!joined:example.org", "$pre", 199));
         assert!(!reopened.is_seen_or_old("!joined:example.org", "$at", 200));
@@ -176,21 +168,21 @@ mod tests {
     }
 
     #[test]
-    fn distinct_events_at_the_same_timestamp_are_each_accepted_once() {
-        let path = temp_path("same-ts");
+    fn out_of_order_and_same_timestamp_events_are_each_accepted_once() {
+        let path = temp_path("out-of-order");
         let _ = std::fs::remove_file(&path);
 
         let mut state = State::load(&path, 10).unwrap();
-        assert!(!state.is_seen_or_old("!r:example.org", "$a", 50));
-        state.record_seen("!r:example.org", "$a", 50).unwrap();
-        assert!(state.is_seen_or_old("!r:example.org", "$a", 50));
-        assert!(!state.is_seen_or_old("!r:example.org", "$b", 50));
-        state.record_seen("!r:example.org", "$b", 50).unwrap();
+        assert!(state.add(&message("$later", 60)).unwrap());
+        assert!(state.add(&message("$earlier", 50)).unwrap());
+        assert!(!state.is_seen_or_old("!r:example.org", "$same", 50));
+        state.record_seen("!r:example.org", "$same").unwrap();
 
         let reopened = State::load(&path, 999).unwrap();
-        assert!(reopened.is_seen_or_old("!r:example.org", "$a", 50));
-        assert!(reopened.is_seen_or_old("!r:example.org", "$b", 50));
-        assert!(!reopened.is_seen_or_old("!r:example.org", "$c", 50));
+        assert!(reopened.is_seen_or_old("!r:example.org", "$later", 60));
+        assert!(reopened.is_seen_or_old("!r:example.org", "$earlier", 50));
+        assert!(reopened.is_seen_or_old("!r:example.org", "$same", 50));
+        assert!(!reopened.is_seen_or_old("!r:example.org", "$other", 50));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

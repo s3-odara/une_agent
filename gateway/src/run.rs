@@ -8,7 +8,6 @@ use futures_util::{StreamExt, pin_mut};
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
 use matrix_sdk::deserialized_responses::EncryptionInfo;
 use matrix_sdk::event_handler::Ctx;
-use matrix_sdk::ruma::api::client::sync::sync_events::v5::request as sync_v5;
 use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::events::reaction::{OriginalSyncReactionEvent, ReactionEventContent};
@@ -58,15 +57,6 @@ impl Shared {
 }
 
 async fn build_sliding_sync(client: &Client) -> Result<SlidingSync> {
-    let mut e2ee = sync_v5::E2EE::default();
-    e2ee.enabled = Some(true);
-    let mut to_device = sync_v5::ToDevice::default();
-    to_device.enabled = Some(true);
-    let mut account_data = sync_v5::AccountData::default();
-    account_data.enabled = Some(true);
-    let mut sticky_events = sync_v5::StickyEvents::default();
-    sticky_events.enabled = Some(true);
-
     let list = SlidingSyncList::builder("all")
         .sync_mode(SlidingSyncMode::new_growing(100))
         .timeline_limit(50)
@@ -82,34 +72,35 @@ async fn build_sliding_sync(client: &Client) -> Result<SlidingSync> {
 
     client
         .sliding_sync("gateway")?
-        .with_e2ee_extension(e2ee)
-        .with_to_device_extension(to_device)
-        .with_account_data_extension(account_data)
-        .with_sticky_events_extension(sticky_events)
+        .with_all_extensions()
+        .without_typing_extension()
+        .without_receipt_extension()
+        .share_pos()
         .add_list(list)
         .build()
         .await
         .context("building sliding sync")
 }
 
-async fn run_sliding_sync(client: Client, sliding_sync: SlidingSync, calls: Option<Calls>) -> Result<()> {
+async fn run_sliding_sync(sliding_sync: SlidingSync) -> Result<()> {
     loop {
         let stream = sliding_sync.sync();
         pin_mut!(stream);
         while let Some(result) = stream.next().await {
             match result {
-                Ok(_) => {
-                    if let Some(calls) = &calls {
-                        calls.sync_rooms(&client, client.joined_rooms());
-                    }
-                }
+                Ok(_) => {}
                 // A rejected access token does not get better by retrying.
                 Err(error) if matches!(error.client_api_error_kind(), Some(ErrorKind::UnknownToken { .. })) => {
                     return Err(error.into());
                 }
+                Err(error) if matches!(error.client_api_error_kind(), Some(ErrorKind::UnknownPos)) => {
+                    warn!("sync session expired, reconnecting: {error}");
+                    break;
+                }
                 Err(error) => {
                     warn!("sync failed, retrying: {error}");
                     tokio::time::sleep(Duration::from_secs(5)).await;
+                    break;
                 }
             }
         }
@@ -146,10 +137,13 @@ pub async fn run(config: &Config) -> Result<()> {
     client.add_event_handler(on_undecryptable);
     client.add_event_handler(on_invite);
     client.add_event_handler(on_reaction);
+    if let Some(calls) = &shared.calls {
+        calls.watch(&client);
+    }
 
     let sliding_sync = build_sliding_sync(&client).await?;
     let commands = tokio::spawn(read_commands(client.clone(), shared.clone()));
-    let sync = run_sliding_sync(client.clone(), sliding_sync, shared.calls.clone());
+    let sync = run_sliding_sync(sliding_sync);
 
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
@@ -251,6 +245,9 @@ async fn receive_media(
     match download_media(client, &shared.media_dir, event_id, content, mimetype, voice).await {
         Ok(media) => Some((body.to_owned(), Some(media))),
         Err(error) => {
+            if let Err(record_error) = shared.state.lock().unwrap().record_seen(room_id, event_id) {
+                warn!("recording {event_id} failed: {record_error:#}");
+            }
             warn!("downloading the media of {event_id} failed: {error:#}");
             shared.emit(Event::MediaFailed { room_id: room_id.to_owned(), event_id: event_id.to_owned(), reason: format!("{error:#}") });
             None
@@ -296,7 +293,7 @@ async fn on_undecryptable(event: OriginalSyncRoomEncryptedEvent, room: Room, cli
         return;
     }
     let room_id = room.room_id().to_string();
-    if let Err(error) = shared.state.lock().unwrap().record_seen(&room_id, &event_id, ts) {
+    if let Err(error) = shared.state.lock().unwrap().record_seen(&room_id, &event_id) {
         warn!("recording {event_id} failed: {error:#}");
     }
     warn!("could not decrypt {event_id} in {room_id}");
@@ -315,7 +312,7 @@ async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Clien
         return;
     }
     let room_id = room.room_id().to_string();
-    if let Err(error) = shared.state.lock().unwrap().record_seen(&room_id, &event_id, ts) {
+    if let Err(error) = shared.state.lock().unwrap().record_seen(&room_id, &event_id) {
         warn!("recording {event_id} failed: {error:#}");
     }
     shared.emit(Event::Reaction {
@@ -334,7 +331,7 @@ async fn on_invite(event: StrippedRoomMemberEvent, room: Room, client: Client, C
         warn!("ignoring an invite to {} from {}", room.room_id(), event.sender);
         return;
     }
-    if let Err(error) = shared.state.lock().unwrap().set_room_cutoff(room.room_id().as_str(), now_ms()) {
+    if let Err(error) = shared.state.lock().unwrap().set_joined_at(room.room_id().as_str(), now_ms()) {
         warn!("recording the join of {} failed: {error:#}", room.room_id());
     }
     tokio::spawn(async move {

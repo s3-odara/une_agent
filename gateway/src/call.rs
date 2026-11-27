@@ -9,9 +9,9 @@ use futures_util::StreamExt;
 use matrix_rtc_call::{CallEnd, CallStatus};
 use matrix_rtc_call_sdk::{CallEvent, LiveKitCall, LiveKitCallOptions};
 use matrix_rtc_transport::{AudioFrame, LocalTrackHandle, MediaStreamKind, PublishOptions, RemoteTrackHandle};
-use matrix_sdk::ruma::OwnedUserId;
+use matrix_sdk::ruma::{OwnedUserId, RoomId};
 use matrix_sdk::{Client, Room, RoomState};
-use serde_json::Value;
+use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -60,20 +60,21 @@ enum Transition<C = ()> {
 #[derive(Debug)]
 struct CallMachine<C = ()> {
     phase: Phase<C>,
-    latest_ts: Option<u64>,
+    members: HashSet<String>,
 }
 
 impl<C> Default for CallMachine<C> {
     fn default() -> Self {
-        Self { phase: Phase::Idle, latest_ts: None }
+        Self { phase: Phase::Idle, members: HashSet::new() }
     }
 }
 
 impl<C> CallMachine<C> {
-    fn set_membership(&mut self, latest_ts: Option<u64>) -> Transition<C> {
-        let is_newer = latest_ts > self.latest_ts;
-        self.latest_ts = latest_ts;
-        match (&mut self.phase, latest_ts.is_some(), is_newer) {
+    fn set_membership(&mut self, members: HashSet<String>) -> Transition<C> {
+        let has_new = !members.is_subset(&self.members);
+        let has_any = !members.is_empty();
+        self.members = members;
+        match (&mut self.phase, has_any, has_new) {
             (Phase::Idle, _, true) => {
                 self.phase = Phase::Joining;
                 Transition::StartJoin
@@ -98,7 +99,7 @@ impl<C> CallMachine<C> {
 
     fn on_joined(&mut self, control: C) -> bool {
         debug_assert!(matches!(self.phase, Phase::Joining));
-        if self.latest_ts.is_some() {
+        if !self.members.is_empty() {
             self.phase = Phase::InCall(control);
             true
         } else {
@@ -131,14 +132,13 @@ impl<C> CallMachine<C> {
     }
 
     fn is_idle_unwanted(&self) -> bool {
-        matches!(self.phase, Phase::Idle) && self.latest_ts.is_none()
+        matches!(self.phase, Phase::Idle) && self.members.is_empty()
     }
 }
 
 #[derive(Clone)]
 pub struct Calls {
     rooms: Arc<Mutex<HashMap<String, CallMachine<mpsc::UnboundedSender<Control>>>>>,
-    watchers: Arc<Mutex<HashMap<String, AbortOnDrop>>>,
     out: Outbox,
     allowed: Arc<Vec<OwnedUserId>>,
     dir: Arc<PathBuf>,
@@ -147,38 +147,36 @@ pub struct Calls {
 
 impl Calls {
     pub fn new(out: Outbox, allowed: Arc<Vec<OwnedUserId>>, dir: PathBuf, vad: VadConfig) -> Self {
-        Self { rooms: Arc::default(), watchers: Arc::default(), out, allowed, dir: Arc::new(dir), vad }
+        Self { rooms: Arc::default(), out, allowed, dir: Arc::new(dir), vad }
     }
 
-    pub fn sync_rooms(&self, client: &Client, joined: Vec<Room>) {
-        let joined_ids: HashSet<String> = joined.iter().map(|room| room.room_id().to_string()).collect();
-        let left: Vec<String> = {
-            let mut watchers = self.watchers.lock().unwrap();
-            let removed: Vec<String> = watchers.keys().filter(|id| !joined_ids.contains(*id)).cloned().collect();
-            for id in &removed {
-                watchers.remove(id);
+    pub fn watch(&self, client: &Client) {
+        let client = client.clone();
+        let calls = self.clone();
+        tokio::spawn(async move {
+            let mut updates = client.room_info_notable_update_receiver();
+            let mut watchers: HashMap<String, AbortOnDrop> = HashMap::new();
+            sync_all_watchers(&client, &calls, &mut watchers);
+            loop {
+                match updates.recv().await {
+                    Ok(update) => sync_room_watcher(&client, &calls, &mut watchers, &update.room_id),
+                    Err(broadcast::error::RecvError::Lagged(_)) => sync_all_watchers(&client, &calls, &mut watchers),
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
             }
-            for room in joined {
-                let id = room.room_id().to_string();
-                watchers.entry(id).or_insert_with(|| spawn_room_watcher(client.clone(), room, self.clone()));
-            }
-            removed
-        };
-        for id in left {
-            self.leave_room(&id);
-        }
+        });
     }
 
     fn emit(&self, event: Event) {
         let _ = self.out.send(event);
     }
 
-    pub fn set_membership(&self, room: Room, latest_ts: Option<u64>) {
+    pub fn set_membership(&self, room: Room, members: HashSet<String>) {
         let room_id = room.room_id().to_string();
         let transition = {
             let mut rooms = self.rooms.lock().unwrap();
             let machine = rooms.entry(room_id.clone()).or_default();
-            let transition = machine.set_membership(latest_ts);
+            let transition = machine.set_membership(members);
             if machine.is_idle_unwanted() {
                 rooms.remove(&room_id);
             }
@@ -197,7 +195,7 @@ impl Calls {
         let transition = {
             let mut rooms = self.rooms.lock().unwrap();
             let Some(machine) = rooms.get_mut(room_id) else { return };
-            let transition = machine.set_membership(None);
+            let transition = machine.set_membership(HashSet::new());
             if machine.is_idle_unwanted() {
                 rooms.remove(room_id);
             }
@@ -475,6 +473,34 @@ fn spoken(room_id: &str, id: String) -> Event {
     Event::CallSpoken { room_id: room_id.to_owned(), id }
 }
 
+fn sync_all_watchers(client: &Client, calls: &Calls, watchers: &mut HashMap<String, AbortOnDrop>) {
+    let joined = client.joined_rooms();
+    let joined_ids: HashSet<String> = joined.iter().map(|room| room.room_id().to_string()).collect();
+    let removed: Vec<String> = watchers.keys().filter(|id| !joined_ids.contains(*id)).cloned().collect();
+    for id in removed {
+        watchers.remove(&id);
+        calls.leave_room(&id);
+    }
+    for room in joined {
+        let id = room.room_id().to_string();
+        watchers.entry(id).or_insert_with(|| spawn_room_watcher(client.clone(), room, calls.clone()));
+    }
+}
+
+fn sync_room_watcher(client: &Client, calls: &Calls, watchers: &mut HashMap<String, AbortOnDrop>, room_id: &RoomId) {
+    let id = room_id.to_string();
+    match client.get_room(room_id) {
+        Some(room) if room.state() == RoomState::Joined => {
+            watchers.entry(id).or_insert_with(|| spawn_room_watcher(client.clone(), room, calls.clone()));
+        }
+        _ => {
+            if watchers.remove(&id).is_some() {
+                calls.leave_room(&id);
+            }
+        }
+    }
+}
+
 fn spawn_room_watcher(client: Client, room: Room, calls: Calls) -> AbortOnDrop {
     AbortOnDrop(tokio::spawn(async move {
         let mut updates = room.sticky_events().subscribe();
@@ -483,7 +509,7 @@ fn spawn_room_watcher(client: Client, room: Room, calls: Calls) -> AbortOnDrop {
                 calls.leave_room(room.room_id().as_str());
                 break;
             }
-            calls.set_membership(room.clone(), latest_member_ts(&client, &room, &calls.allowed));
+            calls.set_membership(room.clone(), live_members(&client, &room, &calls.allowed));
             match updates.recv().await {
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => break,
@@ -492,9 +518,45 @@ fn spawn_room_watcher(client: Client, room: Room, calls: Calls) -> AbortOnDrop {
     }))
 }
 
-fn latest_member_ts(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> Option<u64> {
+#[derive(Deserialize)]
+struct RtcMemberContent {
+    slot_id: Option<String>,
+    application: Option<RtcApplication>,
+    member: Option<RtcMember>,
+    leave_reason: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+struct RtcApplication {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RtcMember {
+    id: Option<String>,
+    membership: Option<String>,
+}
+
+impl RtcMemberContent {
+    fn live_member_id(&self) -> Option<&str> {
+        if self.leave_reason.is_some() || self.slot_id.as_deref() != Some(ROOM_CALL_SLOT_ID) {
+            return None;
+        }
+        if self.application.as_ref().and_then(|app| app.kind.as_deref()) != Some(CALL_APPLICATION) {
+            return None;
+        }
+        let member = self.member.as_ref()?;
+        if member.membership.as_deref() != Some("join") {
+            return None;
+        }
+        member.id.as_deref().filter(|id| !id.is_empty())
+    }
+}
+
+fn live_members(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> HashSet<String> {
     let own = client.user_id().map(|user| user.as_str());
-    let mut latest: Option<u64> = None;
+    let mut members = HashSet::new();
     for entry in room.sticky_events().live() {
         if entry.encryption_info().is_none() {
             continue;
@@ -507,94 +569,75 @@ fn latest_member_ts(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> Op
         if Some(sender) == own || !allowed.iter().any(|user| user.as_str() == sender) {
             continue;
         }
-        let Ok(Some(content)) = entry.raw().get_field::<Value>("content") else { continue };
-        if !is_live_room_call(&content) {
-            continue;
-        }
-        let ts = entry.raw().get_field::<u64>("origin_server_ts").ok().flatten().unwrap_or(0);
-        latest = Some(latest.map_or(ts, |prev| prev.max(ts)));
+        let Ok(Some(content)) = entry.raw().get_field::<RtcMemberContent>("content") else { continue };
+        let Some(member_id) = content.live_member_id() else { continue };
+        members.insert(format!("{sender}\0{member_id}"));
     }
-    latest
-}
-
-fn is_live_room_call(content: &Value) -> bool {
-    if content.get("leave_reason").is_some() {
-        return false;
-    }
-    if content.get("slot_id").and_then(Value::as_str) != Some(ROOM_CALL_SLOT_ID) {
-        return false;
-    }
-    if content.get("application").and_then(|app| app.get("type")).and_then(Value::as_str) != Some(CALL_APPLICATION) {
-        return false;
-    }
-    let Some(member) = content.get("member") else { return false };
-    member.get("membership").and_then(Value::as_str) == Some("join")
-        && member.get("id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())
+    members
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    #[test]
-    fn a_room_call_join_membership_is_live() {
-        let content = json!({
+    fn valid_join() -> Value {
+        json!({
             "slot_id": "m.call#room",
             "application": { "type": "m.call" },
             "member": { "id": "m1", "membership": "join" },
-            "sticky_key": "m1",
-        });
-        assert!(is_live_room_call(&content));
+        })
+    }
+
+    fn with(mut base: Value, key: &str, value: Value) -> Value {
+        base[key] = value;
+        base
+    }
+
+    fn live_member_id(value: Value) -> Option<String> {
+        serde_json::from_value::<RtcMemberContent>(value).ok()?.live_member_id().map(str::to_owned)
+    }
+
+    fn members(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|&id| id.to_owned()).collect()
     }
 
     #[test]
-    fn a_left_or_other_slot_membership_is_not() {
-        assert!(!is_live_room_call(&json!({})));
-        assert!(!is_live_room_call(&json!({
-            "slot_id": "m.call#room",
-            "application": { "type": "m.call" },
-            "member": { "id": "m1", "membership": "leave" },
-        })));
-        assert!(!is_live_room_call(&json!({
-            "slot_id": "m.call#room",
-            "application": { "type": "m.call" },
-            "member": { "id": "m1", "membership": "join" },
-            "leave_reason": { "code": "leave" },
-        })));
-        assert!(!is_live_room_call(&json!({
-            "slot_id": "m.call#breakout",
-            "application": { "type": "m.call" },
-            "member": { "id": "m1", "membership": "join" },
-        })));
-        assert!(!is_live_room_call(&json!({
-            "slot_id": "m.call#room",
-            "application": { "type": "io.element.spreadsheet" },
-            "member": { "id": "m1", "membership": "join" },
-        })));
-        assert!(!is_live_room_call(&json!({
-            "slot_id": "m.call#room",
-            "application": { "type": "m.call" },
-            "member": { "id": "", "membership": "join" },
-        })));
+    fn a_room_call_join_membership_returns_its_member_id() {
+        assert_eq!(live_member_id(valid_join()).as_deref(), Some("m1"));
+    }
+
+    #[test]
+    fn a_left_or_other_slot_membership_is_not_live() {
+        let cases = [
+            ("empty", json!({})),
+            ("left", with(valid_join(), "member", json!({ "id": "m1", "membership": "leave" }))),
+            ("leave_reason", with(valid_join(), "leave_reason", json!({ "code": "leave" }))),
+            ("other slot", with(valid_join(), "slot_id", json!("m.call#breakout"))),
+            ("other application", with(valid_join(), "application", json!({ "type": "io.element.spreadsheet" }))),
+            ("empty member id", with(valid_join(), "member", json!({ "id": "", "membership": "join" }))),
+        ];
+        for (name, value) in cases {
+            assert_eq!(live_member_id(value), None, "{name} should not be live");
+        }
     }
 
     #[test]
     fn joins_when_wanted_and_leaves_when_everyone_leaves() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
-        assert_eq!(m.set_membership(Some(1)), Transition::None);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::None);
         assert!(m.on_joined(()));
-        assert_eq!(m.set_membership(None), Transition::SendLeave(()));
-        assert_eq!(m.set_membership(None), Transition::None);
+        assert_eq!(m.set_membership(members(&[])), Transition::SendLeave(()));
+        assert_eq!(m.set_membership(members(&[])), Transition::None);
         assert_eq!(m.on_left(true), Transition::None);
     }
 
     #[test]
     fn leaves_immediately_when_everyone_leaves_during_join() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
-        assert_eq!(m.set_membership(None), Transition::None);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&[])), Transition::None);
         assert!(!m.on_joined(()));
         assert_eq!(m.on_left(true), Transition::None);
     }
@@ -602,19 +645,19 @@ mod tests {
     #[test]
     fn stays_in_call_when_user_leaves_and_reenters_during_join() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
-        assert_eq!(m.set_membership(None), Transition::None);
-        assert_eq!(m.set_membership(Some(2)), Transition::None);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&[])), Transition::None);
+        assert_eq!(m.set_membership(members(&["m2"])), Transition::None);
         assert!(m.on_joined(()));
     }
 
     #[test]
     fn rejoins_when_user_reenters_before_leave_finishes() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::StartJoin);
         assert!(m.on_joined(()));
-        assert_eq!(m.set_membership(None), Transition::SendLeave(()));
-        assert_eq!(m.set_membership(Some(2)), Transition::None);
+        assert_eq!(m.set_membership(members(&[])), Transition::SendLeave(()));
+        assert_eq!(m.set_membership(members(&["m2"])), Transition::None);
         assert_eq!(m.on_left(true), Transition::StartJoin);
         assert!(m.on_joined(()));
     }
@@ -622,33 +665,33 @@ mod tests {
     #[test]
     fn spontaneous_leave_does_not_rejoin_before_sync_catches_up() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::StartJoin);
         assert!(m.on_joined(()));
         m.on_leaving();
         assert_eq!(m.on_left(true), Transition::None);
-        assert_eq!(m.set_membership(Some(1)), Transition::None);
-        assert_eq!(m.set_membership(None), Transition::None);
-        assert_eq!(m.set_membership(Some(2)), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::None);
+        assert_eq!(m.set_membership(members(&[])), Transition::None);
+        assert_eq!(m.set_membership(members(&["m2"])), Transition::StartJoin);
     }
 
     #[test]
     fn spontaneous_leave_does_not_rejoin_when_membership_only_shrinks() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(Some(2)), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&["m1", "m2"])), Transition::StartJoin);
         assert!(m.on_joined(()));
         m.on_leaving();
-        assert_eq!(m.set_membership(Some(1)), Transition::None);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::None);
         assert_eq!(m.on_left(true), Transition::None);
     }
 
     #[test]
     fn spontaneous_leave_rejoins_when_a_newer_membership_arrives_during_leave() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(Some(1)), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::StartJoin);
         assert!(m.on_joined(()));
         m.on_leaving();
-        assert_eq!(m.set_membership(Some(3)), Transition::None);
-        assert_eq!(m.set_membership(Some(2)), Transition::None);
+        assert_eq!(m.set_membership(members(&["m2", "m3"])), Transition::None);
+        assert_eq!(m.set_membership(members(&["m2"])), Transition::None);
         assert_eq!(m.on_left(true), Transition::StartJoin);
         assert!(m.on_joined(()));
     }
@@ -656,17 +699,17 @@ mod tests {
     #[test]
     fn abnormal_exit_does_not_rejoin_until_newer_membership_arrives() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(Some(2)), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&["m1", "m2"])), Transition::StartJoin);
         assert_eq!(m.on_left(false), Transition::None);
-        assert_eq!(m.set_membership(Some(2)), Transition::None);
-        assert_eq!(m.set_membership(Some(1)), Transition::None);
-        assert_eq!(m.set_membership(None), Transition::None);
-        assert_eq!(m.set_membership(Some(3)), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&["m1", "m2"])), Transition::None);
+        assert_eq!(m.set_membership(members(&["m1"])), Transition::None);
+        assert_eq!(m.set_membership(members(&[])), Transition::None);
+        assert_eq!(m.set_membership(members(&["m3"])), Transition::StartJoin);
 
         assert!(m.on_joined(()));
         m.on_leaving();
         assert_eq!(m.on_left(false), Transition::None);
-        assert_eq!(m.set_membership(Some(3)), Transition::None);
-        assert_eq!(m.set_membership(Some(4)), Transition::StartJoin);
+        assert_eq!(m.set_membership(members(&["m3"])), Transition::None);
+        assert_eq!(m.set_membership(members(&["m4"])), Transition::StartJoin);
     }
 }
