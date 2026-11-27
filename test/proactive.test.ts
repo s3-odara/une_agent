@@ -25,7 +25,14 @@ async function setup(config: Record<string, unknown> = {}) {
 		codemode: {},
 	});
 	const bridge = env.bridge();
-	const proactive = new Proactive({ harness: env.harness, db: env.db, rooms: bridge, context, now: () => now, log: () => {} });
+	const proactive = new Proactive({
+		harness: env.harness,
+		db: env.db,
+		rooms: bridge,
+		context,
+		now: () => now,
+		log: () => {},
+	});
 	let n = 0;
 	return {
 		env,
@@ -210,7 +217,13 @@ test("a check is weighed and its message sent once, however often the wakes are 
 test("a check the room's conversation never became free for is given up once it is stale", async () => {
 	await using t = await setup();
 	t.env.faux.setResponses([answer("今さら")]);
-	t.env.db.addWake({ key: "check:old", roomId: ROOM, kind: "check", content: CHECK, createdAt: at("2026-11-17T05:00") });
+	t.env.db.addWake({
+		key: "check:old",
+		roomId: ROOM,
+		kind: "check",
+		content: CHECK,
+		createdAt: at("2026-11-17T05:00"),
+	});
 	await t.proactive.run();
 	assert.deepEqual(t.sent(), []);
 });
@@ -241,13 +254,19 @@ test("a time the model sets with the user runs directly in that room with full t
 	assert.deepEqual(t.sent().at(-1), ["面接の結果はどうだった？", false]);
 	assert.match(everything(requests[0]!), /面接の結果を聞いて/);
 	// A writing tool succeeded during the timer run because timers run directly rather than in an aside.
-	assert.deepEqual(t.env.db.timers().map((timer) => timer.note), ["さらに確認する"]);
+	assert.deepEqual(
+		t.env.db.timers().map((timer) => timer.note),
+		["さらに確認する"],
+	);
 });
 
 test("a time already past is refused", async () => {
 	await using t = await setup();
 	const requests: Request[] = [];
-	t.env.faux.setResponses([call("timer_add", { at: "2026-11-17T09:00", note: "朝に聞く" }), answer("過ぎていました", requests)]);
+	t.env.faux.setResponses([
+		call("timer_add", { at: "2026-11-17T09:00", note: "朝に聞く" }),
+		answer("過ぎていました", requests),
+	]);
 	await t.say("9時に聞いて");
 	assert.equal(lastToolResult(requests[0]!).isError, true);
 	assert.deepEqual(t.env.db.timers(), []);
@@ -255,7 +274,13 @@ test("a time already past is refused", async () => {
 
 test("a cancelled time does not bring the model back", async () => {
 	await using t = await setup();
-	t.env.faux.setResponses([call("timer_add", { at: "2026-11-17T20:00", note: "聞く" }), answer("登録しました"), call("timer_list", {}), (request) => call("timer_cancel", { id: /\[(\w+)\]/.exec(lastToolResult(request).text)?.[1] ?? "" }), answer("取り消しました")]);
+	t.env.faux.setResponses([
+		call("timer_add", { at: "2026-11-17T20:00", note: "聞く" }),
+		answer("登録しました"),
+		call("timer_list", {}),
+		(request) => call("timer_cancel", { id: /\[(\w+)\]/.exec(lastToolResult(request).text)?.[1] ?? "" }),
+		answer("取り消しました"),
+	]);
 	await t.say("20時に聞いて");
 	await t.say("やっぱりやめて");
 	assert.deepEqual(t.env.db.timers(), []);
@@ -263,15 +288,29 @@ test("a cancelled time does not bring the model back", async () => {
 
 test("a matter told in another room is followed up at a check in that room, by that room's persona", async () => {
 	const BUTLER = "!butler:example.org";
-	await using t = await setup({ personas: { default: "soul.md", butler: "butler.md" }, rooms: { [BUTLER]: "butler" }, proactive: { roomId: ROOM, checkTimes: ["12:00"] } });
+	await using t = await setup({
+		personas: { default: "soul.md", butler: "butler.md" },
+		rooms: { [BUTLER]: "butler" },
+		proactive: { roomId: ROOM, checkTimes: ["12:00"] },
+	});
 	const requests: Request[] = [];
 	t.env.faux.setResponses([answer("承知いたしました")]);
 	await t.say("明日は面接なんだ", BUTLER);
 	// The checks of the two rooms are weighed in either order: only the butler's conversation has the matter in it.
-	const weigh = (request: Request) => (everything(request).includes("明日は面接なんだ") ? answer("面接はいかがでしたか", requests)(request) : call("stay_silent", {}));
+	const weigh = (request: Request) =>
+		everything(request).includes("明日は面接なんだ")
+			? answer("面接はいかがでしたか", requests)(request)
+			: call("stay_silent", {});
 	t.env.faux.setResponses([weigh, weigh]);
 
-	const scheduler = new Scheduler({ config: t.env.config, db: t.env.db, weigh: () => void t.proactive.run(), notice: async () => {}, now: () => at("2026-11-18T12:00"), log: () => {} });
+	const scheduler = new Scheduler({
+		config: t.env.config,
+		db: t.env.db,
+		weigh: () => void t.proactive.run(),
+		notice: async () => {},
+		now: () => at("2026-11-18T12:00"),
+		log: () => {},
+	});
 	t.setClock("2026-11-18T12:00");
 	await scheduler.tick();
 	await t.proactive.run();

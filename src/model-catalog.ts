@@ -33,7 +33,8 @@ export function withRemoteCatalog(provider: Provider): Provider {
 		// The catalog is public: no token is refreshed just to read it.
 		refreshModelsAuth: "configured",
 		refreshModels: async (context) => {
-			if (!(await context.publish({ update: () => use(context.stored?.models ?? []) })) || !context.allowNetwork) return;
+			if (!(await context.publish({ update: () => use(context.stored?.models ?? []) })) || !context.allowNetwork)
+				return;
 			const response = await fetch(`${CATALOG_URL}${encodeURIComponent(provider.id)}?types=chat,image,classifier`, {
 				headers: { accept: "application/json", "user-agent": formatUserAgent({ userAgent: "detailed" }) },
 				signal: context.signal,
@@ -41,7 +42,9 @@ export function withRemoteCatalog(provider: Provider): Provider {
 			if (!response.ok) throw new Error(`model catalog of ${provider.id}: HTTP ${response.status}`);
 			const body: unknown = await response.json();
 			if (!Array.isArray(body)) throw new Error(`the model catalog of ${provider.id} is not a list`);
-			const models = body.filter((entry) => typeof entry?.id === "string").map((model) => ({ ...model, provider: provider.id }) as AnyModel);
+			const models = body
+				.filter((entry) => typeof entry?.id === "string")
+				.map((model) => ({ ...model, provider: provider.id }) as AnyModel);
 			await context.publish({ persist: { models, checkedAt: Date.now() }, update: () => use(models) });
 		},
 	};

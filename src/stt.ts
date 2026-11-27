@@ -109,9 +109,13 @@ export class WhisperServer implements Transcriber {
 	async #post(wav: Buffer): Promise<{ text?: unknown; error?: unknown }> {
 		const boundary = `----agent-${randomUUID()}`;
 		const body = Buffer.concat([
-			Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`),
+			Buffer.from(
+				`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`,
+			),
 			wav,
-			Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson\r\n--${boundary}--\r\n`),
+			Buffer.from(
+				`\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson\r\n--${boundary}--\r\n`,
+			),
 		]);
 		const response = await this.#call("POST", "/inference", body, `multipart/form-data; boundary=${boundary}`);
 		try {

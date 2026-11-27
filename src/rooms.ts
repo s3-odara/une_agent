@@ -129,7 +129,12 @@ export class Bridge {
 				return;
 			case "mediaFailed":
 				this.#track(
-					this.#send(event.roomId, `mediafail:${event.eventId}`, `添付ファイルを取得できませんでした（${event.reason}）。`, true).then(
+					this.#send(
+						event.roomId,
+						`mediafail:${event.eventId}`,
+						`添付ファイルを取得できませんでした（${event.reason}）。`,
+						true,
+					).then(
 						() => {},
 						(error) => this.#log(`notice for ${event.eventId} failed: ${errorMessage(error)}`),
 					),
@@ -144,10 +149,13 @@ export class Bridge {
 				return;
 			case "ready":
 				this.#uploadLimit = event.uploadLimit;
-				this.#log(`gateway ready as ${event.userId} (device ${event.deviceId})${event.uploadLimit === undefined ? "" : `, upload limit ${event.uploadLimit}`}`);
+				this.#log(
+					`gateway ready as ${event.userId} (device ${event.deviceId})${event.uploadLimit === undefined ? "" : `, upload limit ${event.uploadLimit}`}`,
+				);
 				return;
 			case "reaction":
-				for (const handler of this.#options.handlers ?? []) handler.onReaction?.(event.roomId, event.relatesTo, event.key);
+				for (const handler of this.#options.handlers ?? [])
+					handler.onReaction?.(event.roomId, event.relatesTo, event.key);
 				return;
 		}
 	}
@@ -168,10 +176,15 @@ export class Bridge {
 				// A media message runs no command: it interrupts one waiting, as a voice message does.
 				for (const handler of this.#options.handlers ?? []) handler.interrupt?.(message.roomId);
 			} else {
-				const command = await this.#command({ roomId: message.roomId, body: message.body, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) });
+				const command = await this.#command({
+					roomId: message.roomId,
+					body: message.body,
+					...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }),
+				});
 				if (command !== undefined) {
 					db.markNotified([`cmd:${message.eventId}`], Date.now());
-					if (command.reply !== undefined) await this.#send(message.roomId, `cmd:${message.eventId}`, command.reply, true);
+					if (command.reply !== undefined)
+						await this.#send(message.roomId, `cmd:${message.eventId}`, command.reply, true);
 					link.send({ type: "ack", eventId: message.eventId });
 					return;
 				}
@@ -179,7 +192,8 @@ export class Bridge {
 		}
 		const attachment = message.attachment;
 		if (attachment === undefined) {
-			if (!db.isDelivered(message.eventId)) await this.#submit(message.roomId, message.eventId, `${time === undefined ? "" : `[${time}] `}${message.body}`);
+			if (!db.isDelivered(message.eventId))
+				await this.#submit(message.roomId, message.eventId, `${time === undefined ? "" : `[${time}] `}${message.body}`);
 		} else if (!db.hasDelivery(message.eventId)) {
 			// Once admitted, what was made of the file lives in the conversation; a resent one is not processed again.
 			if (attachment.voice === true) await this.#admitAudio(message, attachment.path, time);
@@ -195,7 +209,8 @@ export class Bridge {
 		const { link } = this.#options;
 		const voice = this.#options.voice;
 		const tell = (body: string) => this.#send(message.roomId, `stt:${message.eventId}`, body, true);
-		if (voice === undefined) return void (await tell("音声メッセージには対応していません（設定に voice がありません）。"));
+		if (voice === undefined)
+			return void (await tell("音声メッセージには対応していません（設定に voice がありません）。"));
 
 		link.send({ type: "typing", roomId: message.roomId, on: true });
 		let text: string;
@@ -210,9 +225,11 @@ export class Bridge {
 			link.send({ type: "typing", roomId: message.roomId, on: false });
 			return void (await tell("音声を聞き取れませんでした。"));
 		}
-		this.#track(this.notice(message.roomId, `heard:${message.eventId}`, `🎤 ${text}`).catch((error) => {
-			this.#log(`posting the transcript of ${message.eventId} failed: ${errorMessage(error)}`);
-		}));
+		this.#track(
+			this.notice(message.roomId, `heard:${message.eventId}`, `🎤 ${text}`).catch((error) => {
+				this.#log(`posting the transcript of ${message.eventId} failed: ${errorMessage(error)}`);
+			}),
+		);
 		await this.#submit(message.roomId, message.eventId, `[${time === undefined ? "" : `${time} `}音声] ${text}`, true);
 	}
 
@@ -224,7 +241,10 @@ export class Bridge {
 		const { link } = this.#options;
 		const tell = (body: string) => this.#send(message.roomId, `file:${message.eventId}`, body, true);
 		const name = message.body.trim() === "" ? "添付ファイル" : message.body.trim();
-		const bytes = await stat(attachment.path).then((info) => info.size, () => 0);
+		const bytes = await stat(attachment.path).then(
+			(info) => info.size,
+			() => 0,
+		);
 		const kind = `${name}（${attachment.mimeType}、${fileSizeOf(bytes)}）`;
 		const stamp = time === undefined ? "" : `${time} `;
 		const kept = `（保存先: ${attachment.path}）`;
@@ -241,13 +261,19 @@ export class Bridge {
 			}
 			if (attachment.mimeType === "application/pdf") {
 				const { markdown, pages } = await readPdfText(await readFile(attachment.path));
-				const body = markdown.length <= FILE_TEXT_MAX ? `\n${markdown}` : `\n全 ${pages} ページ・${markdown.length} 字のため本文を省略しました。read_pdf で確認してください。`;
+				const body =
+					markdown.length <= FILE_TEXT_MAX
+						? `\n${markdown}`
+						: `\n全 ${pages} ページ・${markdown.length} 字のため本文を省略しました。read_pdf で確認してください。`;
 				await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${kept}${body}`);
 				return;
 			}
 			if (attachment.mimeType.startsWith("text/") || attachment.mimeType === "application/json") {
 				const text = (await readFile(attachment.path, "utf8")).trim();
-				const body = text.length <= FILE_TEXT_MAX ? `\n${text}` : `\n${text.split("\n").length} 行・${text.length} 字のため本文を省略しました。必要に応じて read や bash で確認してください。`;
+				const body =
+					text.length <= FILE_TEXT_MAX
+						? `\n${text}`
+						: `\n${text.split("\n").length} 行・${text.length} 字のため本文を省略しました。必要に応じて read や bash で確認してください。`;
 				await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${kept}${body}`);
 				return;
 			}
@@ -262,12 +288,21 @@ export class Bridge {
 	}
 
 	async #submitToRoom(roomId: string, key: string, content: string | UserInput, noteActivity = true) {
-		const submission = await (await this.#conversationFor(roomId)).submit({ type: "input", content, requestId: key, whenBusy: "steer" }, this.#options.context);
+		const submission = await (await this.#conversationFor(roomId)).submit(
+			{ type: "input", content, requestId: key, whenBusy: "steer" },
+			this.#options.context,
+		);
 		if (noteActivity) this.#options.db.noteActivity(roomId);
 		return submission;
 	}
 
-	async #submit(roomId: string, key: string, content: string | UserInput, voice = false, noteActivity = true): Promise<void> {
+	async #submit(
+		roomId: string,
+		key: string,
+		content: string | UserInput,
+		voice = false,
+		noteActivity = true,
+	): Promise<void> {
 		const { db, harness, context } = this.#options;
 		if (db.hasDelivery(key)) return;
 		const conversation = await this.#conversationFor(roomId);
@@ -276,12 +311,18 @@ export class Bridge {
 		if (priorConv !== undefined && priorConv !== Number(conversation.id)) {
 			// A crash between submit and addDelivery followed by adopt() moves the room to a new conversation,
 			// whose requestId scope does not see the prior submission.
-			const existing = await harness.commit((tx) => tx.submissionByRequest(idFromNumber<ConversationId>(priorConv), key), context);
+			const existing = await harness.commit(
+				(tx) => tx.submissionByRequest(idFromNumber<ConversationId>(priorConv), key),
+				context,
+			);
 			if (existing !== undefined) submissionId = Number(existing.id);
 		}
 		if (submissionId === undefined) {
 			db.setPendingSubmission(key, Number(conversation.id));
-			const submission = await conversation.submit({ type: "input", content, requestId: key, whenBusy: "steer" }, context);
+			const submission = await conversation.submit(
+				{ type: "input", content, requestId: key, whenBusy: "steer" },
+				context,
+			);
 			if (noteActivity) db.noteActivity(roomId);
 			submissionId = Number(submission.id);
 		}
@@ -312,13 +353,18 @@ export class Bridge {
 					latest.id,
 					{
 						ownership: { kind: "ownerless" },
-						...(session === undefined ? {} : { init: async (tx, id) => void ((await tx.doc(ProviderDoc, id)).sessionId = session) }),
+						...(session === undefined
+							? {}
+							: { init: async (tx, id) => void ((await tx.doc(ProviderDoc, id)).sessionId = session) }),
 					},
 					context,
 				);
 			}
 			db.addConversationRoom(Number(aside.id), roomId);
-			return { conversationId: Number(aside.id), from: { conversationId: Number(main.id), entryId: latest === undefined ? 0 : Number(latest.id) } };
+			return {
+				conversationId: Number(aside.id),
+				from: { conversationId: Number(main.id), entryId: latest === undefined ? 0 : Number(latest.id) },
+			};
 		});
 	}
 
@@ -411,7 +457,11 @@ export class Bridge {
 		await this.#send(roomId, `notice:${key}`, body, true);
 	}
 
-	async #command(message: { readonly roomId: string; readonly body: string; readonly replyTo?: string }): Promise<Extract<Handled, { handled: true }> | undefined> {
+	async #command(message: {
+		readonly roomId: string;
+		readonly body: string;
+		readonly replyTo?: string;
+	}): Promise<Extract<Handled, { handled: true }> | undefined> {
 		// Before the handlers, so asking for help does not give up a pending approval or code request.
 		if (message.body.trim() === "!help") return { handled: true, reply: this.#help(message.roomId) };
 		for (const handler of this.#options.handlers ?? []) {
@@ -448,7 +498,9 @@ export class Bridge {
 
 	async #existingConversation(roomId: string): Promise<Conversation | undefined> {
 		const known = this.#options.db.conversationOf(roomId);
-		return known === undefined ? undefined : this.#options.harness.conversation(idFromNumber<ConversationId>(known), this.#options.context);
+		return known === undefined
+			? undefined
+			: this.#options.harness.conversation(idFromNumber<ConversationId>(known), this.#options.context);
 	}
 
 	async #conversationFor(roomId: string): Promise<Conversation> {
@@ -480,7 +532,11 @@ export class Bridge {
 	#createConversation(roomId: string): Promise<Conversation> {
 		const { harness, config, context } = this.#options;
 		const name = personaFor(config, roomId);
-		const agent = { model: modelFor(config, name), thinkingLevel: thinkingFor(config, name), instructions: readSoul(config, name) };
+		const agent = {
+			model: modelFor(config, name),
+			thinkingLevel: thinkingFor(config, name),
+			instructions: readSoul(config, name),
+		};
 		return harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
 	}
 
@@ -514,9 +570,12 @@ export class Bridge {
 				await this.#retrying(`the spoken answer to ${delivery.eventId}`, () => this.#sendSpoken(delivery, answer.body));
 			} catch (error) {
 				// The text has arrived, so the answer is not lost; say why the voice did not come instead of retrying forever.
-				await this.#send(delivery.roomId, `voicefail:${delivery.eventId}`, `音声の返答を作れませんでした（${errorMessage(error)}）。`, true).catch(
-					(noticeError) => this.#log(`notice for ${delivery.eventId} failed: ${errorMessage(noticeError)}`),
-				);
+				await this.#send(
+					delivery.roomId,
+					`voicefail:${delivery.eventId}`,
+					`音声の返答を作れませんでした（${errorMessage(error)}）。`,
+					true,
+				).catch((noticeError) => this.#log(`notice for ${delivery.eventId} failed: ${errorMessage(noticeError)}`));
 			}
 		}
 		db.markDelivered(delivery.eventId, replyEventId);
@@ -581,10 +640,14 @@ export class Bridge {
 
 	/** Whether this message, of all that joined its run, is the one that answers it. */
 	async #answers(delivery: Delivery, settled: Settled): Promise<boolean> {
-		if (settled.type === "input" && settled.status === "done") return this.#options.db.claimAnswer(Number(settled.answer), delivery.eventId) === delivery.eventId;
+		if (settled.type === "input" && settled.status === "done")
+			return this.#options.db.claimAnswer(Number(settled.answer), delivery.eventId) === delivery.eventId;
 		const { harness, context, db } = this.#options;
 		const conversationId = db.conversationOf(delivery.roomId);
-		const failure = conversationId === undefined ? undefined : (await harness.snapshot(LiveDoc, idFromNumber<ConversationId>(conversationId), context))?.runFailure;
+		const failure =
+			conversationId === undefined
+				? undefined
+				: (await harness.snapshot(LiveDoc, idFromNumber<ConversationId>(conversationId), context))?.runFailure;
 		// Once the next run has started the failure is gone, and each of its messages tells it: twice rather than never.
 		const inputs = (failure?.inputs ?? []).map(Number);
 		return !inputs.includes(delivery.submissionId) || inputs[0] === delivery.submissionId;
@@ -600,7 +663,13 @@ export class Bridge {
 				// The first send is keyed to the message, so after a restart the run goes on in the same notice. Edits need no
 				// such key: an edit sent twice shows the same thing.
 				send: (body, replaces) =>
-					this.#send(roomId, replaces === undefined ? `progress:${key}` : `progress:${key}:${randomUUID()}`, body, true, replaces),
+					this.#send(
+						roomId,
+						replaces === undefined ? `progress:${key}` : `progress:${key}:${randomUUID()}`,
+						body,
+						true,
+						replaces,
+					),
 				intervalMs: this.#options.progressIntervalMs ?? 2_000,
 				context: this.#options.context,
 				log: this.#log,
@@ -614,13 +683,24 @@ export class Bridge {
 
 	#send(roomId: string, txnId: string, body: string, notice: boolean, replaces?: string): Promise<string> {
 		// The transaction ID doubles as the request ID: one send per ID is in flight at a time.
-		return this.#request({ type: "send", requestId: txnId, roomId, txnId, body, notice, ...(replaces === undefined ? {} : { replaces }) });
+		return this.#request({
+			type: "send",
+			requestId: txnId,
+			roomId,
+			txnId,
+			body,
+			notice,
+			...(replaces === undefined ? {} : { replaces }),
+		});
 	}
 
 	#request(command: Extract<GatewayCommand, { requestId: string }>): Promise<string> {
 		const { requestId } = command;
 		return new Promise<string>((resolve, reject) => {
-			const timer = setTimeout(() => settle(() => reject(new Error("the gateway did not answer in time"))), this.#sendTimeoutMs);
+			const timer = setTimeout(
+				() => settle(() => reject(new Error("the gateway did not answer in time"))),
+				this.#sendTimeoutMs,
+			);
 			const settle = (finish: () => void) => {
 				clearTimeout(timer);
 				this.#sends.delete(requestId);

@@ -2,7 +2,15 @@ import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import { contentText } from "@earendil-works/pi-ai/utils/text";
-import { AgentDoc, CompactionTask, defineExtension, GenerationTask, type HookApi, hook, ProviderDoc } from "@earendil-works/pi-durable";
+import {
+	AgentDoc,
+	CompactionTask,
+	defineExtension,
+	GenerationTask,
+	type HookApi,
+	hook,
+	ProviderDoc,
+} from "@earendil-works/pi-durable";
 import { isRecord } from "./config.ts";
 import { errorMessage } from "./errors.ts";
 import type { HostDb } from "./hostdb.ts";
@@ -40,7 +48,12 @@ export const SUMMARY_PROMPT = [
 const TOOL_RESULT_CHARS = 2_000;
 
 function textOf(content: Message["content"]): string {
-	const calls = typeof content === "string" ? [] : content.flatMap((block) => (block.type === "toolCall" ? [`（ツール ${block.name} を呼んだ: ${JSON.stringify(block.arguments)}）`] : []));
+	const calls =
+		typeof content === "string"
+			? []
+			: content.flatMap((block) =>
+					block.type === "toolCall" ? [`（ツール ${block.name} を呼んだ: ${JSON.stringify(block.arguments)}）`] : [],
+				);
 	return [contentText(content), ...calls].filter((part) => part !== "").join("\n");
 }
 
@@ -50,7 +63,8 @@ function transcript(messages: readonly Message[]): string {
 		.flatMap((message) => {
 			if (message.role === "user") return [`[ユーザー]\n${textOf(message.content)}`];
 			if (message.role === "assistant") return [`[アシスタント]\n${textOf(message.content)}`];
-			if (message.role === "toolResult") return [`[ツールの結果 ${message.toolName}]\n${textOf(message.content).slice(0, TOOL_RESULT_CHARS)}`];
+			if (message.role === "toolResult")
+				return [`[ツールの結果 ${message.toolName}]\n${textOf(message.content).slice(0, TOOL_RESULT_CHARS)}`];
 			return [];
 		})
 		.join("\n\n");
@@ -85,7 +99,9 @@ export function createCompactionExtension(options: CompactionOptions) {
 		let changed = false;
 		const swapped = input.map((item) => {
 			if (!isRecord(item) || item.role !== "user" || !Array.isArray(item.content)) return item;
-			const summary = item.content.flatMap((part) => (isRecord(part) && typeof part.text === "string" ? [SUMMARY.exec(part.text)?.[1]] : [])).find((found) => found !== undefined);
+			const summary = item.content
+				.flatMap((part) => (isRecord(part) && typeof part.text === "string" ? [SUMMARY.exec(part.text)?.[1]] : []))
+				.find((found) => found !== undefined);
 			const native = summary === undefined ? undefined : stored(hashOf(summary));
 			if (native === undefined || native.model !== modelKey(model)) return item;
 			changed = true;
@@ -94,33 +110,71 @@ export function createCompactionExtension(options: CompactionOptions) {
 		return changed ? swapped : undefined;
 	};
 
-	const summarize = async (model: Model<Api>, messages: readonly Message[], api: HookApi, context: Context): Promise<string> => {
+	const summarize = async (
+		model: Model<Api>,
+		messages: readonly Message[],
+		api: HookApi,
+		context: Context,
+	): Promise<string> => {
 		const answer = await api.models.completeSimple(
 			model,
-			{ systemPrompt: SUMMARY_SYSTEM, messages: [{ role: "user", content: [{ type: "text", text: `<conversation>\n${transcript(messages)}\n</conversation>\n\n${SUMMARY_PROMPT}` }], timestamp: Date.now() }] },
+			{
+				systemPrompt: SUMMARY_SYSTEM,
+				messages: [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: `<conversation>\n${transcript(messages)}\n</conversation>\n\n${SUMMARY_PROMPT}` },
+						],
+						timestamp: Date.now(),
+					},
+				],
+			},
 			{ signal: context.abortSignal },
 		);
-		const text = answer.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n").trim();
-		if (answer.stopReason !== "stop" || text === "") throw new Error(answer.errorMessage ?? `the summary ended with ${answer.stopReason}`);
+		const text = answer.content
+			.flatMap((block) => (block.type === "text" ? [block.text] : []))
+			.join("\n")
+			.trim();
+		if (answer.stopReason !== "stop" || text === "")
+			throw new Error(answer.errorMessage ?? `the summary ended with ${answer.stopReason}`);
 		return text;
 	};
 
 	/** The conversation as the model is given it, with a request to compact it at the end; the server answers with one item. */
-	const compactNatively = async (model: Model<Api>, messages: readonly Message[], api: HookApi, context: Context): Promise<unknown> => {
+	const compactNatively = async (
+		model: Model<Api>,
+		messages: readonly Message[],
+		api: HookApi,
+		context: Context,
+	): Promise<unknown> => {
 		const sessionId = (await api.snapshot(ProviderDoc, api.conversationId, context))?.sessionId;
 		let compaction: unknown;
-		await api.models.completeSimple(model, { messages: [...messages] }, {
-			signal: context.abortSignal,
-			...(sessionId === undefined ? {} : { sessionId }),
-			onPayload: (payload) => {
-				if (!isRecord(payload) || !Array.isArray(payload.input)) return undefined;
-				// An earlier compaction is in the messages as its summary; the server is given its own item for it.
-				return { ...payload, input: [...(withNativeItems(model, payload.input) ?? payload.input), { type: "compaction_trigger" }] };
+		await api.models.completeSimple(
+			model,
+			{ messages: [...messages] },
+			{
+				signal: context.abortSignal,
+				...(sessionId === undefined ? {} : { sessionId }),
+				onPayload: (payload) => {
+					if (!isRecord(payload) || !Array.isArray(payload.input)) return undefined;
+					// An earlier compaction is in the messages as its summary; the server is given its own item for it.
+					return {
+						...payload,
+						input: [...(withNativeItems(model, payload.input) ?? payload.input), { type: "compaction_trigger" }],
+					};
+				},
+				onProviderStreamEvent: (event) => {
+					if (
+						isRecord(event) &&
+						event.type === "response.output_item.done" &&
+						isRecord(event.item) &&
+						event.item.type === "compaction"
+					)
+						compaction = event.item;
+				},
 			},
-			onProviderStreamEvent: (event) => {
-				if (isRecord(event) && event.type === "response.output_item.done" && isRecord(event.item) && event.item.type === "compaction") compaction = event.item;
-			},
-		});
+		);
 		if (compaction === undefined) throw new Error("the server returned no compaction item");
 		return compaction;
 	};

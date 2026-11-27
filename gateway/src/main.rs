@@ -50,7 +50,10 @@ fn password() -> Result<String> {
     eprint!("Matrix password (shown as typed; set MATRIX_PASSWORD to avoid the prompt): ");
     std::io::stderr().flush()?;
     let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line).context("reading the password")?;
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .context("reading the password")?;
     let password = line.trim_end_matches(['\r', '\n']).to_owned();
     anyhow::ensure!(!password.is_empty(), "no password given");
     Ok(password)
@@ -59,18 +62,29 @@ fn password() -> Result<String> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Both rustls crypto providers are in the build (see Cargo.toml); without a choice, the first TLS use panics.
-    rustls::crypto::aws_lc_rs::default_provider().install_default().expect("no crypto provider installed before");
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("no crypto provider installed before");
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr) // stdout carries the JSON Lines to the agent
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn,matrix_gateway=info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "warn,matrix_gateway=info".into()),
+        )
         .init();
 
     match Cli::parse().command {
-        Action::Login { config, recovery_key } => {
+        Action::Login {
+            config,
+            recovery_key,
+        } => {
             let config = config::Config::load(&config)?;
             session::login(&config, &password()?, recovery_key.as_deref()).await
         }
-        Action::Recover { config, recovery_key } => session::recover(&config::Config::load(&config)?, &recovery_key).await,
+        Action::Recover {
+            config,
+            recovery_key,
+        } => session::recover(&config::Config::load(&config)?, &recovery_key).await,
         Action::Run { config } => run::run(&config::Config::load(&config)?).await,
     }
 }

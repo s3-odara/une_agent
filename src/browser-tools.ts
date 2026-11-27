@@ -22,7 +22,11 @@ export type BrowserToolsOptions = {
 	readonly maxChars?: number;
 	readonly codes?: CodeRequests;
 	readonly screenshots?: {
-		readonly send: (roomId: string, txnId: string, image: { path: string; name: string; width: number; height: number }) => Promise<string>;
+		readonly send: (
+			roomId: string,
+			txnId: string,
+			image: { path: string; name: string; width: number; height: number },
+		) => Promise<string>;
 		readonly dir: string;
 	};
 };
@@ -35,7 +39,6 @@ const CODE_FIELDS = new Set(["text", "tel", "number", "password", "search", "ema
 
 /** A refused request. Its message is written for the model. */
 class BrowserError extends Error {}
-
 
 /**
  * What the code guarantees, whatever the model or a page asks for:
@@ -57,7 +60,10 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 
 	const roomOf = (api: Pick<ToolExecutionApi, "conversationId">) => db.requireRoom(Number(api.conversationId));
 
-	const pageFor = async (api: Pick<ToolExecutionApi, "conversationId" | "snapshot">, context: Context): Promise<BrowserPage> => {
+	const pageFor = async (
+		api: Pick<ToolExecutionApi, "conversationId" | "snapshot">,
+		context: Context,
+	): Promise<BrowserPage> => {
 		// While a check is weighed the writing tools are refused before they reach here, so what arrives is a reading
 		// tool; user messages and user-scheduled timers are in the delivery ledger.
 		if (!db.isWeighing(Number(api.conversationId)) && !(await startedByUser(api, db, context)))
@@ -84,22 +90,47 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 	const view = async (page: BrowserPage, note?: string, secret?: string) => {
 		const snapshot = await page.snapshot();
 		const origin = storedOrigin(snapshot.url);
-		const stored = origin === undefined ? [] : [`このサイト（${origin}）には認証情報が登録されています。ログインフォームなら browser_fill_credential で入力できます。`];
-		const text = [...(note === undefined ? [] : [note, ""]), `URL: ${snapshot.url}`, `タイトル: ${snapshot.title}`, ...stored, "", UNTRUSTED, "", clip(snapshot.tree)].join("\n");
+		const stored =
+			origin === undefined
+				? []
+				: [
+						`このサイト（${origin}）には認証情報が登録されています。ログインフォームなら browser_fill_credential で入力できます。`,
+					];
+		const text = [
+			...(note === undefined ? [] : [note, ""]),
+			`URL: ${snapshot.url}`,
+			`タイトル: ${snapshot.title}`,
+			...stored,
+			"",
+			UNTRUSTED,
+			"",
+			clip(snapshot.tree),
+		].join("\n");
 		return textOutput(credentials.scrub(text, ...(secret === undefined ? [] : [secret])));
 	};
 
 	/** The common shape of a page action: do it, then show the page it left. */
-	const act = async (api: Pick<ToolExecutionApi, "conversationId" | "snapshot">, context: Context, action: (page: BrowserPage) => Promise<unknown>) => {
+	const act = async (
+		api: Pick<ToolExecutionApi, "conversationId" | "snapshot">,
+		context: Context,
+		action: (page: BrowserPage) => Promise<unknown>,
+	) => {
 		const page = await pageFor(api, context);
 		await action(page);
 		return view(page);
 	};
 
 	/** What the model looks at to find a point to click; `shot` when the window was just shot for the room already. */
-	const look = async (page: BrowserPage, note: string, options: { mark?: { x: number; y: number }; shot?: { data: Buffer; mimeType: string } } = {}) => {
+	const look = async (
+		page: BrowserPage,
+		note: string,
+		options: { mark?: { x: number; y: number }; shot?: { data: Buffer; mimeType: string } } = {},
+	) => {
 		const location = await page.location();
-		const shot = options.shot ?? { data: await page.screenshot({ format: "jpeg", ...(options.mark === undefined ? {} : { mark: options.mark }) }), mimeType: "image/jpeg" };
+		const shot = options.shot ?? {
+			data: await page.screenshot({ format: "jpeg", ...(options.mark === undefined ? {} : { mark: options.mark }) }),
+			mimeType: "image/jpeg",
+		};
 		const text = [
 			note,
 			`URL: ${location.url}`,
@@ -108,10 +139,19 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 			"",
 			UNTRUSTED,
 		].join("\n");
-		return { output: [{ type: "text" as const, text: credentials.scrub(text) }, { type: "image" as const, data: shot.data.toString("base64"), mimeType: shot.mimeType }] };
+		return {
+			output: [
+				{ type: "text" as const, text: credentials.scrub(text) },
+				{ type: "image" as const, data: shot.data.toString("base64"), mimeType: shot.mimeType },
+			],
+		};
 	};
 
-	const pressEnterIf = async (page: BrowserPage, submit: boolean | undefined, ref: string | undefined): Promise<void> => {
+	const pressEnterIf = async (
+		page: BrowserPage,
+		submit: boolean | undefined,
+		ref: string | undefined,
+	): Promise<void> => {
 		if (submit === true) await page.press("Enter", ref);
 	};
 
@@ -146,7 +186,9 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 				const page = await pageFor(api, context);
 				const whole = args.whole === true;
 				const again = (next: number) => `browser_read を${whole ? " whole=true、" : " "}offset=${next} で呼ぶ`;
-				return textOutput(credentials.scrub(renderPart(await page.read(whole), whole, args.offset ?? 0, maxChars, again)));
+				return textOutput(
+					credentials.scrub(renderPart(await page.read(whole), whole, args.offset ?? 0, maxChars, again)),
+				);
 			},
 		}),
 		defineTool({
@@ -168,12 +210,15 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 			execute: async (args, api, context) => {
 				const page = await pageFor(api, context);
 				await page.clickAt(args.x, args.y);
-				return look(page, `(${args.x}, ${args.y}) をクリックしました。赤い丸がクリックした位置です。`, { mark: { x: args.x, y: args.y } });
+				return look(page, `(${args.x}, ${args.y}) をクリックしました。赤い丸がクリックした位置です。`, {
+					mark: { x: args.x, y: args.y },
+				});
 			},
 		}),
 		defineTool({
 			name: "browser_type",
-			description: "入力欄の内容を text に置き換え、その後のスナップショットを返す。パスワードには使わず、browser_fill_credential を使う。",
+			description:
+				"入力欄の内容を text に置き換え、その後のスナップショットを返す。パスワードには使わず、browser_fill_credential を使う。",
 			parameters: obj({
 				ref,
 				text: str({ description: "入力する文字列" }),
@@ -189,7 +234,10 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 		defineTool({
 			name: "browser_press",
 			description: "キーを押し、その後のスナップショットを返す。ref を付けるとその要素に、無ければページに送る。",
-			parameters: obj({ key: str({ description: "キー名（例: Enter、Escape、PageDown、Tab）", minLength: 1 }), ref: opt(ref) }),
+			parameters: obj({
+				key: str({ description: "キー名（例: Enter、Escape、PageDown、Tab）", minLength: 1 }),
+				ref: opt(ref),
+			}),
 			executionMode: "sequential",
 			execute: (args, api, context) => act(api, context, (page) => page.press(args.key, args.ref)),
 		}),
@@ -211,19 +259,28 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 			}),
 			executionMode: "sequential",
 			execute: async (args, api, context) => {
-				if (args.usernameRef === undefined && args.passwordRef === undefined) throw new BrowserError("usernameRef か passwordRef の少なくとも一方が必要です。");
+				if (args.usernameRef === undefined && args.passwordRef === undefined)
+					throw new BrowserError("usernameRef か passwordRef の少なくとも一方が必要です。");
 				const page = await pageFor(api, context);
 
 				// Checked against the element's own document: a login form inside a frame belongs to the frame's site.
-				const [usernameField, passwordField] = await Promise.all([args.usernameRef, args.passwordRef].map((field) => (field === undefined ? undefined : page.field(field))));
+				const [usernameField, passwordField] = await Promise.all(
+					[args.usernameRef, args.passwordRef].map((field) => (field === undefined ? undefined : page.field(field))),
+				);
 				const origin = (passwordField ?? usernameField)?.origin ?? "";
-				if (usernameField !== undefined && passwordField !== undefined && usernameField.origin !== passwordField.origin) {
+				if (
+					usernameField !== undefined &&
+					passwordField !== undefined &&
+					usernameField.origin !== passwordField.origin
+				) {
 					throw new BrowserError("ユーザー名欄とパスワード欄が別のサイトのものです。");
 				}
 				const credential = credentials.forOrigin(origin);
 				if (credential === undefined) throw new BrowserError(`${origin} の認証情報は登録されていません。`);
 				if (passwordField !== undefined && passwordField.kind !== "password") {
-					throw new BrowserError("passwordRef がパスワード欄ではありません。パスワードはパスワード欄にしか入力できません。");
+					throw new BrowserError(
+						"passwordRef がパスワード欄ではありません。パスワードはパスワード欄にしか入力できません。",
+					);
 				}
 
 				if (args.usernameRef !== undefined) await page.fill(args.usernameRef, credential.username);
@@ -248,7 +305,12 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 							const page = await pageFor(api, context);
 							const field = await page.field(args.ref);
 							if (!CODE_FIELDS.has(field.kind)) throw new BrowserError("ref がコードを入力できる欄ではありません。");
-							const outcome = await codes.ask(roomOf(api), api.callId, `${field.origin} のログインに確認コードが要ります。`, context.abortSignal);
+							const outcome = await codes.ask(
+								roomOf(api),
+								api.callId,
+								`${field.origin} のログインに確認コードが要ります。`,
+								context.abortSignal,
+							);
 							if (!outcome.ok) return textOutput(noCode(outcome.reason));
 							await page.fill(args.ref, outcome.code);
 							await pressEnterIf(page, args.submit, args.ref);
@@ -265,24 +327,35 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 							"いま開いているページの見えている範囲を画像で見る。ツリーでは分からないもの（画像認証、図、canvas）を見るときや、クリックする座標を決めるときに使う。share=true ならユーザーにもルームで見せる。",
 						parameters: obj({
 							share: opt(bool({ description: "ルームに画像として送り、ユーザーに見せる" })),
-							fullPage: opt(bool({ description: "ルームに送る画像をページ全体にする（あなたに返る画像は見えている範囲のまま）" })),
+							fullPage: opt(
+								bool({ description: "ルームに送る画像をページ全体にする（あなたに返る画像は見えている範囲のまま）" }),
+							),
 						}),
 						executionMode: "sequential",
 						execute: async (args, api, context) => {
 							const page = await pageFor(api, context);
 							if (args.share !== true) return look(page, "ページの画面です。");
-							if (db.isWeighing(Number(api.conversationId))) throw new BrowserError("自分から話しかけるかを決めている間は、ルームに画像を送れません。");
+							if (db.isWeighing(Number(api.conversationId)))
+								throw new BrowserError("自分から話しかけるかを決めている間は、ルームに画像を送れません。");
 							const roomId = roomOf(api);
 							const png = await page.screenshot({ format: "png", fullPage: args.fullPage === true });
 							await mkdir(screenshots.dir, { recursive: true });
 							const path = join(screenshots.dir, `${randomUUID()}.png`);
 							await writeFile(path, png);
 							try {
-								await screenshots.send(roomId, `screenshot:${api.callId}`, { path, name: "screenshot.png", ...pngSize(png) });
+								await screenshots.send(roomId, `screenshot:${api.callId}`, {
+									path,
+									name: "screenshot.png",
+									...pngSize(png),
+								});
 							} finally {
 								await rm(path, { force: true });
 							}
-							return look(page, "画面をルームに送りました。", args.fullPage === true ? {} : { shot: { data: png, mimeType: "image/png" } });
+							return look(
+								page,
+								"画面をルームに送りました。",
+								args.fullPage === true ? {} : { shot: { data: png, mimeType: "image/png" } },
+							);
 						},
 					}),
 				]),

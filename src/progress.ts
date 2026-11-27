@@ -1,6 +1,14 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
-import { AssistantEntry, type Conversation, type EntryId, type EntryRecord, type LiveState, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
+import {
+	AssistantEntry,
+	type Conversation,
+	type EntryId,
+	type EntryRecord,
+	type LiveState,
+	ToolResultEntry,
+	UserEntry,
+} from "@earendil-works/pi-durable";
 import { CODEMODE_TOOL_NAME, type CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import type { Settled, Submission } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
@@ -28,7 +36,10 @@ function resultsOf(entries: readonly EntryRecord[]): Results {
 		const message = ToolResultEntry.is(entry) ? (entry.model?.[0] as ToolResultMessage | undefined) : undefined;
 		if (message === undefined) continue;
 		const text = message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
-		const calls = message.toolName === CODEMODE_TOOL_NAME ? ((message.details as CodemodeToolDetails | undefined)?.calls ?? []) : [];
+		const calls =
+			message.toolName === CODEMODE_TOOL_NAME
+				? ((message.details as CodemodeToolDetails | undefined)?.calls ?? [])
+				: [];
 		const nested = calls.map(
 			(call): Nested =>
 				call.status === "error"
@@ -64,14 +75,17 @@ function liveNested(callId: string, live: LiveState | undefined): Nested[] {
 		.map((slot): Nested => {
 			const args = JSON.stringify(slot.arguments);
 			if (slot.summary === undefined) return { name: slot.name, args, status: TOOL_RUNNING };
-			return slot.summary.isError ? { name: slot.name, args, status: TOOL_FAILED, error: slot.summary.error ?? "" } : { name: slot.name, args, status: TOOL_DONE };
+			return slot.summary.isError
+				? { name: slot.name, args, status: TOOL_FAILED, error: slot.summary.error ?? "" }
+				: { name: slot.name, args, status: TOOL_DONE };
 		});
 }
 
 function toolLine(call: ToolCall, results: Results, live: LiveState | undefined): string {
 	const running = live?.run !== undefined;
 	const result = results.get(call.id);
-	const status = result === undefined ? (running ? TOOL_RUNNING : TOOL_STOPPED) : result.isError ? TOOL_FAILED : TOOL_DONE;
+	const status =
+		result === undefined ? (running ? TOOL_RUNNING : TOOL_STOPPED) : result.isError ? TOOL_FAILED : TOOL_DONE;
 	const nested = result?.nested ?? liveNested(call.id, live);
 	return [
 		line("", status, call.name, JSON.stringify(call.arguments), result?.isError === true ? result.text : undefined),
@@ -107,7 +121,8 @@ export function renderProgress(entries: readonly EntryRecord[], live: LiveState 
 		if (block.type === "thinking") blocks.push(thinkingBlock(settledPart(block.thinking), block.redacted === true));
 	}
 	const retry = live?.generation?.retry;
-	if (retry !== undefined) blocks.push(`⚠️ モデルの呼び出しに失敗しました。再試行します（${clipped(retry.error, MAX_ERROR_CHARS)}）`);
+	if (retry !== undefined)
+		blocks.push(`⚠️ モデルの呼び出しに失敗しました。再試行します（${clipped(retry.error, MAX_ERROR_CHARS)}）`);
 	if ((live?.compactions ?? []).length > 0) blocks.push("🗜 これまでの会話を要約しています");
 
 	const body = blocks.filter((block) => block !== "").join("\n\n");

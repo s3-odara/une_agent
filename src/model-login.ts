@@ -13,7 +13,13 @@ const config = loadConfig(configPath);
 mkdirSync(config.dataDir, { recursive: true });
 const models = createAgentModels(config.dataDir);
 if (models.getProvider(provider)?.auth.oauth === undefined) {
-	console.error(`usage: just model-login [provider]; providers with OAuth: ${models.getProviders().filter((item) => item.auth.oauth !== undefined).map((item) => item.id).join(", ")}. Set API keys in ~/.config/agent/env.`);
+	console.error(
+		`usage: just model-login [provider]; providers with OAuth: ${models
+			.getProviders()
+			.filter((item) => item.auth.oauth !== undefined)
+			.map((item) => item.id)
+			.join(", ")}. Set API keys in ~/.config/agent/env.`,
+	);
 	process.exit(2);
 }
 
@@ -35,7 +41,8 @@ try {
 			signal: abort.signal,
 			prompt: async (prompt) => {
 				if (prompt.type === "secret") throw new Error("secret input is not supported by this login command");
-				if (prompt.type !== "select") return rl.question(`${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `);
+				if (prompt.type !== "select")
+					return rl.question(`${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `);
 				console.log(prompt.message);
 				prompt.options.forEach((option, index) => console.log(`  ${index + 1}. ${option.label}`));
 				const chosen = prompt.options[Number(await rl.question("number: ")) - 1];
@@ -43,8 +50,10 @@ try {
 				return chosen.id;
 			},
 			notify: (event) => {
-				if (event.type === "auth_url") console.log(`\nOpen in a browser:\n${event.url}${event.instructions ? `\n${event.instructions}` : ""}`);
-				else if (event.type === "device_code") console.log(`\nOpen ${event.verificationUri} and enter ${event.userCode}`);
+				if (event.type === "auth_url")
+					console.log(`\nOpen in a browser:\n${event.url}${event.instructions ? `\n${event.instructions}` : ""}`);
+				else if (event.type === "device_code")
+					console.log(`\nOpen ${event.verificationUri} and enter ${event.userCode}`);
 				else console.log(event.message);
 			},
 		},

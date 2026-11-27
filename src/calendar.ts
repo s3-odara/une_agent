@@ -1,6 +1,16 @@
 import ICAL from "ical.js";
 import { errorMessage } from "./errors.ts";
-import { addDays, dateOf, formatClock, formatDay, isTimeZone, localDateTime, localMinute, localToEpoch, startOfDay } from "./time.ts";
+import {
+	addDays,
+	dateOf,
+	formatClock,
+	formatDay,
+	isTimeZone,
+	localDateTime,
+	localMinute,
+	localToEpoch,
+	startOfDay,
+} from "./time.ts";
 import { vtimezone } from "./zones.ts";
 
 export type RawObject = { readonly url: string; readonly etag?: string; readonly data: string };
@@ -76,8 +86,14 @@ export function splitId(id: string): { item: string; calendar: string; file: str
 	const match = OCCURRENCE.exec(id);
 	const item = match?.[1] ?? id;
 	const slash = item.indexOf("/");
-	if (slash <= 0 || slash === item.length - 1) throw new CalendarError(`id「${id}」の形が違います。calendar_list が返した id をそのまま使ってください。`);
-	return { item, calendar: item.slice(0, slash), file: item.slice(slash + 1), ...(match === null ? {} : { occurrence: match[2] }) };
+	if (slash <= 0 || slash === item.length - 1)
+		throw new CalendarError(`id「${id}」の形が違います。calendar_list が返した id をそのまま使ってください。`);
+	return {
+		item,
+		calendar: item.slice(0, slash),
+		file: item.slice(slash + 1),
+		...(match === null ? {} : { occurrence: match[2] }),
+	};
 }
 
 function tzidParam(property: ICAL.Property | null): string | undefined {
@@ -104,7 +120,8 @@ function zoneFor(tzid: string | undefined, tz: string): string {
  */
 function toEpoch(time: ICAL.Time, tzid: string | undefined, tz: string): number {
 	if (time.isDate) return startOfDay(plainDate(time), tz);
-	if (time.zone?.tzid === "UTC") return Date.UTC(time.year, time.month - 1, time.day, time.hour, time.minute, time.second);
+	if (time.zone?.tzid === "UTC")
+		return Date.UTC(time.year, time.month - 1, time.day, time.hour, time.minute, time.second);
 	return Temporal.PlainDateTime.from({
 		year: time.year,
 		month: time.month,
@@ -150,7 +167,10 @@ function readCalendar(data: string): Read {
 	} catch {
 		throw new CalendarError("この項目のデータを読めませんでした。");
 	}
-	for (const [name, kind] of [["vevent", "event"], ["vtodo", "todo"]] as const) {
+	for (const [name, kind] of [
+		["vevent", "event"],
+		["vtodo", "todo"],
+	] as const) {
 		const main = root.getAllSubcomponents(name).find((component) => !component.hasProperty("recurrence-id"));
 		if (main !== undefined) return { root, main, kind };
 	}
@@ -179,18 +199,32 @@ function ruleOf(main: ICAL.Component): string | undefined {
 }
 
 function overridesOf(root: ICAL.Component, main: ICAL.Component): ICAL.Component[] {
-	return root.getAllSubcomponents("vevent").filter((component) => component !== main && component.hasProperty("recurrence-id"));
+	return root
+		.getAllSubcomponents("vevent")
+		.filter((component) => component !== main && component.hasProperty("recurrence-id"));
 }
 
 /** `rid` is where the occurrence was due before any change of its own; `start` and `end` are where it is now. */
-type Occurrence = { readonly component: ICAL.Component; readonly start: ICAL.Time; readonly end: ICAL.Time; readonly rid: number; readonly ridIsDate: boolean };
+type Occurrence = {
+	readonly component: ICAL.Component;
+	readonly start: ICAL.Time;
+	readonly end: ICAL.Time;
+	readonly rid: number;
+	readonly ridIsDate: boolean;
+};
 
 /** Without `overrides`, the occurrences as the rule gives them. A single event is its one occurrence. */
 function* occurrencesOf(main: ICAL.Component, tz: string, overrides: ICAL.Component[] = []): Generator<Occurrence> {
 	const event = new ICAL.Event(main, { exceptions: overrides, strictExceptions: false });
 	const tzid = tzidOf(main, "dtstart");
 	if (!event.isRecurring()) {
-		yield { component: main, start: event.startDate, end: event.endDate, rid: toEpoch(event.startDate, tzid, tz), ridIsDate: event.startDate.isDate };
+		yield {
+			component: main,
+			start: event.startDate,
+			end: event.endDate,
+			rid: toEpoch(event.startDate, tzid, tz),
+			ridIsDate: event.startDate.isDate,
+		};
 		return;
 	}
 	const iterator = event.iterator();
@@ -198,11 +232,22 @@ function* occurrencesOf(main: ICAL.Component, tz: string, overrides: ICAL.Compon
 		const next = iterator.next();
 		if (!next) return;
 		const details = event.getOccurrenceDetails(next);
-		yield { component: details.item.component, start: details.startDate, end: details.endDate, rid: toEpoch(next, tzid, tz), ridIsDate: next.isDate };
+		yield {
+			component: details.item.component,
+			start: details.startDate,
+			end: details.endDate,
+			rid: toEpoch(next, tzid, tz),
+			ridIsDate: next.isDate,
+		};
 	}
 }
 
-function occurrenceAt(main: ICAL.Component, key: string, tz: string, overrides: ICAL.Component[] = []): Occurrence | undefined {
+function occurrenceAt(
+	main: ICAL.Component,
+	key: string,
+	tz: string,
+	overrides: ICAL.Component[] = [],
+): Occurrence | undefined {
 	const wanted = keyToEpoch(key, tz);
 	for (const occurrence of occurrencesOf(main, tz, overrides)) {
 		if (occurrenceKey(occurrence.rid, occurrence.ridIsDate, tz) === key) return occurrence;
@@ -212,13 +257,20 @@ function occurrenceAt(main: ICAL.Component, key: string, tz: string, overrides: 
 }
 
 function findOccurrence(main: ICAL.Component, key: string | undefined, tz: string): number {
-	if (key === undefined) throw new CalendarError("この回だけなら、calendar_list が返した回つきの id（…@日時）を使ってください。");
+	if (key === undefined)
+		throw new CalendarError("この回だけなら、calendar_list が返した回つきの id（…@日時）を使ってください。");
 	const found = occurrenceAt(main, key, tz);
-	if (found === undefined) throw new CalendarError(`この予定に ${key} の回はありません。calendar_list で id を確かめてください。`);
+	if (found === undefined)
+		throw new CalendarError(`この予定に ${key} の回はありません。calendar_list で id を確かめてください。`);
 	return found.rid;
 }
 
-function spanOf(component: ICAL.Component, start: ICAL.Time, end: ICAL.Time, tz: string): { start: number; end: number } {
+function spanOf(
+	component: ICAL.Component,
+	start: ICAL.Time,
+	end: ICAL.Time,
+	tz: string,
+): { start: number; end: number } {
 	const tzid = tzidOf(component, "dtstart");
 	const from = toEpoch(start, tzid, tz);
 	return { start: from, end: Math.max(toEpoch(end, tzidOf(component, "dtend") ?? tzid, tz), from) };
@@ -226,7 +278,13 @@ function spanOf(component: ICAL.Component, start: ICAL.Time, end: ICAL.Time, tz:
 
 type Base = Pick<EventItem, "id" | "calendar" | "uid" | "etag" | "modified" | "rule">;
 
-function eventItem(occurrence: Occurrence, span: { start: number; end: number }, base: Base, recurring: boolean, tz: string): EventItem {
+function eventItem(
+	occurrence: Occurrence,
+	span: { start: number; end: number },
+	base: Base,
+	recurring: boolean,
+	tz: string,
+): EventItem {
 	const component = occurrence.component;
 	return {
 		...base,
@@ -249,11 +307,20 @@ function baseOf(main: ICAL.Component, id: string, calendar: string): Base {
 	return { id, calendar, uid: text(main, "uid") ?? "", rule: ruleOf(main) };
 }
 
-export function parseEvents(raw: RawObject, calendar: string, range: { from: number; to: number }, tz: string): EventItem[] {
+export function parseEvents(
+	raw: RawObject,
+	calendar: string,
+	range: { from: number; to: number },
+	tz: string,
+): EventItem[] {
 	const read = tryRead(raw);
 	if (read?.kind !== "event") return [];
 	const { root, main } = read;
-	const base: Base = { ...baseOf(main, idOf(calendar, raw.url), calendar), etag: raw.etag, modified: modifiedOf(main, tz) };
+	const base: Base = {
+		...baseOf(main, idOf(calendar, raw.url), calendar),
+		etag: raw.etag,
+		modified: modifiedOf(main, tz),
+	};
 	const recurring = isRecurring(main);
 	const items: EventItem[] = [];
 	for (const occurrence of occurrencesOf(main, tz, overridesOf(root, main))) {
@@ -286,7 +353,10 @@ export function parseTodo(raw: RawObject, calendar: string, tz: string): TodoIte
 		description: text(todo, "description"),
 		// A cancelled task needs no reminder either.
 		done: status === "COMPLETED" || status === "CANCELLED" || todo.hasProperty("completed"),
-		due: due instanceof ICAL.Time && at !== undefined ? { date: due.isDate ? plainDate(due) : dateOf(at, tz), ...(due.isDate ? {} : { at }) } : undefined,
+		due:
+			due instanceof ICAL.Time && at !== undefined
+				? { date: due.isDate ? plainDate(due) : dateOf(at, tz), ...(due.isDate ? {} : { at }) }
+				: undefined,
 	};
 }
 
@@ -294,7 +364,11 @@ function utc(ms: number): ICAL.Time {
 	return ICAL.Time.fromJSDate(new Date(ms), true);
 }
 
-function setProperty(component: ICAL.Component, name: string, value: ICAL.Time | ICAL.Recur | string | number | undefined): void {
+function setProperty(
+	component: ICAL.Component,
+	name: string,
+	value: ICAL.Time | ICAL.Recur | string | number | undefined,
+): void {
 	// Removed first: an old property may carry parameters, such as a TZID, that no longer fit the new value.
 	component.removeAllProperties(name);
 	if (value !== undefined && value !== "") component.addPropertyWithValue(name, value);
@@ -304,7 +378,15 @@ type When = { readonly time: ICAL.Time; readonly tzid?: string };
 
 function wallTime(ms: number, zone: string, tzid: string | undefined): ICAL.Time {
 	const local = localDateTime(ms, zone);
-	const data = { year: local.year, month: local.month, day: local.day, hour: local.hour, minute: local.minute, second: local.second, isDate: false };
+	const data = {
+		year: local.year,
+		month: local.month,
+		day: local.day,
+		hour: local.hour,
+		minute: local.minute,
+		second: local.second,
+		isDate: false,
+	};
 	return ICAL.Time.fromData(data, tzid === undefined ? undefined : ICAL.TimezoneService.get(tzid));
 }
 
@@ -336,16 +418,27 @@ function timeAs(main: ICAL.Component, ms: number, tz: string): When {
  * Timed values are written in UTC, which every client reads the same, except in a recurring event: its rule repeats
  * the wall-clock time and weekday of its start, and 08:00 on a Monday in Tokyo is 23:00 on a Sunday in UTC.
  */
-function eventTimes(start: string, end: string | undefined, tz: string, recurring: boolean): { start: When; end: When } {
+function eventTimes(
+	start: string,
+	end: string | undefined,
+	tz: string,
+	recurring: boolean,
+): { start: When; end: When } {
 	if (DATE.test(start)) {
-		if (end !== undefined && !DATE.test(end)) throw new CalendarError("終日の予定の end は YYYY-MM-DD で指定してください。");
+		if (end !== undefined && !DATE.test(end))
+			throw new CalendarError("終日の予定の end は YYYY-MM-DD で指定してください。");
 		const last = end ?? start;
 		if (last < start) throw new CalendarError("end が start より前です。");
 		// DTEND of an all-day event is the day after its last.
-		return { start: { time: ICAL.Time.fromDateString(start) }, end: { time: ICAL.Time.fromDateString(addDays(last, 1)) } };
+		return {
+			start: { time: ICAL.Time.fromDateString(start) },
+			end: { time: ICAL.Time.fromDateString(addDays(last, 1)) },
+		};
 	}
-	if (!DATE_TIME.test(start)) throw new CalendarError("start は YYYY-MM-DD（終日）か YYYY-MM-DDTHH:MM で指定してください。");
-	if (end !== undefined && !DATE_TIME.test(end)) throw new CalendarError("時刻つきの予定の end は YYYY-MM-DDTHH:MM で指定してください。");
+	if (!DATE_TIME.test(start))
+		throw new CalendarError("start は YYYY-MM-DD（終日）か YYYY-MM-DDTHH:MM で指定してください。");
+	if (end !== undefined && !DATE_TIME.test(end))
+		throw new CalendarError("時刻つきの予定の end は YYYY-MM-DDTHH:MM で指定してください。");
 	const from = localToEpoch(start, tz);
 	const to = end === undefined ? from + 3_600_000 : localToEpoch(end, tz);
 	if (to <= from) throw new CalendarError("end が start より後になっていません。");
@@ -381,7 +474,8 @@ function fitUntil(main: ICAL.Component, tz: string): void {
 	const start = main.getFirstPropertyValue("dtstart");
 	if (property === null || !(rule instanceof ICAL.Recur) || !rule.until || !(start instanceof ICAL.Time)) return;
 	const until = rule.until;
-	if (start.isDate) rule.until = ICAL.Time.fromDateString(until.isDate ? plainDate(until) : dateOf(toEpoch(until, undefined, tz), tz));
+	if (start.isDate)
+		rule.until = ICAL.Time.fromDateString(until.isDate ? plainDate(until) : dateOf(toEpoch(until, undefined, tz), tz));
 	else if (start.zone?.tzid !== "UTC" && tzidOf(main, "dtstart") === undefined) return;
 	else if (until.isDate) rule.until = utc(startOfDay(addDays(plainDate(until), 1), tz) - 1000);
 	else rule.until = utc(toEpoch(until, undefined, tz));
@@ -402,7 +496,11 @@ const TEN_YEARS = 10 * 366 * 86_400_000;
 function addZone(root: ICAL.Component, main: ICAL.Component, tz: string): void {
 	const uses = root
 		.getAllSubcomponents("vevent")
-		.some((component) => ["dtstart", "dtend", "recurrence-id", "exdate"].some((name) => component.getAllProperties(name).some((property) => tzidParam(property) === tz)));
+		.some((component) =>
+			["dtstart", "dtend", "recurrence-id", "exdate"].some((name) =>
+				component.getAllProperties(name).some((property) => tzidParam(property) === tz),
+			),
+		);
 	if (!uses || root.getAllSubcomponents("vtimezone").some((zone) => zone.getFirstPropertyValue("tzid") === tz)) return;
 	const from = timeOf(main, "dtstart", tz) ?? 0;
 	root.addSubcomponent(vtimezone(tz, from, from + TEN_YEARS));
@@ -506,7 +604,8 @@ function setTimes(component: ICAL.Component, changes: ItemChanges, tz: string, r
 function rezone(main: ICAL.Component, tz: string): void {
 	for (const name of ["dtstart", "dtend"]) {
 		const value = main.getFirstPropertyValue(name);
-		if (value instanceof ICAL.Time && !value.isDate && value.zone?.tzid === "UTC") setTime(main, name, zoned(toEpoch(value, undefined, tz), tz));
+		if (value instanceof ICAL.Time && !value.isDate && value.zone?.tzid === "UTC")
+			setTime(main, name, zoned(toEpoch(value, undefined, tz), tz));
 	}
 }
 
@@ -545,25 +644,41 @@ export type Applied = {
 };
 
 /** Edited in place so that everything else in the object, such as alarms, is kept. */
-export function applyChanges(data: string, changes: ItemChanges, tz: string, now: number, target: Target = {}): Applied {
+export function applyChanges(
+	data: string,
+	changes: ItemChanges,
+	tz: string,
+	now: number,
+	target: Target = {},
+): Applied {
 	const { root, main, kind } = readCalendar(data);
 	if (kind === "todo") {
-		if (changes.start !== undefined || changes.end !== undefined) throw new CalendarError("タスクに start / end はありません。期日は due で指定してください。");
+		if (changes.start !== undefined || changes.end !== undefined)
+			throw new CalendarError("タスクに start / end はありません。期日は due で指定してください。");
 		if (changes.rrule !== undefined) throw new CalendarError("タスクは繰り返せません。");
 		setFields(main, changes);
 		if (changes.due !== undefined) setProperty(main, "due", changes.due === "" ? undefined : dueTime(changes.due, tz));
 		touch(main, now);
 		return { data: root.toString(), dropped: 0 };
 	}
-	if (changes.due !== undefined) throw new CalendarError("予定に due はありません。日時は start / end で指定してください。");
+	if (changes.due !== undefined)
+		throw new CalendarError("予定に due はありません。日時は start / end で指定してください。");
 	if (isRecurring(main)) {
 		if (target.scope === undefined) throw new CalendarError(SCOPE_NEEDED);
-		if (target.scope === "this") return { data: changeOne(root, main, changes, target.occurrence, tz, now), dropped: 0 };
+		if (target.scope === "this")
+			return { data: changeOne(root, main, changes, target.occurrence, tz, now), dropped: 0 };
 	}
 	return changeSeries(root, main, changes, tz, now);
 }
 
-function changeOne(root: ICAL.Component, main: ICAL.Component, changes: ItemChanges, occurrence: string | undefined, tz: string, now: number): string {
+function changeOne(
+	root: ICAL.Component,
+	main: ICAL.Component,
+	changes: ItemChanges,
+	occurrence: string | undefined,
+	tz: string,
+	now: number,
+): string {
 	if (changes.rrule !== undefined) throw new CalendarError("繰り返しの規則は scope: all で変えてください。");
 	const override = overrideFor(root, main, findOccurrence(main, occurrence, tz), tz);
 	setFields(override, changes);
@@ -576,8 +691,18 @@ function changeOne(root: ICAL.Component, main: ICAL.Component, changes: ItemChan
  * An occurrence changed on its own follows the series in what it did not change on its own, and which occurrences were
  * changed or removed moves with the series' start. What then no longer falls on an occurrence is dropped.
  */
-function changeSeries(root: ICAL.Component, main: ICAL.Component, changes: ItemChanges, tz: string, now: number): Applied {
-	const overrides = overridesOf(root, main).map((component) => ({ component, rid: timeOf(component, "recurrence-id", tz) ?? Number.NaN, ...startAndLength(component, tz) }));
+function changeSeries(
+	root: ICAL.Component,
+	main: ICAL.Component,
+	changes: ItemChanges,
+	tz: string,
+	now: number,
+): Applied {
+	const overrides = overridesOf(root, main).map((component) => ({
+		component,
+		rid: timeOf(component, "recurrence-id", tz) ?? Number.NaN,
+		...startAndLength(component, tz),
+	}));
 	const before = startAndLength(main, tz);
 	const oldFields = Object.fromEntries(FIELDS.map((name) => [name, text(main, name)]));
 	const exdates = exdatesOf(main, tz);
@@ -621,7 +746,8 @@ function changeSeries(root: ICAL.Component, main: ICAL.Component, changes: ItemC
 			if (value !== undefined && text(component, name) === oldFields[name]) setField(component, name, value);
 		}
 		setTime(component, "recurrence-id", timeAs(main, rid, tz));
-		if (override.start === override.rid) placeAt(component, main, rid, override.length === before.length ? after.length : override.length, tz);
+		if (override.start === override.rid)
+			placeAt(component, main, rid, override.length === before.length ? after.length : override.length, tz);
 		touch(component, now);
 	}
 	for (const exdate of exdates) {
@@ -671,7 +797,10 @@ export function formatEvent(item: EventItem, tz: string): string {
 	} else {
 		const lastDay = dateOf(item.end, tz);
 		const end = lastDay === first ? formatClock(item.end, tz) : `${formatDay(lastDay)} ${formatClock(item.end, tz)}`;
-		when = item.end === item.start ? `${formatDay(first)} ${formatClock(item.start, tz)}` : `${formatDay(first)} ${formatClock(item.start, tz)}–${end}`;
+		when =
+			item.end === item.start
+				? `${formatDay(first)} ${formatClock(item.start, tz)}`
+				: `${formatDay(first)} ${formatClock(item.start, tz)}–${end}`;
 	}
 	const place = item.location === undefined ? "" : ` @${item.location}`;
 	return `${when} ${item.summary}${place}${item.rule === undefined ? "" : `（繰り返し: ${item.rule}）`}`;
@@ -715,14 +844,19 @@ export class Calendars {
 
 	#kindOf(calendar: string): CalendarKind {
 		const found = this.calendars[calendar];
-		if (found === undefined) throw new CalendarError(`カレンダー「${calendar}」はありません。使えるのは ${Object.keys(this.calendars).join("、")} です。`);
+		if (found === undefined)
+			throw new CalendarError(
+				`カレンダー「${calendar}」はありません。使えるのは ${Object.keys(this.calendars).join("、")} です。`,
+			);
 		return found.kind;
 	}
 
 	async events(from: number, to: number): Promise<EventItem[]> {
 		const lists = await Promise.all(
 			this.#names("events").map(async (calendar) =>
-				(await this.#backend.events(calendar, from, to)).flatMap((raw) => parseEvents(raw, calendar, { from, to }, this.tz)),
+				(await this.#backend.events(calendar, from, to)).flatMap((raw) =>
+					parseEvents(raw, calendar, { from, to }, this.tz),
+				),
 			),
 		);
 		return lists.flat().sort((a, b) => a.start - b.start || a.summary.localeCompare(b.summary));
@@ -734,7 +868,11 @@ export class Calendars {
 				(await this.#backend.todos(calendar)).flatMap((raw) => parseTodo(raw, calendar, this.tz) ?? []),
 			),
 		);
-		return lists.flat().sort((a, b) => (a.due?.date ?? "9999").localeCompare(b.due?.date ?? "9999") || a.summary.localeCompare(b.summary));
+		return lists
+			.flat()
+			.sort(
+				(a, b) => (a.due?.date ?? "9999").localeCompare(b.due?.date ?? "9999") || a.summary.localeCompare(b.summary),
+			);
 	}
 
 	/** The id is checked even when the object does not exist. */
@@ -746,7 +884,8 @@ export class Calendars {
 
 	async #object(id: string): Promise<RawObject> {
 		const object = await this.#find(id);
-		if (object === undefined) throw new CalendarError(`「${id}」が見つかりません。calendar_list で id を確かめてください。`);
+		if (object === undefined)
+			throw new CalendarError(`「${id}」が見つかりません。calendar_list で id を確かめてください。`);
 		return object;
 	}
 
@@ -774,16 +913,26 @@ export class Calendars {
 		const summary = text(main, "summary") ?? "（無題）";
 		if (kind === "todo") return summary;
 		const base = baseOf(main, itemId, calendar);
-		const format = (found: Occurrence, as: Base) => formatEvent(eventItem(found, spanOf(found.component, found.start, found.end, this.tz), as, false, this.tz), this.tz);
+		const format = (found: Occurrence, as: Base) =>
+			formatEvent(
+				eventItem(found, spanOf(found.component, found.start, found.end, this.tz), as, false, this.tz),
+				this.tz,
+			);
 		const whole = format(occurrencesOf(main, this.tz).next().value!, base);
 		if (!isRecurring(main) || scope === undefined) return whole;
 		if (scope === "all" || occurrence === undefined) return `${whole}（全ての回）`;
 		const found = occurrenceAt(main, occurrence, this.tz, overridesOf(root, main));
-		return found === undefined ? `${summary} ${occurrence}（この回だけ。もう無い回）` : `${format(found, { ...base, rule: undefined })}（この回だけ）`;
+		return found === undefined
+			? `${summary} ${occurrence}（この回だけ。もう無い回）`
+			: `${format(found, { ...base, rule: undefined })}（この回だけ）`;
 	}
 
 	/** Checked against the item as it is now, so that a change the model got wrong is refused before the user is asked. */
-	async preview(id: string, changes: ItemChanges, scope?: Scope): Promise<{ readonly what: string; readonly dropped: number }> {
+	async preview(
+		id: string,
+		changes: ItemChanges,
+		scope?: Scope,
+	): Promise<{ readonly what: string; readonly dropped: number }> {
 		const object = await this.#object(id);
 		const { dropped } = applyChanges(object.data, changes, this.tz, 0, this.#target(id, scope));
 		return { what: this.#describe(object, id, scope), dropped };
@@ -799,7 +948,10 @@ export class Calendars {
 	/** Repeating the call with the same UID stores nothing new, so a caller that remembers its UID may retry. */
 	async create(calendar: string, uid: string, fields: EventFields | TodoFields, now: number): Promise<string> {
 		const kind = this.#kindOf(calendar);
-		const data = kind === "todos" ? buildTodo(uid, fields as TodoFields, this.tz, now) : buildEvent(uid, fields as EventFields, this.tz, now);
+		const data =
+			kind === "todos"
+				? buildTodo(uid, fields as TodoFields, this.tz, now)
+				: buildEvent(uid, fields as EventFields, this.tz, now);
 		const file = `${uid}.ics`;
 		await this.#backend.create(calendar, file, data);
 		return `${calendar}/${file}`;
@@ -808,7 +960,10 @@ export class Calendars {
 	async update(id: string, changes: ItemChanges, now: number, scope?: Scope): Promise<void> {
 		await this.#retryOnConflict(async () => {
 			const object = await this.#object(id);
-			return this.#backend.update({ ...object, data: applyChanges(object.data, changes, this.tz, now, this.#target(id, scope)).data });
+			return this.#backend.update({
+				...object,
+				data: applyChanges(object.data, changes, this.tz, now, this.#target(id, scope)).data,
+			});
 		});
 	}
 

@@ -3,7 +3,12 @@ import { createInterface } from "node:readline";
 
 /** Keep in step with `gateway/src/ipc.rs`. */
 export type GatewayEvent =
-	| { readonly type: "ready"; readonly userId: string; readonly deviceId: string; /** The largest upload the homeserver accepts, when it tells. */ readonly uploadLimit?: number }
+	| {
+			readonly type: "ready";
+			readonly userId: string;
+			readonly deviceId: string /** The largest upload the homeserver accepts, when it tells. */;
+			readonly uploadLimit?: number;
+	  }
 	| {
 			readonly type: "message";
 			readonly roomId: string;
@@ -12,7 +17,11 @@ export type GatewayEvent =
 			readonly body: string;
 			readonly ts: number;
 			/** A voice or media message, downloaded and decrypted. Delete it once done. */
-			readonly attachment?: { readonly path: string; readonly mimeType: string; /** True only of a voice message. */ readonly voice?: boolean };
+			readonly attachment?: {
+				readonly path: string;
+				readonly mimeType: string /** True only of a voice message. */;
+				readonly voice?: boolean;
+			};
 			readonly replyTo?: string;
 	  }
 	| { readonly type: "undecryptable"; readonly roomId: string; readonly eventId: string }
@@ -20,7 +29,13 @@ export type GatewayEvent =
 	| { readonly type: "sent"; readonly requestId: string; readonly eventId: string }
 	| { readonly type: "error"; readonly requestId?: string; readonly message: string }
 	/** Not stored by the gateway: one missed while it was down is not offered again. */
-	| { readonly type: "reaction"; readonly roomId: string; readonly eventId: string; readonly relatesTo: string; readonly key: string }
+	| {
+			readonly type: "reaction";
+			readonly roomId: string;
+			readonly eventId: string;
+			readonly relatesTo: string;
+			readonly key: string;
+	  }
 	/** Out of the call: `reason` is empty when it left normally. */
 	| { readonly type: "callLeft"; readonly roomId: string; readonly reason: string }
 	/** Somebody started speaking. Never while the bot talks: the gateway does not listen then. */
@@ -62,7 +77,14 @@ export type GatewayCommand =
 	  }
 	| { readonly type: "typing"; readonly roomId: string; readonly on: boolean }
 	/** Answered with `sent` or `error` under `requestId`. */
-	| { readonly type: "react"; readonly requestId: string; readonly roomId: string; readonly txnId: string; readonly eventId: string; readonly key: string }
+	| {
+			readonly type: "react";
+			readonly requestId: string;
+			readonly roomId: string;
+			readonly txnId: string;
+			readonly eventId: string;
+			readonly key: string;
+	  }
 	/** Plays a 48 kHz mono 16-bit WAV file in the call after what is queued; the gateway reads it at once. */
 	| { readonly type: "callSpeak"; readonly roomId: string; readonly id: string; readonly path: string };
 

@@ -6,7 +6,9 @@ import type { GatewayCommand, GatewayEvent, GatewayLink } from "../src/gateway.t
 export class FakeLink implements GatewayLink {
 	readonly commands: GatewayCommand[] = [];
 	failSends = false;
-	beforeSent?: (command: Extract<GatewayCommand, { type: "send" | "sendAttachment" | "react" }>) => Promise<unknown> | undefined;
+	beforeSent?: (
+		command: Extract<GatewayCommand, { type: "send" | "sendAttachment" | "react" }>,
+	) => Promise<unknown> | undefined;
 	/** The gateway answers a `callSpeak` once it has played (or cut off) the speech. */
 	speak: ((command: Extract<GatewayCommand, { type: "callSpeak" }>) => GatewayEvent | undefined) | undefined;
 	readonly #listeners: ((event: GatewayEvent) => void)[] = [];
@@ -35,8 +37,12 @@ export class FakeLink implements GatewayLink {
 	of<T extends GatewayCommand["type"]>(type: T): Extract<GatewayCommand, { type: T }>[] {
 		return this.commands.filter((command): command is Extract<GatewayCommand, { type: T }> => command.type === type);
 	}
-	waitFor<T extends GatewayCommand["type"]>(type: T, matches: (command: Extract<GatewayCommand, { type: T }>) => boolean = () => true): Promise<Extract<GatewayCommand, { type: T }>> {
-		const fits = (command: GatewayCommand): command is Extract<GatewayCommand, { type: T }> => command.type === type && matches(command as Extract<GatewayCommand, { type: T }>);
+	waitFor<T extends GatewayCommand["type"]>(
+		type: T,
+		matches: (command: Extract<GatewayCommand, { type: T }>) => boolean = () => true,
+	): Promise<Extract<GatewayCommand, { type: T }>> {
+		const fits = (command: GatewayCommand): command is Extract<GatewayCommand, { type: T }> =>
+			command.type === type && matches(command as Extract<GatewayCommand, { type: T }>);
 		const sent = this.commands.find(fits);
 		if (sent !== undefined) return Promise.resolve(sent);
 		return new Promise((resolve) => {
@@ -76,7 +82,11 @@ export class MemoryCalDav implements CalDavBackend {
 	}
 
 	#raw(calendar: string, file: string, object: { data: string; etag: string }): RawObject {
-		return { url: `https://dav.example.org/cal/${calendar}/${encodeURIComponent(file)}`, etag: object.etag, data: object.data };
+		return {
+			url: `https://dav.example.org/cal/${calendar}/${encodeURIComponent(file)}`,
+			etag: object.etag,
+			data: object.data,
+		};
 	}
 
 	/** Stores an object as another client would, bypassing the agent. */
@@ -151,7 +161,13 @@ function textOf(content: unknown): string {
 
 export function instructionsOf(request: Request): string {
 	const system = request.messages.filter((item) => item.role === "system");
-	return [request.systemPrompt ?? "", ...system.flatMap((item) => [textOf(item.content), ...Object.values(item.sections ?? {}).map((section) => section ?? "")])].join("\n");
+	return [
+		request.systemPrompt ?? "",
+		...system.flatMap((item) => [
+			textOf(item.content),
+			...Object.values(item.sections ?? {}).map((section) => section ?? ""),
+		]),
+	].join("\n");
 }
 
 /** The names of the tools a request offered the model, after the changes its system messages make. */
@@ -170,7 +186,10 @@ export function lastInput(request: Request): string {
 }
 
 export function everything(request: Request): string {
-	return [instructionsOf(request), ...request.messages.filter((item) => item.role !== "system").map((item) => textOf(item.content))].join("\n");
+	return [
+		instructionsOf(request),
+		...request.messages.filter((item) => item.role !== "system").map((item) => textOf(item.content)),
+	].join("\n");
 }
 
 export function lastToolResult(request: Request): { readonly text: string; readonly isError: boolean } {
@@ -181,10 +200,13 @@ export function lastToolResult(request: Request): { readonly text: string; reado
 /** The images of the newest tool result in a request. */
 export function imagesIn(request: Request): { readonly data: string; readonly mimeType: string }[] {
 	const result = request.messages.findLast((item) => item.role === "toolResult");
-	return Array.isArray(result?.content) ? result.content.filter((block: { type: string }) => block.type === "image") : [];
+	return Array.isArray(result?.content)
+		? result.content.filter((block: { type: string }) => block.type === "image")
+		: [];
 }
 
-export const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
+export const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) =>
+	fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
 export type ToolResult = ReturnType<typeof lastToolResult>;
 export const noting =
 	(results: ToolResult[], requests: Request[] = []) =>

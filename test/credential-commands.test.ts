@@ -34,7 +34,10 @@ async function setup() {
 test("a password added with !cred is stored for the site's origin, with any spaces in it", async () => {
 	await using t = await setup();
 	await t.say("!cred add https://shop.example.com/login me@example.org correct horse");
-	assert.deepEqual(t.credentials.forOrigin("https://shop.example.com"), { username: "me@example.org", password: "correct horse" });
+	assert.deepEqual(t.credentials.forOrigin("https://shop.example.com"), {
+		username: "me@example.org",
+		password: "correct horse",
+	});
 });
 
 test("a site name without a dot is refused, not stored", async () => {
@@ -49,7 +52,13 @@ test("a site written without a scheme is taken as https", async () => {
 	assert.equal(t.credentials.forOrigin("https://shop.example.com")?.password, "secret");
 });
 
-for (const body of ["!cred add https://shop.example.com me secret-1", "!cred add https://shop.example.com", "!cred add not/a/site me secret-1", "!cred frobnicate secret-1", "!cred"]) {
+for (const body of [
+	"!cred add https://shop.example.com me secret-1",
+	"!cred add https://shop.example.com",
+	"!cred add not/a/site me secret-1",
+	"!cred frobnicate secret-1",
+	"!cred",
+]) {
 	test(`"${body}" never reaches the model, and the reply does not repeat a password`, async () => {
 		await using t = await setup();
 		await t.say(body);
@@ -70,7 +79,13 @@ test("the model never sees a password added earlier, even in what was said after
 
 test("adding a site again replaces its password, also one written under a longer URL by hand", async () => {
 	await using t = await setup();
-	writeFileSync(t.path, JSON.stringify({ "https://shop.example.com/login": { username: "old", password: "old-secret" }, "https://other.example.com": { username: "x", password: "y" } }));
+	writeFileSync(
+		t.path,
+		JSON.stringify({
+			"https://shop.example.com/login": { username: "old", password: "old-secret" },
+			"https://other.example.com": { username: "x", password: "y" },
+		}),
+	);
 	await t.say("!cred add https://shop.example.com new new-secret");
 	assert.deepEqual(t.credentials.forOrigin("https://shop.example.com"), { username: "new", password: "new-secret" });
 	assert.deepEqual(t.credentials.forOrigin("https://other.example.com"), { username: "x", password: "y" });

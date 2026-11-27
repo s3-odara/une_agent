@@ -1,7 +1,22 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
-import { arr, bool, compile, int, map, nullable, num, obj, oneOf, opt, type Schema, type Static, str, type ValidationError } from "@earendil-works/pi-schema";
+import {
+	arr,
+	bool,
+	compile,
+	int,
+	map,
+	nullable,
+	num,
+	obj,
+	oneOf,
+	opt,
+	type Schema,
+	type Static,
+	str,
+	type ValidationError,
+} from "@earendil-works/pi-schema";
 import { sttModelPaths } from "./stt-paths.ts";
 import { isTimeZone } from "./time.ts";
 import { forecastArea, type ForecastArea } from "./weather-areas.ts";
@@ -16,11 +31,13 @@ const PARTS = {
 	...sttModelPaths(),
 };
 
-const text = (options: { default?: string; pattern?: string; description?: string } = {}) => str({ minLength: 1, ...options });
+const text = (options: { default?: string; pattern?: string; description?: string } = {}) =>
+	str({ minLength: 1, ...options });
 const count = (fallback: number) => int({ minimum: 1, default: fallback });
 const amount = (fallback: number) => int({ minimum: 0, default: fallback });
 const flag = (fallback: boolean) => bool({ default: fallback });
-const clock = (fallback: string) => str({ pattern: "^([01]\\d|2[0-3]):[0-5]\\d$", default: fallback, description: 'a time of day such as "06:00"' });
+const clock = (fallback: string) =>
+	str({ pattern: "^([01]\\d|2[0-3]):[0-5]\\d$", default: fallback, description: 'a time of day such as "06:00"' });
 const model = text({ pattern: "^[^/]+/.+$", description: '"provider/model", such as "anthropic/claude-fable-5-2"' });
 const thinking = oneOf(MODEL_THINKING_LEVELS);
 const NAME = "^[A-Za-z0-9_-]+$";
@@ -76,7 +93,10 @@ const ConfigSchema = obj({
 			// Memory is always shown in full, so it has to stay small.
 			sharedLimit: count(2000),
 			privateLimit: count(1000),
-			tidyTime: nullable(clock("02:00"), { default: "02:00", description: 'a time of day such as "02:00", or null for no tidy' }),
+			tidyTime: nullable(clock("02:00"), {
+				default: "02:00",
+				description: 'a time of day such as "02:00", or null for no tidy',
+			}),
 			tidyEveryDays: count(1),
 		}),
 	),
@@ -92,10 +112,19 @@ const ConfigSchema = obj({
 			url: text(),
 			username: text(),
 			// By display name on the server. The name is part of the IDs the tools hand out, as `<calendar>/<file>`.
-			calendars: named(obj({ kind: oneOf(["events", "todos"]), description: opt(text()) }), "^[^/]+$", { minProperties: 1 }),
+			calendars: named(obj({ kind: oneOf(["events", "todos"]), description: opt(text()) }), "^[^/]+$", {
+				minProperties: 1,
+			}),
 		}),
 	),
-	weather: opt(obj({ areaCode: str({ pattern: "^\\d{6}$", description: "the JMA forecast-area code, such as 130010 for Tokyo Region" }) })),
+	weather: opt(
+		obj({
+			areaCode: str({
+				pattern: "^\\d{6}$",
+				description: "the JMA forecast-area code, such as 130010 for Tokyo Region",
+			}),
+		}),
+	),
 	browser: opt(obj({ executablePath: opt(text()), idleMinutes: count(10) })),
 	web: opt(obj({ maxChars: count(15_000) })),
 	// The name becomes part of tool names, which allow only these characters.
@@ -150,7 +179,10 @@ const ConfigSchema = obj({
 	),
 });
 
-export type Config = Omit<Static<typeof ConfigSchema>, "weather"> & { readonly baseDir: string; readonly weather?: ForecastArea };
+export type Config = Omit<Static<typeof ConfigSchema>, "weather"> & {
+	readonly baseDir: string;
+	readonly weather?: ForecastArea;
+};
 export type Persona = Static<typeof Persona>;
 export type McpServerConfig = Static<typeof McpServer>;
 export type ModelRef = { readonly provider: string; readonly modelId: string };
@@ -173,7 +205,8 @@ function withDefaults(schema: SchemaNode, value: unknown): unknown {
 	const properties = (schema.properties ?? {}) as Record<string, SchemaNode>;
 	const rest = isRecord(schema.additionalProperties) ? schema.additionalProperties : undefined;
 	const out: Record<string, unknown> = { ...value };
-	for (const [key, property] of Object.entries(properties)) if (out[key] === undefined && "default" in property) out[key] = property.default;
+	for (const [key, property] of Object.entries(properties))
+		if (out[key] === undefined && "default" in property) out[key] = property.default;
 	for (const [key, item] of Object.entries(out)) {
 		const inner = properties[key] ?? rest;
 		if (inner !== undefined) out[key] = withDefaults(inner, item);
@@ -182,11 +215,17 @@ function withDefaults(schema: SchemaNode, value: unknown): unknown {
 }
 
 function explain(error: ValidationError): string {
-	const keys = error.path.split("/").slice(1).map((key) => key.replaceAll("~1", "/").replaceAll("~0", "~"));
+	const keys = error.path
+		.split("/")
+		.slice(1)
+		.map((key) => key.replaceAll("~1", "/").replaceAll("~0", "~"));
 	let node: SchemaNode | undefined = ConfigSchema;
 	for (const key of keys) {
 		const properties = node?.properties as Record<string, SchemaNode> | undefined;
-		node = properties?.[key] ?? (isRecord(node?.additionalProperties) ? node.additionalProperties : undefined) ?? (node?.items as SchemaNode | undefined);
+		node =
+			properties?.[key] ??
+			(isRecord(node?.additionalProperties) ? node.additionalProperties : undefined) ??
+			(node?.items as SchemaNode | undefined);
 	}
 	const hint = typeof node?.description === "string" ? ` (${node.description})` : "";
 	return `${keys.join(".") || "the config"}: ${error.message}${hint}`;
@@ -194,8 +233,15 @@ function explain(error: ValidationError): string {
 
 export function parseConfig(raw: unknown, baseDir: string): Config {
 	// A persona given as a string is the path of its soul.
-	const personas = isRecord(raw) && isRecord(raw.personas) ? Object.fromEntries(Object.entries(raw.personas).map(([name, item]) => [name, typeof item === "string" ? { soul: item } : item])) : undefined;
-	const result = validator.validate(withDefaults(ConfigSchema, isRecord(raw) && personas !== undefined ? { ...raw, personas } : raw));
+	const personas =
+		isRecord(raw) && isRecord(raw.personas)
+			? Object.fromEntries(
+					Object.entries(raw.personas).map(([name, item]) => [name, typeof item === "string" ? { soul: item } : item]),
+				)
+			: undefined;
+	const result = validator.validate(
+		withDefaults(ConfigSchema, isRecord(raw) && personas !== undefined ? { ...raw, personas } : raw),
+	);
 	if (!result.ok) fail(result.errors.map(explain).join("; "));
 	const config = result.value;
 
@@ -203,11 +249,16 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 	for (const name of [config.defaultPersona, ...Object.values(config.rooms)]) {
 		if (!(name in config.personas)) fail(`persona "${name}" is used but not defined in personas`);
 	}
-	if (config.voice?.call !== undefined && config.voice.tts === undefined) fail("voice.call needs voice.tts: the bot speaks in calls");
-	if (config.proactive !== undefined && config.proactive.windowEnd <= config.proactive.windowStart) fail("proactive.windowEnd must be later than proactive.windowStart");
+	if (config.voice?.call !== undefined && config.voice.tts === undefined)
+		fail("voice.call needs voice.tts: the bot speaks in calls");
+	if (config.proactive !== undefined && config.proactive.windowEnd <= config.proactive.windowStart)
+		fail("proactive.windowEnd must be later than proactive.windowStart");
 
 	const { weather, ...rest } = config;
-	const defaultArea = weather === undefined ? undefined : forecastArea(weather.areaCode) ?? fail(`weather.areaCode: unknown forecast area "${weather.areaCode}"`);
+	const defaultArea =
+		weather === undefined
+			? undefined
+			: (forecastArea(weather.areaCode) ?? fail(`weather.areaCode: unknown forecast area "${weather.areaCode}"`));
 	const stt = config.voice?.stt;
 	return {
 		...rest,
@@ -217,7 +268,17 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 		gatewayBin: resolve(baseDir, config.gatewayBin),
 		...(config.voice === undefined || stt === undefined
 			? {}
-			: { voice: { ...config.voice, stt: { ...stt, server: resolve(baseDir, stt.server), model: resolve(baseDir, stt.model), vadModel: resolve(baseDir, stt.vadModel) } } }),
+			: {
+					voice: {
+						...config.voice,
+						stt: {
+							...stt,
+							server: resolve(baseDir, stt.server),
+							model: resolve(baseDir, stt.model),
+							vadModel: resolve(baseDir, stt.vadModel),
+						},
+					},
+				}),
 	};
 }
 
@@ -254,5 +315,8 @@ export function readSoul(config: Config, name: string): string {
 }
 
 export function usedModels(config: Config): ModelRef[] {
-	return [config.model, ...Object.values(config.personas).flatMap((persona) => (persona.model === undefined ? [] : [persona.model]))].map(modelRef);
+	return [
+		config.model,
+		...Object.values(config.personas).flatMap((persona) => (persona.model === undefined ? [] : [persona.model])),
+	].map(modelRef);
 }

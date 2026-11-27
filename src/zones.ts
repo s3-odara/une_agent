@@ -18,13 +18,29 @@ function wallClock(ms: number, offsetNanoseconds: number): string {
 /** Built from the runtime's zone database, with every transition from `from` to `to` written out on its own. */
 export function vtimezone(tzid: string, from: number, to: number): ICAL.Component {
 	let at = Temporal.Instant.fromEpochMilliseconds(from).toZonedDateTimeISO(tzid);
-	const observance = (kind: string, start: string, before: number, after: number) =>
-		[`BEGIN:${kind}`, `DTSTART:${start}`, `TZOFFSETFROM:${offsetOf(before)}`, `TZOFFSETTO:${offsetOf(after)}`, `END:${kind}`];
-	const lines = ["BEGIN:VTIMEZONE", `TZID:${tzid}`, ...observance("STANDARD", "19700101T000000", at.offsetNanoseconds, at.offsetNanoseconds)];
+	const observance = (kind: string, start: string, before: number, after: number) => [
+		`BEGIN:${kind}`,
+		`DTSTART:${start}`,
+		`TZOFFSETFROM:${offsetOf(before)}`,
+		`TZOFFSETTO:${offsetOf(after)}`,
+		`END:${kind}`,
+	];
+	const lines = [
+		"BEGIN:VTIMEZONE",
+		`TZID:${tzid}`,
+		...observance("STANDARD", "19700101T000000", at.offsetNanoseconds, at.offsetNanoseconds),
+	];
 	for (;;) {
 		const next = at.getTimeZoneTransition("next");
 		if (next === null || next.epochMilliseconds > to) break;
-		lines.push(...observance(next.offsetNanoseconds > at.offsetNanoseconds ? "DAYLIGHT" : "STANDARD", wallClock(next.epochMilliseconds, at.offsetNanoseconds), at.offsetNanoseconds, next.offsetNanoseconds));
+		lines.push(
+			...observance(
+				next.offsetNanoseconds > at.offsetNanoseconds ? "DAYLIGHT" : "STANDARD",
+				wallClock(next.epochMilliseconds, at.offsetNanoseconds),
+				at.offsetNanoseconds,
+				next.offsetNanoseconds,
+			),
+		);
 		at = next;
 	}
 	lines.push("END:VTIMEZONE");

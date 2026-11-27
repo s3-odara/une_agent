@@ -16,7 +16,9 @@ export function samplePdf(label = "Original"): Buffer {
 		pdf += `${i + 1} 0 obj\n${object}\nendobj\n`;
 		return `${String(at).padStart(10, "0")} 00000 n \n`;
 	});
-	return Buffer.from(`${pdf}xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${Buffer.byteLength(pdf)}\n%%EOF\n`);
+	return Buffer.from(
+		`${pdf}xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${Buffer.byteLength(pdf)}\n%%EOF\n`,
+	);
 }
 
 export function textPdf(lines: readonly string[]): Buffer {
@@ -34,5 +36,7 @@ export function textPdf(lines: readonly string[]): Buffer {
 		pdf += `${i + 1} 0 obj\n${object}\nendobj\n`;
 		return `${String(at).padStart(10, "0")} 00000 n \n`;
 	});
-	return Buffer.from(`${pdf}xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${Buffer.byteLength(pdf)}\n%%EOF\n`);
+	return Buffer.from(
+		`${pdf}xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${Buffer.byteLength(pdf)}\n%%EOF\n`,
+	);
 }

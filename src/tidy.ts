@@ -15,7 +15,11 @@ export type TidyOptions = {
 	readonly log?: (message: string) => void;
 };
 
-export type TidyChange = { readonly label: string; readonly removed: readonly string[]; readonly added: readonly string[] };
+export type TidyChange = {
+	readonly label: string;
+	readonly removed: readonly string[];
+	readonly added: readonly string[];
+};
 
 const INSTRUCTIONS = [
 	"あなたは長期記憶の整理係です。入力は今日の日付と、アシスタントが会話中に書きためた箇条書きの記憶です（各項目の末尾の括弧は書いた日）。次の規則で整理した箇条書きだけを返してください。",
@@ -34,14 +38,17 @@ function targets(personas: readonly MemoryPersona[]): { label: string; scope: Me
 	const first = personas[0] ?? { name: "shared", privateMemory: false };
 	return [
 		{ label: "shared", scope: "shared", persona: first },
-		...personas.flatMap((persona) => (persona.privateMemory ? [{ label: `persona-${persona.name}`, scope: "private" as const, persona }] : [])),
+		...personas.flatMap((persona) =>
+			persona.privateMemory ? [{ label: `persona-${persona.name}`, scope: "private" as const, persona }] : [],
+		),
 	];
 }
 
 /** Lets the scheduler skip a tidy when nothing was written since the last. */
 export function memoryFingerprint(store: MemoryStore, personas: readonly MemoryPersona[]): string {
 	const hash = createHash("sha256");
-	for (const target of targets(personas)) hash.update(JSON.stringify([target.label, store.entries(target.scope, target.persona)]));
+	for (const target of targets(personas))
+		hash.update(JSON.stringify([target.label, store.entries(target.scope, target.persona)]));
 	return hash.digest("hex");
 }
 
@@ -50,7 +57,10 @@ function size(entries: readonly string[]): number {
 }
 
 function parseList(text: string): string[] | undefined {
-	const lines = text.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+	const lines = text
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line !== "");
 	if (lines.length === 1 && /^（なし）$|^\(なし\)$/.test(lines[0] ?? "")) return [];
 	const entries = lines.flatMap((line) => (/^[-*]\s+/.test(line) ? [line.replace(/^[-*]\s+/, "").trim()] : []));
 	return entries.length === lines.length && entries.length > 0 ? entries : undefined;
@@ -74,10 +84,16 @@ export async function tidyMemory(options: TidyOptions, date: string): Promise<Ti
 		if (before.length === 0) continue;
 		try {
 			const conversation = await harness.createConversation(
-				{ ownership: { kind: "ownerless" }, agent: { model: options.model, extensions: [], instructions: INSTRUCTIONS } },
+				{
+					ownership: { kind: "ownerless" },
+					agent: { model: options.model, extensions: [], instructions: INSTRUCTIONS },
+				},
 				context,
 			);
-			const submission = await conversation.submit({ type: "input", content: [`今日: ${date}`, "", ...before.map((entry) => `- ${entry}`)].join("\n") }, context);
+			const submission = await conversation.submit(
+				{ type: "input", content: [`今日: ${date}`, "", ...before.map((entry) => `- ${entry}`)].join("\n") },
+				context,
+			);
 			const answer = await answerOf(harness, await submission.wait(context), context);
 			if (!answer.ok) {
 				log(`memory tidy of ${target.label}: no answer (${answer.reason})`);

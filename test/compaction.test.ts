@@ -21,7 +21,10 @@ function responsesPayload(request: Request): { input: unknown[] } {
 }
 
 async function setup(api?: string) {
-	const env = await agentEnv({ ...(api === undefined ? {} : { api }), extensions: ({ db }) => [createCompactionExtension({ db, log: () => {} })] });
+	const env = await agentEnv({
+		...(api === undefined ? {} : { api }),
+		extensions: ({ db }) => [createCompactionExtension({ db, log: () => {} })],
+	});
 	const bridge = env.bridge();
 	let n = 0;
 	const say = async (body: string) => {
@@ -45,15 +48,23 @@ async function setup(api?: string) {
  * Answers the two requests a compaction makes: the summary in words, and (when asked with a compaction trigger at the
  * end, as an OpenAI server is) the native item.
  */
-function compactionResponses(summary: string, requests: Request[], native: "item" | "none" = "item"): FauxResponseFactory {
+function compactionResponses(
+	summary: string,
+	requests: Request[],
+	native: "item" | "none" = "item",
+): FauxResponseFactory {
 	return async (request, options: Options) => {
 		const trigger = options?.onProviderStreamEvent !== undefined;
 		if (!trigger) {
 			requests.push(request as unknown as Request);
 			return fauxAssistantMessage(summary);
 		}
-		const payload = (await options?.onPayload?.(responsesPayload(request as unknown as Request), undefined as never)) as { input: { type?: string }[] };
-		if (native === "item" && payload.input.at(-1)?.type === "compaction_trigger") await options?.onProviderStreamEvent?.({ type: "response.output_item.done", item: ITEM }, undefined as never);
+		const payload = (await options?.onPayload?.(
+			responsesPayload(request as unknown as Request),
+			undefined as never,
+		)) as { input: { type?: string }[] };
+		if (native === "item" && payload.input.at(-1)?.type === "compaction_trigger")
+			await options?.onProviderStreamEvent?.({ type: "response.output_item.done", item: ITEM }, undefined as never);
 		return fauxAssistantMessage([], { stopReason: "stop" });
 	};
 }
@@ -61,7 +72,10 @@ function compactionResponses(summary: string, requests: Request[], native: "item
 /** What the provider would send, once the hooks have had their say. */
 function sending(bodies: unknown[]): FauxResponseFactory {
 	return async (request, options: Options) => {
-		bodies.push((await options?.onPayload?.(responsesPayload(request as unknown as Request), undefined as never)) ?? responsesPayload(request as unknown as Request));
+		bodies.push(
+			(await options?.onPayload?.(responsesPayload(request as unknown as Request), undefined as never)) ??
+				responsesPayload(request as unknown as Request),
+		);
 		return fauxAssistantMessage("ミケです");
 	};
 }
@@ -70,7 +84,12 @@ test("a compaction keeps the summary the model wrote of the conversation, asked 
 	await using t = await setup();
 	const summaries: Request[] = [];
 	const requests: Request[] = [];
-	t.env.faux.setResponses([answer("覚えました"), answer("はい"), compactionResponses("猫はミケ。", summaries), answer("ミケです", requests)]);
+	t.env.faux.setResponses([
+		answer("覚えました"),
+		answer("はい"),
+		compactionResponses("猫はミケ。", summaries),
+		answer("ミケです", requests),
+	]);
 	await t.say("猫の名前はミケ");
 	await t.say("覚えた？");
 	await t.compact();
@@ -83,7 +102,13 @@ test("a compaction keeps the summary the model wrote of the conversation, asked 
 test("on a model whose server compacts natively, the provider is given its item in place of the summary from then on", async () => {
 	await using t = await setup("openai-responses");
 	const bodies: unknown[] = [];
-	t.env.faux.setResponses([answer("覚えました"), answer("はい"), compactionResponses("猫はミケ。", []), compactionResponses("猫はミケ。", []), sending(bodies)]);
+	t.env.faux.setResponses([
+		answer("覚えました"),
+		answer("はい"),
+		compactionResponses("猫はミケ。", []),
+		compactionResponses("猫はミケ。", []),
+		sending(bodies),
+	]);
 	await t.say("猫の名前はミケ");
 	await t.say("覚えた？");
 	await t.compact();
@@ -118,7 +143,13 @@ test("on a model whose server does not compact natively, the summary in words st
 test("when the server returns no item, the summary in words stands", async () => {
 	await using t = await setup("openai-responses");
 	const bodies: unknown[] = [];
-	t.env.faux.setResponses([answer("覚えました"), answer("はい"), compactionResponses("猫はミケ。", [], "none"), compactionResponses("猫はミケ。", [], "none"), sending(bodies)]);
+	t.env.faux.setResponses([
+		answer("覚えました"),
+		answer("はい"),
+		compactionResponses("猫はミケ。", [], "none"),
+		compactionResponses("猫はミケ。", [], "none"),
+		sending(bodies),
+	]);
 	await t.say("猫の名前はミケ");
 	await t.say("覚えた？");
 	await t.compact();
@@ -133,10 +164,19 @@ for (const [at, compacted] of [
 ] as const) {
 	test(`a conversation at about 60% of the model's window is ${compacted ? "" : "not "}compacted in the background when compaction starts at ${at * 100}%`, async () => {
 		// Two messages of about 30% of the window each; the recent part kept verbatim leaves the older one to summarize.
-		await using env = await agentEnv({ contextWindow: 100_000, compactAt: at, extensions: ({ db }) => [createCompactionExtension({ db, log: () => {} })] });
+		await using env = await agentEnv({
+			contextWindow: 100_000,
+			compactAt: at,
+			extensions: ({ db }) => [createCompactionExtension({ db, log: () => {} })],
+		});
 		const bridge = env.bridge();
 		const summaries: Request[] = [];
-		env.faux.setResponses([answer("読みました"), answer("はい"), compactionResponses("長い話。", summaries), answer("はい")]);
+		env.faux.setResponses([
+			answer("読みました"),
+			answer("はい"),
+			compactionResponses("長い話。", summaries),
+			answer("はい"),
+		]);
 		env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
 		await bridge.idle();
 		env.link.emit(message(ROOM, "$2", "い".repeat(4 * 30_000)));

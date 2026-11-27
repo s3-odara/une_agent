@@ -16,7 +16,14 @@ test("a user message arriving after a wake is adopted but before its message fin
 		now: () => now,
 	});
 	const bridge = env.bridge();
-	const proactive = new Proactive({ harness: env.harness, db: env.db, rooms: bridge, context, now: () => now, log: () => {} });
+	const proactive = new Proactive({
+		harness: env.harness,
+		db: env.db,
+		rooms: bridge,
+		context,
+		now: () => now,
+		log: () => {},
+	});
 
 	let releaseSay!: () => void;
 	const sayHeld = new Promise<void>((resolve) => (releaseSay = resolve));
@@ -60,13 +67,19 @@ test("a replayed !new whose reply failed before a restart does not wipe a later 
 	env.link.failSends = true;
 	env.link.emit(message(ROOM, "$cmd1", "!new"));
 	await bridge1.idle();
-	assert.equal(env.link.of("ack").some((a) => a.eventId === "$cmd1"), false);
+	assert.equal(
+		env.link.of("ack").some((a) => a.eventId === "$cmd1"),
+		false,
+	);
 
 	env.link.failSends = false;
 	env.faux.setResponses([answer("覚えました")]);
 	env.link.emit(message(ROOM, "$m1", "秘密の合言葉は 42 です"));
 	await bridge1.idle();
-	assert.equal(env.link.of("ack").some((a) => a.eventId === "$m1"), true);
+	assert.equal(
+		env.link.of("ack").some((a) => a.eventId === "$m1"),
+		true,
+	);
 
 	await env.restart();
 	const bridge2 = env.bridge();
@@ -87,7 +100,13 @@ test("a timer run that crashed before markTimerFired is not executed again after
 		extensions: ({ db }) => [createProactiveExtension({ db, tz: "Asia/Tokyo" })],
 		now: () => now,
 	});
-	env.db.addTimer({ id: "t1", roomId: ROOM, dueAt: at("2026-11-17T10:00"), note: "デプロイして", createdAt: at("2026-11-17T09:00") });
+	env.db.addTimer({
+		id: "t1",
+		roomId: ROOM,
+		dueAt: at("2026-11-17T10:00"),
+		note: "デプロイして",
+		createdAt: at("2026-11-17T09:00"),
+	});
 
 	let timerExecutions = 0;
 	const countTimer = (request: Request) => {
@@ -103,7 +122,14 @@ test("a timer run that crashed before markTimerFired is not executed again after
 
 	await env.restart();
 	const bridge2 = env.bridge();
-	const proactive = new Proactive({ harness: env.harness, db: env.db, rooms: bridge2, context, now: () => now, log: () => {} });
+	const proactive = new Proactive({
+		harness: env.harness,
+		db: env.db,
+		rooms: bridge2,
+		context,
+		now: () => now,
+		log: () => {},
+	});
 	env.faux.setResponses([answer("進捗どうですか？"), countTimer]);
 	env.db.addWake({ key: "check:1", roomId: ROOM, kind: "check", content: "[定時チェック] 話す？", createdAt: now });
 	await proactive.run();
@@ -156,11 +182,21 @@ test("an unacked message that crashed between submit and addDelivery is not exec
 	const conv1Id = env.db.conversationOf(ROOM)!;
 	await (await env.harness.conversation(conv1Id as never, context))!.waitForIdle(context);
 	assert.equal(msgExecutions, 1);
-	assert.equal(env.link.of("ack").some((a) => a.eventId === "$m1"), false);
+	assert.equal(
+		env.link.of("ack").some((a) => a.eventId === "$m1"),
+		false,
+	);
 
 	await env.restart();
 	const bridge2 = env.bridge();
-	const proactive = new Proactive({ harness: env.harness, db: env.db, rooms: bridge2, context, now: () => now, log: () => {} });
+	const proactive = new Proactive({
+		harness: env.harness,
+		db: env.db,
+		rooms: bridge2,
+		context,
+		now: () => now,
+		log: () => {},
+	});
 	env.faux.setResponses([answer("進捗どうですか？"), countMsg]);
 	env.db.addWake({ key: "check:1", roomId: ROOM, kind: "check", content: "[定時チェック] 話す？", createdAt: now });
 	await proactive.run();

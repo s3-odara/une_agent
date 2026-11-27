@@ -13,9 +13,18 @@ export type ChromiumSandbox = {
 	readonly executablePath?: string;
 };
 
-export const SANDBOX_BIN = process.env.AGENT_SANDBOX_BIN ?? fileURLToPath(new URL("../sandbox/target/release/agent-sandbox", import.meta.url));
+export const SANDBOX_BIN =
+	process.env.AGENT_SANDBOX_BIN ?? fileURLToPath(new URL("../sandbox/target/release/agent-sandbox", import.meta.url));
 
-const READ = ["/nix/store", "/nix/var/nix/profiles", "/etc", "/usr", "/var/cache/fontconfig", "/run/systemd/resolve", "/sys"];
+const READ = [
+	"/nix/store",
+	"/nix/var/nix/profiles",
+	"/etc",
+	"/usr",
+	"/var/cache/fontconfig",
+	"/run/systemd/resolve",
+	"/sys",
+];
 // /proc: Chromium's own sandbox writes the uid_map of the processes it starts. Landlock keeps it from the /proc files
 // of processes outside, as it keeps it from tracing them.
 const WRITE = ["/proc", "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/shm"];
@@ -33,7 +42,10 @@ const PASSED = new Set(["PATH", "LANG", "LANGUAGE", "TZ", "SSL_CERT_FILE", "NIX_
  * too, rather than the agent's, where SQLite keeps the conversations' temporary files.
  */
 export function sandboxedChromium(sandbox: ChromiumSandbox & { readonly home: string }) {
-	const program = sandbox.executablePath ?? process.env.AGENT_CHROMIUM ?? fail("AGENT_CHROMIUM is not set (the dev shell and the package set it)");
+	const program =
+		sandbox.executablePath ??
+		process.env.AGENT_CHROMIUM ??
+		fail("AGENT_CHROMIUM is not set (the dev shell and the package set it)");
 	const temp = join(sandbox.home, "tmp");
 	mkdirSync(temp, { recursive: true, mode: 0o700 });
 	const env: Record<string, string> = { HOME: sandbox.home, TMPDIR: temp };
@@ -73,7 +85,10 @@ function chromiumHome(): { readonly path: string; remove(): void } {
 		path,
 		// Called from Playwright's events, where a throw would take the agent down; Chromium's children may still be
 		// writing in it as it closes.
-		remove: () => void rm(path, { recursive: true, force: true, maxRetries: 3 }).catch((error) => console.error(`removing ${path}: ${errorMessage(error)}`)),
+		remove: () =>
+			void rm(path, { recursive: true, force: true, maxRetries: 3 }).catch((error) =>
+				console.error(`removing ${path}: ${errorMessage(error)}`),
+			),
 	};
 }
 
@@ -93,13 +108,24 @@ export async function launchSandboxed(sandbox: ChromiumSandbox, onClosed: () => 
 	}
 }
 
-type ContextOptions = Pick<NonNullable<Parameters<typeof chromium.launchPersistentContext>[1]>, "viewport" | "locale" | "timezoneId">;
+type ContextOptions = Pick<
+	NonNullable<Parameters<typeof chromium.launchPersistentContext>[1]>,
+	"viewport" | "locale" | "timezoneId"
+>;
 
 /** A sandboxed Chromium on the profile in `dir`, which it may write. */
-export async function launchPersistentSandboxed(dir: string, sandbox: ChromiumSandbox, options: ContextOptions, onClosed: () => void = () => {}): Promise<BrowserContext> {
+export async function launchPersistentSandboxed(
+	dir: string,
+	sandbox: ChromiumSandbox,
+	options: ContextOptions,
+	onClosed: () => void = () => {},
+): Promise<BrowserContext> {
 	const home = chromiumHome();
 	try {
-		const context = await chromium.launchPersistentContext(dir, { ...sandboxedChromium({ ...sandbox, home: home.path }), ...options });
+		const context = await chromium.launchPersistentContext(dir, {
+			...sandboxedChromium({ ...sandbox, home: home.path }),
+			...options,
+		});
 		context.on("close", () => {
 			home.remove();
 			onClosed();

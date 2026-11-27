@@ -50,14 +50,19 @@ export function createSelfExtension(options: SelfOptions) {
 					"- 設定ファイルの変更は agent_restart で再起動するまで効かない（SOUL ファイルと記憶はすぐ効く）。",
 					...(skills.length === 0
 						? []
-						: ["", "手順書（スキル）。当てはまる話になったら、答える前に read で読む。", ...skills.map((skill) => `- ${skill.name}: ${skill.description}（${skill.path}）`)]),
+						: [
+								"",
+								"手順書（スキル）。当てはまる話になったら、答える前に read で読む。",
+								...skills.map((skill) => `- ${skill.name}: ${skill.description}（${skill.path}）`),
+							]),
 				].join("\n");
 			}),
 		],
 		tools: [
 			defineTool({
 				name: "agent_restart",
-				description: "設定ファイルを確かめてから、このエージェントを再起動する。再起動はこの返答を送ったあと。設定に誤りがあれば再起動せず、その内容を返す。",
+				description:
+					"設定ファイルを確かめてから、このエージェントを再起動する。再起動はこの返答を送ったあと。設定に誤りがあれば再起動せず、その内容を返す。",
 				parameters: obj({}),
 				execute: async () => {
 					// A config that does not start would leave no one to message about fixing it.
@@ -67,7 +72,9 @@ export function createSelfExtension(options: SelfOptions) {
 						throw new Error(`設定に誤りがあるため再起動しません: ${errorMessage(error)}`);
 					}
 					options.restart();
-					return { output: [{ type: "text" as const, text: "設定に誤りはありません。この返答を送ったあと再起動します。" }] };
+					return {
+						output: [{ type: "text" as const, text: "設定に誤りはありません。この返答を送ったあと再起動します。" }],
+					};
 				},
 			}),
 		],

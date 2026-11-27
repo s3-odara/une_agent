@@ -28,14 +28,23 @@ function setup() {
 		log: () => {},
 	});
 	let n = 0;
-	const request = (fields: Partial<ApprovalRequest> = {}): ApprovalRequest => ({ id: `r${++n}`, roomId: ROOM, runKey: "run-1", tool: "calendar_delete", summary: `削除 ${n}`, ...fields });
+	const request = (fields: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
+		id: `r${++n}`,
+		roomId: ROOM,
+		runKey: "run-1",
+		tool: "calendar_delete",
+		summary: `削除 ${n}`,
+		...fields,
+	});
 	const ask = async (fields: Partial<ApprovalRequest> = {}) => {
 		const outcome = approvals.ask(request(fields));
 		let settled: Outcome | undefined;
 		void outcome.then((value) => (settled = value));
 		// Posting is a few awaits deep; a bounded wait, so a request that never comes fails the test instead of hanging it.
-		const posting = () => posted.length === 0 || reactions.filter((reaction) => reaction.eventId === posted.at(-1)?.eventId).length < 4;
-		for (let turns = 0; turns < 100 && posting() && settled === undefined; turns++) await new Promise((resolve) => setImmediate(resolve));
+		const posting = () =>
+			posted.length === 0 || reactions.filter((reaction) => reaction.eventId === posted.at(-1)?.eventId).length < 4;
+		for (let turns = 0; turns < 100 && posting() && settled === undefined; turns++)
+			await new Promise((resolve) => setImmediate(resolve));
 		return { outcome, eventId: posted.at(-1)?.eventId ?? "" };
 	};
 	return {
@@ -167,7 +176,10 @@ test("approve_always lets the tool through in every room and run, until it is re
 	t.approvals.onReaction(ROOM, first.eventId, "♾️");
 	await decided(first.outcome);
 
-	assert.deepEqual(await decided(t.approvals.ask(t.request({ roomId: "!b:example.org", runKey: "run-9" }))), { approved: true, by: "rule" });
+	assert.deepEqual(await decided(t.approvals.ask(t.request({ roomId: "!b:example.org", runKey: "run-9" }))), {
+		approved: true,
+		by: "rule",
+	});
 	const listed = t.approvals.onMessage({ roomId: ROOM, body: "!approvals" });
 	assert.ok(listed.handled && listed.reply?.includes("calendar_delete"));
 

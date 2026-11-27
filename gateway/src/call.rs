@@ -8,7 +8,9 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use matrix_rtc_call::{CallEnd, CallStatus};
 use matrix_rtc_call_sdk::{CallEvent, LiveKitCall, LiveKitCallOptions};
-use matrix_rtc_transport::{AudioFrame, LocalTrackHandle, MediaStreamKind, PublishOptions, RemoteTrackHandle};
+use matrix_rtc_transport::{
+    AudioFrame, LocalTrackHandle, MediaStreamKind, PublishOptions, RemoteTrackHandle,
+};
 use matrix_sdk::ruma::{OwnedUserId, RoomId};
 use matrix_sdk::{Client, Room, RoomState};
 use serde::Deserialize;
@@ -30,7 +32,10 @@ const PLAY_FRAME: usize = (SAMPLE_RATE / 100) as usize;
 const ECHO_TAIL_MS: u64 = 500;
 
 pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[derive(Debug)]
@@ -47,7 +52,9 @@ enum Phase<C = ()> {
     InCall(C),
     /// `rejoin` is set only when a newer membership arrives while leaving, so a spontaneous SFU
     /// disconnect before `/sync` catches up does not immediately rejoin an empty call.
-    Leaving { rejoin: bool },
+    Leaving {
+        rejoin: bool,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -65,7 +72,10 @@ struct CallMachine<C = ()> {
 
 impl<C> Default for CallMachine<C> {
     fn default() -> Self {
-        Self { phase: Phase::Idle, members: HashSet::new() }
+        Self {
+            phase: Phase::Idle,
+            members: HashSet::new(),
+        }
     }
 }
 
@@ -80,7 +90,9 @@ impl<C> CallMachine<C> {
                 Transition::StartJoin
             }
             (Phase::InCall(_), false, _) => {
-                let Phase::InCall(control) = std::mem::replace(&mut self.phase, Phase::Leaving { rejoin: false }) else {
+                let Phase::InCall(control) =
+                    std::mem::replace(&mut self.phase, Phase::Leaving { rejoin: false })
+                else {
                     unreachable!()
                 };
                 Transition::SendLeave(control)
@@ -147,7 +159,13 @@ pub struct Calls {
 
 impl Calls {
     pub fn new(out: Outbox, allowed: Arc<Vec<OwnedUserId>>, dir: PathBuf, vad: VadConfig) -> Self {
-        Self { rooms: Arc::default(), out, allowed, dir: Arc::new(dir), vad }
+        Self {
+            rooms: Arc::default(),
+            out,
+            allowed,
+            dir: Arc::new(dir),
+            vad,
+        }
     }
 
     pub fn watch(&self, client: &Client) {
@@ -159,8 +177,12 @@ impl Calls {
             sync_all_watchers(&client, &calls, &mut watchers);
             loop {
                 match updates.recv().await {
-                    Ok(update) => sync_room_watcher(&client, &calls, &mut watchers, &update.room_id),
-                    Err(broadcast::error::RecvError::Lagged(_)) => sync_all_watchers(&client, &calls, &mut watchers),
+                    Ok(update) => {
+                        sync_room_watcher(&client, &calls, &mut watchers, &update.room_id)
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        sync_all_watchers(&client, &calls, &mut watchers)
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -194,7 +216,9 @@ impl Calls {
     fn leave_room(&self, room_id: &str) {
         let transition = {
             let mut rooms = self.rooms.lock().unwrap();
-            let Some(machine) = rooms.get_mut(room_id) else { return };
+            let Some(machine) = rooms.get_mut(room_id) else {
+                return;
+            };
             let transition = machine.set_membership(HashSet::new());
             if machine.is_idle_unwanted() {
                 rooms.remove(room_id);
@@ -208,8 +232,13 @@ impl Calls {
 
     pub fn speak(&self, room_id: &str, id: String, path: String) -> Result<()> {
         let rooms = self.rooms.lock().unwrap();
-        let tx = rooms.get(room_id).and_then(CallMachine::control).with_context(|| format!("not in a call in {room_id}"))?;
-        tx.send(Control::Speak { id, path }).ok().context("the call is ending")
+        let tx = rooms
+            .get(room_id)
+            .and_then(CallMachine::control)
+            .with_context(|| format!("not in a call in {room_id}"))?;
+        tx.send(Control::Speak { id, path })
+            .ok()
+            .context("the call is ending")
     }
 
     fn spawn_join(&self, room: Room) {
@@ -226,7 +255,10 @@ impl Calls {
                 } else {
                     warn!("left the call in {room_id}: {reason}");
                 }
-                calls.emit(Event::CallLeft { room_id: room_id.clone(), reason });
+                calls.emit(Event::CallLeft {
+                    room_id: room_id.clone(),
+                    reason,
+                });
                 let next = {
                     let mut rooms = calls.rooms.lock().unwrap();
                     let machine = rooms.entry(room_id.clone()).or_default();
@@ -244,8 +276,12 @@ impl Calls {
     }
 
     async fn run_once(&self, room: &Room, room_id: &str) -> Result<()> {
-        tokio::fs::create_dir_all(&*self.dir).await.with_context(|| format!("creating {}", self.dir.display()))?;
-        let call = LiveKitCall::join(room, LiveKitCallOptions::default()).await.context("joining the call")?;
+        tokio::fs::create_dir_all(&*self.dir)
+            .await
+            .with_context(|| format!("creating {}", self.dir.display()))?;
+        let call = LiveKitCall::join(room, LiveKitCallOptions::default())
+            .await
+            .context("joining the call")?;
         info!("joined the call in {room_id} as {}", call.local_identity());
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -267,8 +303,16 @@ impl Calls {
         result.and(left)
     }
 
-    async fn in_call(&self, call: &LiveKitCall, room_id: &str, mut controls: mpsc::UnboundedReceiver<Control>) -> Result<()> {
-        let mic = call.publish(PublishOptions::microphone()).await.context("publishing the bot's audio")?;
+    async fn in_call(
+        &self,
+        call: &LiveKitCall,
+        room_id: &str,
+        mut controls: mpsc::UnboundedReceiver<Control>,
+    ) -> Result<()> {
+        let mic = call
+            .publish(PublishOptions::microphone())
+            .await
+            .context("publishing the bot's audio")?;
         let player = Player::start(mic, room_id.to_owned(), self.out.clone());
 
         let mut events = call.subscribe_call_events();
@@ -315,7 +359,13 @@ impl Calls {
         }
     }
 
-    fn listen_to_all(&self, call: &LiveKitCall, room_id: &str, player: &Player, listeners: &mut HashMap<String, AbortOnDrop>) {
+    fn listen_to_all(
+        &self,
+        call: &LiveKitCall,
+        room_id: &str,
+        player: &Player,
+        listeners: &mut HashMap<String, AbortOnDrop>,
+    ) {
         for participant in call.participants() {
             if !participant.is_local && !listeners.contains_key(&participant.member_id) {
                 self.listen(call, room_id, &participant.member_id, player, listeners);
@@ -323,12 +373,32 @@ impl Calls {
         }
     }
 
-    fn listen(&self, call: &LiveKitCall, room_id: &str, member_id: &str, player: &Player, listeners: &mut HashMap<String, AbortOnDrop>) {
-        let Some(participant) = call.participants().into_iter().find(|p| p.member_id == member_id) else { return };
-        if !self.allowed.iter().any(|user| user.as_str() == participant.user_id) {
+    fn listen(
+        &self,
+        call: &LiveKitCall,
+        room_id: &str,
+        member_id: &str,
+        player: &Player,
+        listeners: &mut HashMap<String, AbortOnDrop>,
+    ) {
+        let Some(participant) = call
+            .participants()
+            .into_iter()
+            .find(|p| p.member_id == member_id)
+        else {
+            return;
+        };
+        if !self
+            .allowed
+            .iter()
+            .any(|user| user.as_str() == participant.user_id)
+        {
             return;
         }
-        let Some(frames) = call.remote_track(member_id, MediaStreamKind::Microphone).and_then(|track: Arc<dyn RemoteTrackHandle>| track.audio_frames()) else {
+        let Some(frames) = call
+            .remote_track(member_id, MediaStreamKind::Microphone)
+            .and_then(|track: Arc<dyn RemoteTrackHandle>| track.audio_frames())
+        else {
             return;
         };
         info!("listening to {} in {room_id}", participant.user_id);
@@ -336,7 +406,10 @@ impl Calls {
         let mut detector = earshot::Detector::default();
         let mut segmenter = Utterances {
             room_id: room_id.to_owned(),
-            cutter: Cutter::new(vad, Box::new(move |frame: &[i16]| detector.predict_i16(frame) >= vad.threshold)),
+            cutter: Cutter::new(
+                vad,
+                Box::new(move |frame: &[i16]| detector.predict_i16(frame) >= vad.threshold),
+            ),
             player: player.clone(),
             out: self.out.clone(),
             dir: self.dir.clone(),
@@ -353,7 +426,11 @@ impl Calls {
 
 fn first_channel(frame: AudioFrame) -> Vec<i16> {
     let channels = frame.num_channels.max(1) as usize;
-    if channels == 1 { frame.data } else { frame.data.iter().step_by(channels).copied().collect() }
+    if channels == 1 {
+        frame.data
+    } else {
+        frame.data.iter().step_by(channels).copied().collect()
+    }
 }
 
 struct AbortOnDrop(JoinHandle<()>);
@@ -380,7 +457,9 @@ impl Utterances {
         for cut in self.cutter.push(samples, self.player.audible()) {
             match cut {
                 Cut::SpeechStarted => {
-                    let _ = self.out.send(Event::CallSpeech { room_id: self.room_id.clone() });
+                    let _ = self.out.send(Event::CallSpeech {
+                        room_id: self.room_id.clone(),
+                    });
                 }
                 Cut::Utterance(samples) => self.pass_on(&samples),
             }
@@ -390,12 +469,19 @@ impl Utterances {
     fn pass_on(&self, samples: &[i16]) {
         let duration_ms = samples.len() as u64 * 1000 / u64::from(VAD_RATE);
         let now = now_ms();
-        let path = self.dir.join(format!("call-{now}-{}.wav", UTTERANCES.fetch_add(1, Ordering::Relaxed)));
+        let path = self.dir.join(format!(
+            "call-{now}-{}.wav",
+            UTTERANCES.fetch_add(1, Ordering::Relaxed)
+        ));
         if let Err(error) = write_wav(&path, samples, VAD_RATE) {
             warn!("writing an utterance failed: {error:#}");
             return;
         }
-        let _ = self.out.send(Event::CallUtterance { room_id: self.room_id.clone(), path: path.to_string_lossy().into_owned(), started_at: now.saturating_sub(duration_ms) });
+        let _ = self.out.send(Event::CallUtterance {
+            room_id: self.room_id.clone(),
+            path: path.to_string_lossy().into_owned(),
+            started_at: now.saturating_sub(duration_ms),
+        });
     }
 }
 
@@ -419,7 +505,12 @@ impl Player {
         let queue: Arc<Mutex<VecDeque<Clip>>> = Arc::default();
         let audible_until: Arc<AtomicU64> = Arc::default();
         let room_id: Arc<str> = room_id.into();
-        let (q, a, r, o) = (queue.clone(), audible_until.clone(), room_id.clone(), out.clone());
+        let (q, a, r, o) = (
+            queue.clone(),
+            audible_until.clone(),
+            room_id.clone(),
+            out.clone(),
+        );
         let task = tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(10));
             loop {
@@ -429,7 +520,8 @@ impl Player {
                     let mut data = Vec::with_capacity(PLAY_FRAME);
                     while data.len() < PLAY_FRAME {
                         let Some(clip) = queue.front_mut() else { break };
-                        let take = (PLAY_FRAME - data.len()).min(clip.samples.len() - clip.position);
+                        let take =
+                            (PLAY_FRAME - data.len()).min(clip.samples.len() - clip.position);
                         data.extend_from_slice(&clip.samples[clip.position..clip.position + take]);
                         clip.position += take;
                         if clip.position >= clip.samples.len() {
@@ -443,20 +535,36 @@ impl Player {
                     data.resize(PLAY_FRAME, 0);
                     data
                 };
-                let frame = AudioFrame { data, sample_rate: SAMPLE_RATE, num_channels: 1, samples_per_channel: PLAY_FRAME as u32 };
+                let frame = AudioFrame {
+                    data,
+                    sample_rate: SAMPLE_RATE,
+                    num_channels: 1,
+                    samples_per_channel: PLAY_FRAME as u32,
+                };
                 if let Err(error) = mic.capture_audio(frame).await {
                     warn!("playing into the call failed: {error}");
                     break;
                 }
             }
         });
-        Self { queue, audible_until, room_id, out, _task: Arc::new(AbortOnDrop(task)) }
+        Self {
+            queue,
+            audible_until,
+            room_id,
+            out,
+            _task: Arc::new(AbortOnDrop(task)),
+        }
     }
 
     /// Deaf from now, not from the next tick: the tick keeps it so while the clip plays.
     fn enqueue(&self, id: String, samples: Vec<i16>) {
-        self.audible_until.store(now_ms() + ECHO_TAIL_MS, Ordering::Relaxed);
-        self.queue.lock().unwrap().push_back(Clip { id, samples, position: 0 });
+        self.audible_until
+            .store(now_ms() + ECHO_TAIL_MS, Ordering::Relaxed);
+        self.queue.lock().unwrap().push_back(Clip {
+            id,
+            samples,
+            position: 0,
+        });
     }
 
     fn refuse(&self, id: String, why: &str) {
@@ -470,28 +578,47 @@ impl Player {
 }
 
 fn spoken(room_id: &str, id: String) -> Event {
-    Event::CallSpoken { room_id: room_id.to_owned(), id }
+    Event::CallSpoken {
+        room_id: room_id.to_owned(),
+        id,
+    }
 }
 
 fn sync_all_watchers(client: &Client, calls: &Calls, watchers: &mut HashMap<String, AbortOnDrop>) {
     let joined = client.joined_rooms();
-    let joined_ids: HashSet<String> = joined.iter().map(|room| room.room_id().to_string()).collect();
-    let removed: Vec<String> = watchers.keys().filter(|id| !joined_ids.contains(*id)).cloned().collect();
+    let joined_ids: HashSet<String> = joined
+        .iter()
+        .map(|room| room.room_id().to_string())
+        .collect();
+    let removed: Vec<String> = watchers
+        .keys()
+        .filter(|id| !joined_ids.contains(*id))
+        .cloned()
+        .collect();
     for id in removed {
         watchers.remove(&id);
         calls.leave_room(&id);
     }
     for room in joined {
         let id = room.room_id().to_string();
-        watchers.entry(id).or_insert_with(|| spawn_room_watcher(client.clone(), room, calls.clone()));
+        watchers
+            .entry(id)
+            .or_insert_with(|| spawn_room_watcher(client.clone(), room, calls.clone()));
     }
 }
 
-fn sync_room_watcher(client: &Client, calls: &Calls, watchers: &mut HashMap<String, AbortOnDrop>, room_id: &RoomId) {
+fn sync_room_watcher(
+    client: &Client,
+    calls: &Calls,
+    watchers: &mut HashMap<String, AbortOnDrop>,
+    room_id: &RoomId,
+) {
     let id = room_id.to_string();
     match client.get_room(room_id) {
         Some(room) if room.state() == RoomState::Joined => {
-            watchers.entry(id).or_insert_with(|| spawn_room_watcher(client.clone(), room, calls.clone()));
+            watchers
+                .entry(id)
+                .or_insert_with(|| spawn_room_watcher(client.clone(), room, calls.clone()));
         }
         _ => {
             if watchers.remove(&id).is_some() {
@@ -543,7 +670,12 @@ impl RtcMemberContent {
         if self.leave_reason.is_some() || self.slot_id.as_deref() != Some(ROOM_CALL_SLOT_ID) {
             return None;
         }
-        if self.application.as_ref().and_then(|app| app.kind.as_deref()) != Some(CALL_APPLICATION) {
+        if self
+            .application
+            .as_ref()
+            .and_then(|app| app.kind.as_deref())
+            != Some(CALL_APPLICATION)
+        {
             return None;
         }
         let member = self.member.as_ref()?;
@@ -569,8 +701,12 @@ fn live_members(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> HashSe
         if Some(sender) == own || !allowed.iter().any(|user| user.as_str() == sender) {
             continue;
         }
-        let Ok(Some(content)) = entry.raw().get_field::<RtcMemberContent>("content") else { continue };
-        let Some(member_id) = content.live_member_id() else { continue };
+        let Ok(Some(content)) = entry.raw().get_field::<RtcMemberContent>("content") else {
+            continue;
+        };
+        let Some(member_id) = content.live_member_id() else {
+            continue;
+        };
         members.insert(format!("{sender}\0{member_id}"));
     }
     members
@@ -595,7 +731,10 @@ mod tests {
     }
 
     fn live_member_id(value: Value) -> Option<String> {
-        serde_json::from_value::<RtcMemberContent>(value).ok()?.live_member_id().map(str::to_owned)
+        serde_json::from_value::<RtcMemberContent>(value)
+            .ok()?
+            .live_member_id()
+            .map(str::to_owned)
     }
 
     fn members(ids: &[&str]) -> HashSet<String> {
@@ -611,11 +750,38 @@ mod tests {
     fn a_left_or_other_slot_membership_is_not_live() {
         let cases = [
             ("empty", json!({})),
-            ("left", with(valid_join(), "member", json!({ "id": "m1", "membership": "leave" }))),
-            ("leave_reason", with(valid_join(), "leave_reason", json!({ "code": "leave" }))),
-            ("other slot", with(valid_join(), "slot_id", json!("m.call#breakout"))),
-            ("other application", with(valid_join(), "application", json!({ "type": "io.element.spreadsheet" }))),
-            ("empty member id", with(valid_join(), "member", json!({ "id": "", "membership": "join" }))),
+            (
+                "left",
+                with(
+                    valid_join(),
+                    "member",
+                    json!({ "id": "m1", "membership": "leave" }),
+                ),
+            ),
+            (
+                "leave_reason",
+                with(valid_join(), "leave_reason", json!({ "code": "leave" })),
+            ),
+            (
+                "other slot",
+                with(valid_join(), "slot_id", json!("m.call#breakout")),
+            ),
+            (
+                "other application",
+                with(
+                    valid_join(),
+                    "application",
+                    json!({ "type": "io.element.spreadsheet" }),
+                ),
+            ),
+            (
+                "empty member id",
+                with(
+                    valid_join(),
+                    "member",
+                    json!({ "id": "", "membership": "join" }),
+                ),
+            ),
         ];
         for (name, value) in cases {
             assert_eq!(live_member_id(value), None, "{name} should not be live");
@@ -677,7 +843,10 @@ mod tests {
     #[test]
     fn spontaneous_leave_does_not_rejoin_when_membership_only_shrinks() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(members(&["m1", "m2"])), Transition::StartJoin);
+        assert_eq!(
+            m.set_membership(members(&["m1", "m2"])),
+            Transition::StartJoin
+        );
         assert!(m.on_joined(()));
         m.on_leaving();
         assert_eq!(m.set_membership(members(&["m1"])), Transition::None);
@@ -699,7 +868,10 @@ mod tests {
     #[test]
     fn abnormal_exit_does_not_rejoin_until_newer_membership_arrives() {
         let mut m = CallMachine::default();
-        assert_eq!(m.set_membership(members(&["m1", "m2"])), Transition::StartJoin);
+        assert_eq!(
+            m.set_membership(members(&["m1", "m2"])),
+            Transition::StartJoin
+        );
         assert_eq!(m.on_left(false), Transition::None);
         assert_eq!(m.set_membership(members(&["m1", "m2"])), Transition::None);
         assert_eq!(m.set_membership(members(&["m1"])), Transition::None);

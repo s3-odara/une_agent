@@ -10,8 +10,12 @@ const PLACE_TYPES = {
 type PlaceType = keyof typeof PLACE_TYPES;
 const placeTypes = Object.values(PLACE_TYPES);
 const candidateSchema = obj({
-	name: str(), address: str(), lat: num(), lon: num(),
-	kind: oneOf(placeTypes.map((p) => p.kind)), source: oneOf(placeTypes.map((p) => p.source)),
+	name: str(),
+	address: str(),
+	lat: num(),
+	lon: num(),
+	kind: oneOf(placeTypes.map((p) => p.kind)),
+	source: oneOf(placeTypes.map((p) => p.source)),
 	unmatched: opt(str({ description: "照合できなかった住所の末尾（番地や号など）。" })),
 });
 const resultSchema = obj({
@@ -28,7 +32,7 @@ function normalize(query: string): string {
 const KANJI_DIGITS = "一二三四五六七八九";
 function addressKey(key: string): string {
 	return key.replace(/(?:[一二三四五六七八九]?十[一二三四五六七八九]?|[一二三四五六七八九])(?=丁目)/gu, (match) => {
-		const digit = (s: string) => s ? KANJI_DIGITS.indexOf(s) + 1 : 0;
+		const digit = (s: string) => (s ? KANJI_DIGITS.indexOf(s) + 1 : 0);
 		const [tens = "", ones] = match.split("十");
 		return String(ones === undefined ? digit(tens) : (digit(tens) || 1) * 10 + digit(ones));
 	});
@@ -40,11 +44,53 @@ const KEYS_MAX = 8;
 const HEAD_MAX = 16;
 // 本庁の別名は「都道府県+市区町村」の形までしかないので、「北海道+地名」のようなクエリに対応するには都道府県のリストが要る。
 const PREFECTURES = [
-	"北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県",
-	"埼玉県", "千葉県", "東京都", "神奈川県", "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県",
-	"岐阜県", "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県",
-	"鳥取県", "島根県", "岡山県", "広島県", "山口県", "徳島県", "香川県", "愛媛県", "高知県", "福岡県",
-	"佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
+	"北海道",
+	"青森県",
+	"岩手県",
+	"宮城県",
+	"秋田県",
+	"山形県",
+	"福島県",
+	"茨城県",
+	"栃木県",
+	"群馬県",
+	"埼玉県",
+	"千葉県",
+	"東京都",
+	"神奈川県",
+	"新潟県",
+	"富山県",
+	"石川県",
+	"福井県",
+	"山梨県",
+	"長野県",
+	"岐阜県",
+	"静岡県",
+	"愛知県",
+	"三重県",
+	"滋賀県",
+	"京都府",
+	"大阪府",
+	"兵庫県",
+	"奈良県",
+	"和歌山県",
+	"鳥取県",
+	"島根県",
+	"岡山県",
+	"広島県",
+	"山口県",
+	"徳島県",
+	"香川県",
+	"愛媛県",
+	"高知県",
+	"福岡県",
+	"佐賀県",
+	"長崎県",
+	"熊本県",
+	"大分県",
+	"宮崎県",
+	"鹿児島県",
+	"沖縄県",
 ];
 const NUMBER_TAIL = /^[0-9]+(?:(?:番地?-?|-)\d+)*(?:番地?|号)?$/u;
 
@@ -72,7 +118,10 @@ export function lookupPlace(path: string, query: string): Lookup {
 			WHERE a.key = ? AND p.kind = 'office' LIMIT 1`);
 
 		const candidate = ({ row, unmatched }: Item): Candidate => ({
-			name: row.name, address: row.address, lat: row.lat, lon: row.lon,
+			name: row.name,
+			address: row.address,
+			lat: row.lat,
+			lon: row.lon,
 			...PLACE_TYPES[row.kind as PlaceType],
 			...(unmatched === undefined ? {} : { unmatched }),
 		});
@@ -181,21 +230,27 @@ export function lookupPlace(path: string, query: string): Lookup {
 export function createGeocodeExtension(path: string) {
 	return defineExtension({
 		name: "geocode",
-		tools: [defineTool({
-			name: "geocode",
-			description: "日本の地名・住所・施設名から緯度経度の候補を引く。完全一致、前方一致をするが、部分一致はしないので、見つからないときはクエリを少し変えて探す。候補は最大20件で、超えた分は omitted に入る。",
-			parameters: obj({ query: str({ minLength: 1, maxLength: 160 }) }),
-			structuredOutputSchema: resultSchema,
-			replay: "safe",
-			execute: async ({ query }) => {
-				try {
-					const result = lookupPlace(path, query);
-					return { structuredOutput: result, output: [{ type: "text", text: JSON.stringify(result) }] };
-				} catch (error) {
-					if ((error as { errcode?: number }).errcode !== 14) throw error;
-					return { isError: true, output: [{ type: "text", text: "ジオコーディング用のデータベースを開けません。" }] };
-				}
-			},
-		})],
+		tools: [
+			defineTool({
+				name: "geocode",
+				description:
+					"日本の地名・住所・施設名から緯度経度の候補を引く。完全一致、前方一致をするが、部分一致はしないので、見つからないときはクエリを少し変えて探す。候補は最大20件で、超えた分は omitted に入る。",
+				parameters: obj({ query: str({ minLength: 1, maxLength: 160 }) }),
+				structuredOutputSchema: resultSchema,
+				replay: "safe",
+				execute: async ({ query }) => {
+					try {
+						const result = lookupPlace(path, query);
+						return { structuredOutput: result, output: [{ type: "text", text: JSON.stringify(result) }] };
+					} catch (error) {
+						if ((error as { errcode?: number }).errcode !== 14) throw error;
+						return {
+							isError: true,
+							output: [{ type: "text", text: "ジオコーディング用のデータベースを開けません。" }],
+						};
+					}
+				},
+			}),
+		],
 	});
 }

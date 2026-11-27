@@ -19,7 +19,11 @@ const LONG_AGO = at("2026-10-01T09:00");
 function setup(proactive: Record<string, unknown> = {}, extra: Record<string, unknown> = {}, weather?: WeatherSource) {
 	const dir = tempDir();
 	const config = testConfig(dir.path, {
-		caldav: { url: "https://dav.example.org", username: "me", calendars: { Work: { kind: "events" }, Home: { kind: "events" }, ToDo: { kind: "todos" } } },
+		caldav: {
+			url: "https://dav.example.org",
+			username: "me",
+			calendars: { Work: { kind: "events" }, Home: { kind: "events" }, ToDo: { kind: "todos" } },
+		},
 		proactive: { roomId: ROOM, checkTimes: [], ...proactive },
 		...extra,
 	});
@@ -34,7 +38,13 @@ function setup(proactive: Record<string, unknown> = {}, extra: Record<string, un
 		config,
 		db,
 		...(config.caldav === undefined ? {} : { calendars: new Calendars(backend, config.caldav.calendars, tz) }),
-		weather: weather ?? (async () => ({ area: "東京地方", reportedAt: "2026-11-17T05:00:00+09:00", days: [{ date: "2026-11-17", weather: "くもり昼過ぎから雨", rain: ["12-18時 70%"], maxTemp: "15" }] })),
+		weather:
+			weather ??
+			(async () => ({
+				area: "東京地方",
+				reportedAt: "2026-11-17T05:00:00+09:00",
+				days: [{ date: "2026-11-17", weather: "くもり昼過ぎから雨", rain: ["12-18時 70%"], maxTemp: "15" }],
+			})),
 
 		runTimer: async (roomId, id, content) => void timerRuns.push({ roomId, id, content }),
 		notice: async (_room, _key, body) => void notices.push(body),
@@ -53,11 +63,24 @@ function setup(proactive: Record<string, unknown> = {}, extra: Record<string, un
 		forget: () => void (seen = db.openWakes().length),
 		/** What the model was woken with, in order. */
 		get submitted() {
-			return db.openWakes().slice(seen).map((wake) => wake.content);
+			return db
+				.openWakes()
+				.slice(seen)
+				.map((wake) => wake.content);
 		},
 		notices,
-		event: (file: string, summary: string, start: string, written = LONG_AGO) => backend.put(file === "meeting" ? "Work" : "Home", `${file}.ics`, buildEvent(file, { summary, start }, tz, written)),
-		task: (file: string, summary: string, due?: string, written = LONG_AGO) => backend.put("ToDo", `${file}.ics`, buildTodo(file, { summary, ...(due === undefined ? {} : { due }) }, tz, written)),
+		event: (file: string, summary: string, start: string, written = LONG_AGO) =>
+			backend.put(
+				file === "meeting" ? "Work" : "Home",
+				`${file}.ics`,
+				buildEvent(file, { summary, start }, tz, written),
+			),
+		task: (file: string, summary: string, due?: string, written = LONG_AGO) =>
+			backend.put(
+				"ToDo",
+				`${file}.ics`,
+				buildTodo(file, { summary, ...(due === undefined ? {} : { due }) }, tz, written),
+			),
 		tickAt: async (local: string) => {
 			now = at(local);
 			await scheduler.tick();
@@ -101,7 +124,8 @@ test("the brief has today's and tomorrow's events, the open tasks, and the forec
 	await t.tickAt("2026-11-17T06:00");
 
 	const brief = t.submitted[0] ?? "";
-	for (const expected of ["歯医者", "定例", "レポート提出", "くもり昼過ぎから雨"]) assert.ok(brief.includes(expected), expected);
+	for (const expected of ["歯医者", "定例", "レポート提出", "くもり昼過ぎから雨"])
+		assert.ok(brief.includes(expected), expected);
 	assert.ok(!brief.includes("来週の予定"));
 });
 
@@ -179,7 +203,13 @@ test("the model is woken for a task three days and one day before its due date, 
 		return t.submitted.slice(before).some((content) => content.includes("レポート提出"));
 	};
 	assert.deepEqual(
-		[await remindedOn("2026-11-17"), await remindedOn("2026-11-18"), await remindedOn("2026-11-19"), await remindedOn("2026-11-20"), await remindedOn("2026-11-21")],
+		[
+			await remindedOn("2026-11-17"),
+			await remindedOn("2026-11-18"),
+			await remindedOn("2026-11-19"),
+			await remindedOn("2026-11-20"),
+			await remindedOn("2026-11-21"),
+		],
 		[false, true, false, true, false],
 	);
 });
@@ -226,7 +256,11 @@ test("a task completed elsewhere is not news", async () => {
 	using t = setup();
 	await t.tickAt("2026-11-17T10:00");
 	t.forget();
-	t.backend.put("ToDo", "done.ics", ics("BEGIN:VTODO", "UID:done", "SUMMARY:済んだこと", "STATUS:COMPLETED", "DTSTAMP:20261117T010600Z", "END:VTODO"));
+	t.backend.put(
+		"ToDo",
+		"done.ics",
+		ics("BEGIN:VTODO", "UID:done", "SUMMARY:済んだこと", "STATUS:COMPLETED", "DTSTAMP:20261117T010600Z", "END:VTODO"),
+	);
 	await t.tickAt("2026-11-17T10:15");
 	assert.equal(t.submitted.length, 0);
 });
@@ -335,7 +369,13 @@ test("a check time the agent was down for is skipped once an hour has gone by", 
 
 test("a timer runs directly in the room it was set in, at any hour, once, with what was asked", async () => {
 	using t = setup();
-	t.db.addTimer({ id: "t1", roomId: "!other:example.org", dueAt: at("2026-11-17T23:30"), note: "面接の結果を聞く", createdAt: at("2026-11-16T21:00") });
+	t.db.addTimer({
+		id: "t1",
+		roomId: "!other:example.org",
+		dueAt: at("2026-11-17T23:30"),
+		note: "面接の結果を聞く",
+		createdAt: at("2026-11-16T21:00"),
+	});
 	await t.tickAt("2026-11-17T23:15");
 	assert.equal(t.timerRuns.length, 0);
 	await t.tickAt("2026-11-17T23:30");
@@ -416,7 +456,14 @@ test("old received files are cleaned up on tick while recent ones stay", async (
 
 	const db = new HostDb(join(dir.path, "host.sqlite"));
 	try {
-		const scheduler = new Scheduler({ config: testConfig(dir.path), db, filesDir, notice: async () => {}, now: () => now, log: () => {} });
+		const scheduler = new Scheduler({
+			config: testConfig(dir.path),
+			db,
+			filesDir,
+			notice: async () => {},
+			now: () => now,
+			log: () => {},
+		});
 		await scheduler.tick();
 		assert.equal(existsSync(oldFile), false);
 		assert.equal(existsSync(recentFile), true);

@@ -19,7 +19,8 @@ const source = (module: string) => readFileSync(require.resolve(module), "utf8")
  * they can change the page itself; they cannot reach anything outside the page.
  */
 let extractFunction: string | undefined;
-const extractScript = (whole: boolean) => `(${(extractFunction ??= `(whole) => {
+const extractScript = (whole: boolean) =>
+	`(${(extractFunction ??= `(whole) => {
 const Readability = (() => { const module = { exports: {} }; ${source("@mozilla/readability/Readability.js")}
 ; return module.exports; })();
 const TurndownService = (() => { const module = { exports: {} }; const exports = module.exports; ${source("turndown/lib/turndown.browser.umd.js")}
@@ -70,7 +71,6 @@ export function tidy(markdown: string): string {
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
 }
-
 
 /** `whole` reads the whole page instead of what looks like its main text. */
 export async function extractFrom(page: Page, whole: boolean): Promise<Extracted> {

@@ -22,12 +22,23 @@ const sandboxTest = (name: string, fn: (t: TestContext) => Promise<void>) => tes
  * Runs `body` (which may await) as the browser would be run, and tells whether it got through. `args` are the
  * browser's, as Playwright would give them.
  */
-async function asBrowser(sandbox: Partial<ChromiumSandbox>, body: string, args: readonly string[] = []): Promise<"allowed" | "refused"> {
+async function asBrowser(
+	sandbox: Partial<ChromiumSandbox>,
+	body: string,
+	args: readonly string[] = [],
+): Promise<"allowed" | "refused"> {
 	using home = tempDir();
-	const { executablePath, env } = sandboxedChromium({ proxy: "http://127.0.0.1:1", ...sandbox, home: home.path, executablePath: process.execPath });
+	const { executablePath, env } = sandboxedChromium({
+		proxy: "http://127.0.0.1:1",
+		...sandbox,
+		home: home.path,
+		executablePath: process.execPath,
+	});
 	const code = `(async () => { try { ${body}; console.log("allowed"); } catch { console.log("refused"); } })();`;
 	return await new Promise((resolve, reject) =>
-		execFile(executablePath, ["-e", code, "--", ...args], { env }, (error, stdout, stderr) => (error ? reject(new Error(stderr || String(error))) : resolve(stdout.trim() as "allowed" | "refused"))),
+		execFile(executablePath, ["-e", code, "--", ...args], { env }, (error, stdout, stderr) =>
+			error ? reject(new Error(stderr || String(error))) : resolve(stdout.trim() as "allowed" | "refused"),
+		),
 	);
 }
 
@@ -47,11 +58,10 @@ sandboxTest("the browser writes in its own temporary directory and its profile, 
 	const other = join(temp.path, "other");
 	for (const dir of [profile, other]) mkdirSync(dir);
 	const write = (dir: string) => asBrowser({}, writeIn(dir), [`--user-data-dir=${profile}`]);
-	assert.deepEqual(await Promise.all([write("process.env.TMPDIR"), write(JSON.stringify(profile)), write(JSON.stringify(other))]), [
-		"allowed",
-		"allowed",
-		"refused",
-	]);
+	assert.deepEqual(
+		await Promise.all([write("process.env.TMPDIR"), write(JSON.stringify(profile)), write(JSON.stringify(other))]),
+		["allowed", "allowed", "refused"],
+	);
 });
 
 sandboxTest("the browser can neither read nor write the agent's temporary directory", async () => {
@@ -83,7 +93,10 @@ sandboxTest("the browser connects only to its proxy", async (t) => {
 	});
 	const [proxy, other] = await Promise.all([listen(proxyServer), listen(otherServer)]);
 	const sandbox = { proxy: `http://127.0.0.1:${proxy}` };
-	assert.deepEqual(await Promise.all([asBrowser(sandbox, connect(proxy)), asBrowser(sandbox, connect(other))]), ["allowed", "refused"]);
+	assert.deepEqual(await Promise.all([asBrowser(sandbox, connect(proxy)), asBrowser(sandbox, connect(other))]), [
+		"allowed",
+		"refused",
+	]);
 });
 
 sandboxTest("the browser sends no UDP", async (t) => {

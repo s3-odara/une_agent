@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 
 export const JMA_TIME_ZONE = "Asia/Tokyo";
 
-export type ForecastArea = { readonly officeCode: string; readonly areaCode: string; readonly temperatureCodes: readonly string[] };
+export type ForecastArea = {
+	readonly officeCode: string;
+	readonly areaCode: string;
+	readonly temperatureCodes: readonly string[];
+};
 
 type Region = { name: string; parent: string };
 type Regions = Record<string, Region>;
@@ -13,21 +17,69 @@ const master = JSON.parse(readFileSync(new URL("./jma/area.json", import.meta.ur
 	class15s: Regions;
 	class20s: Regions;
 };
-const stations = JSON.parse(readFileSync(new URL("./jma/forecast_area.json", import.meta.url), "utf8")) as Record<string, { class10: string; amedas: string[] }[]>;
+const stations = JSON.parse(readFileSync(new URL("./jma/forecast_area.json", import.meta.url), "utf8")) as Record<
+	string,
+	{ class10: string; amedas: string[] }[]
+>;
 
 export function forecastArea(areaCode: string): ForecastArea | undefined {
 	const officeCode = master.class10s[areaCode]?.parent;
 	if (officeCode === undefined) return undefined;
-	return { officeCode, areaCode, temperatureCodes: stations[officeCode]?.find((entry) => entry.class10 === areaCode)?.amedas ?? [] };
+	return {
+		officeCode,
+		areaCode,
+		temperatureCodes: stations[officeCode]?.find((entry) => entry.class10 === areaCode)?.amedas ?? [],
+	};
 }
 
 const prefectures = [
-	"北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
-	"茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
-	"新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県", "静岡県", "愛知県", "三重県",
-	"滋賀県", "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県",
-	"鳥取県", "島根県", "岡山県", "広島県", "山口県", "徳島県", "香川県", "愛媛県", "高知県",
-	"福岡県", "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
+	"北海道",
+	"青森県",
+	"岩手県",
+	"宮城県",
+	"秋田県",
+	"山形県",
+	"福島県",
+	"茨城県",
+	"栃木県",
+	"群馬県",
+	"埼玉県",
+	"千葉県",
+	"東京都",
+	"神奈川県",
+	"新潟県",
+	"富山県",
+	"石川県",
+	"福井県",
+	"山梨県",
+	"長野県",
+	"岐阜県",
+	"静岡県",
+	"愛知県",
+	"三重県",
+	"滋賀県",
+	"京都府",
+	"大阪府",
+	"兵庫県",
+	"奈良県",
+	"和歌山県",
+	"鳥取県",
+	"島根県",
+	"岡山県",
+	"広島県",
+	"山口県",
+	"徳島県",
+	"香川県",
+	"愛媛県",
+	"高知県",
+	"福岡県",
+	"佐賀県",
+	"長崎県",
+	"熊本県",
+	"大分県",
+	"宮崎県",
+	"鹿児島県",
+	"沖縄県",
 ];
 
 const normalize = (name: string) => name.normalize("NFKC").replace(/\s+/g, "");
@@ -73,9 +125,12 @@ for (const [code, region] of Object.entries(master.class20s)) {
 
 export function resolveForecastArea(place: string): ForecastArea {
 	const matches = byName.get(normalize(place));
-	if (matches === undefined) throw new Error("指定の地名に対応する予報区域が見つかりません。市区町村名や予報区域名を確認してください。");
+	if (matches === undefined)
+		throw new Error("指定の地名に対応する予報区域が見つかりません。市区町村名や予報区域名を確認してください。");
 	if (matches.size > 1) {
-		throw new Error(`予報区域を一つに絞れません。\n候補：${[...matches.values()].join("、")}\n文脈で絞れたら候補をそのまま place に指定し、絞れなければユーザーに確認してください。`);
+		throw new Error(
+			`予報区域を一つに絞れません。\n候補：${[...matches.values()].join("、")}\n文脈で絞れたら候補をそのまま place に指定し、絞れなければユーザーに確認してください。`,
+		);
 	}
 	return forecastArea(matches.keys().next().value!)!;
 }

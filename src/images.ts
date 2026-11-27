@@ -24,13 +24,27 @@ export function createImageWindowExtension(options: ImageWindowOptions = {}) {
 		hooks: [
 			hook(GenerationTask, {
 				beforeRequest: ({ messages }) => {
-					const total = messages.reduce((count, message) => count + (typeof message.content === "string" ? 0 : message.content.filter((block) => block.type === "image").length), 0);
+					const total = messages.reduce(
+						(count, message) =>
+							count +
+							(typeof message.content === "string"
+								? 0
+								: message.content.filter((block) => block.type === "image").length),
+						0,
+					);
 					const over = total - keep;
 					let drop = over - (over % batch);
 					if (drop <= 0) return undefined;
 					const sent = messages.map((message): Message => {
-						if (drop === 0 || typeof message.content === "string" || !message.content.some((block) => block.type === "image")) return message;
-						const content = message.content.map((block) => (block.type === "image" && drop > 0 ? (drop--, { type: "text" as const, text: OMITTED }) : block));
+						if (
+							drop === 0 ||
+							typeof message.content === "string" ||
+							!message.content.some((block) => block.type === "image")
+						)
+							return message;
+						const content = message.content.map((block) =>
+							block.type === "image" && drop > 0 ? (drop--, { type: "text" as const, text: OMITTED }) : block,
+						);
 						return { ...message, content } as Message;
 					});
 					return { messages: sent };

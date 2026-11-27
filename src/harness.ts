@@ -2,7 +2,13 @@ import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { createModels, type Models, type Provider } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import { type CompactionSettings, createRegistry, DEFAULT_COMPACTION_POLICY, Harness, type Registry } from "@earendil-works/pi-durable";
+import {
+	type CompactionSettings,
+	createRegistry,
+	DEFAULT_COMPACTION_POLICY,
+	Harness,
+	type Registry,
+} from "@earendil-works/pi-durable";
 import { type Config, loadConfig, type ModelRef, readSoul, usedModels } from "./config.ts";
 import { FileCredentialStore } from "./model-auth.ts";
 import { FileModelsStore, withRemoteCatalog } from "./model-catalog.ts";
@@ -45,25 +51,38 @@ export async function prepareModels(models: Models, refs: readonly ModelRef[], t
 	const providers = [...new Set(refs.map((ref) => ref.provider))];
 	for (const provider of providers) {
 		const registration = models.getProvider(provider);
-		if (registration === undefined) throw new Error(`unknown model provider "${provider}" (known: ${models.getProviders().map((item) => item.id).join(", ")})`);
+		if (registration === undefined)
+			throw new Error(
+				`unknown model provider "${provider}" (known: ${models
+					.getProviders()
+					.map((item) => item.id)
+					.join(", ")})`,
+			);
 		if ((await models.checkAuth(provider)) === undefined) {
-			const hint = registration.auth.oauth === undefined
-				? "configure its credentials in ~/.config/agent/env"
-				: `run \`just model-login ${provider}\` or configure its credentials in ~/.config/agent/env`;
+			const hint =
+				registration.auth.oauth === undefined
+					? "configure its credentials in ~/.config/agent/env"
+					: `run \`just model-login ${provider}\` or configure its credentials in ~/.config/agent/env`;
 			throw new Error(`model provider "${provider}" has no login or API key (${hint})`);
 		}
 	}
 	await models.refresh({ allowNetwork: false, providers });
 	const fetch = (signal?: AbortSignal) =>
 		models.refresh({ providers, signal }).then(({ errors }) => {
-			for (const [provider, error] of errors) console.error(`model catalog of ${provider} not updated: ${error.message}`);
+			for (const [provider, error] of errors)
+				console.error(`model catalog of ${provider} not updated: ${error.message}`);
 		});
 	const missing = () => refs.filter(({ provider, modelId }) => models.getModel(provider, modelId) === undefined);
 	if (missing().length === 0) return void fetch();
 	await fetch(AbortSignal.timeout(timeoutMs));
 	const [first] = missing();
 	if (first !== undefined) {
-		throw new Error(`model "${first.modelId}" is not in the catalog of "${first.provider}" (known: ${models.getModels(first.provider).map((model) => model.id).join(", ")})`);
+		throw new Error(
+			`model "${first.modelId}" is not in the catalog of "${first.provider}" (known: ${models
+				.getModels(first.provider)
+				.map((model) => model.id)
+				.join(", ")})`,
+		);
 	}
 }
 
@@ -77,7 +96,12 @@ export function compactionSettings(models: Models, refs: readonly ModelRef[], at
 	const overrides = refs.flatMap(({ provider, modelId }) => {
 		const window = models.getModel(provider, modelId)?.contextWindow;
 		if (window === undefined) return [];
-		return [[`${provider}/${modelId}`, { backgroundTokens: Math.max(0, Math.floor(window - reserveTokens - window * at)) }] as const];
+		return [
+			[
+				`${provider}/${modelId}`,
+				{ backgroundTokens: Math.max(0, Math.floor(window - reserveTokens - window * at)) },
+			] as const,
+		];
 	});
 	return { modelOverrides: Object.fromEntries(overrides) };
 }
@@ -119,7 +143,10 @@ export function openAgentHarness(
 			env: options.env,
 			identity: { attribution: null },
 			// Messages sent while the agent works join that work, and those sent during one tool round join together.
-			settings: { steeringMode: "all", ...(options.compaction === undefined ? {} : { compaction: options.compaction }) },
+			settings: {
+				steeringMode: "all",
+				...(options.compaction === undefined ? {} : { compaction: options.compaction }),
+			},
 			onReport: (report) => console.error(`harness report: ${report.kind}`, report.error),
 		},
 		context,

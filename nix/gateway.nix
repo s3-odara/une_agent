@@ -7,9 +7,11 @@
 }:
 let
   # libwebrtc is built against Chromium's libc++, which needs clang (21 or later).
-  clangCrane = craneLib.overrideScope (_: _: {
-    stdenvSelector = pkgs: pkgs.clangStdenv;
-  });
+  clangCrane = craneLib.overrideScope (
+    _: _: {
+      stdenvSelector = pkgs: pkgs.clangStdenv;
+    }
+  );
   src = lib.fileset.toSource {
     root = ../gateway;
     fileset = lib.fileset.unions [

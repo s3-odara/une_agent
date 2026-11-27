@@ -11,7 +11,13 @@ import { call, lastToolResult, message, type Request } from "./fakes.ts";
 const ROOM = "!a:example.org";
 
 async function setup(limit?: number) {
-	const sent: { readonly roomId: string; readonly txnId: string; readonly path: string; readonly name: string; readonly mimeType: string }[] = [];
+	const sent: {
+		readonly roomId: string;
+		readonly txnId: string;
+		readonly path: string;
+		readonly name: string;
+		readonly mimeType: string;
+	}[] = [];
 	const env = await agentEnv({
 		extensions: ({ db }) => [
 			createAttachExtension({
@@ -50,7 +56,10 @@ test("a file is sent with the MIME type its extension suggests", async () => {
 	writeFileSync(path, "%PDF-");
 	const result = await t.say("これを送って", { path });
 	assert.ok(!result.isError, result.text);
-	assert.deepEqual(t.sent.map(({ txnId, ...file }) => file), [{ roomId: ROOM, path, name: "report.pdf", mimeType: "application/pdf" }]);
+	assert.deepEqual(
+		t.sent.map(({ txnId, ...file }) => file),
+		[{ roomId: ROOM, path, name: "report.pdf", mimeType: "application/pdf" }],
+	);
 	// The transaction ID is remembered with the call, so a rerun after a crash sends one event.
 	assert.match(t.sent[0]?.txnId ?? "", /^file:/);
 });
@@ -100,7 +109,14 @@ const withPoppler = process.env.AGENT_POPPLER_BIN ? test : test.skip;
 
 async function readPdfTool(args: Parameters<typeof call>[1], maxChars?: number) {
 	await using env = await agentEnv({
-		extensions: ({ db }) => [createAttachExtension({ db, send: async () => "$attached", uploadLimit: () => undefined, ...(maxChars === undefined ? {} : { maxChars }) })],
+		extensions: ({ db }) => [
+			createAttachExtension({
+				db,
+				send: async () => "$attached",
+				uploadLimit: () => undefined,
+				...(maxChars === undefined ? {} : { maxChars }),
+			}),
+		],
 	});
 	const path = join(env.dir, "doc.pdf");
 	writeFileSync(path, samplePdf());
@@ -121,8 +137,14 @@ async function readPdfTool(args: Parameters<typeof call>[1], maxChars?: number) 
 test("read_pdf validates page, offset, and crop before invoking Poppler", async () => {
 	assert.equal((await readPdfTool({ pdfMode: "image" })).result.isError, true);
 	assert.match((await readPdfTool({ pdfMode: "image" })).result.text, /page/);
-	assert.match((await readPdfTool({ page: 1, crop: { x: 0, y: 0, width: 0.5, height: 0.5 } })).result.text, /pdfMode=image/);
-	assert.match((await readPdfTool({ page: 1, pdfMode: "image", crop: { x: 0.9, y: 0, width: 0.2, height: 1 } })).result.text, /範囲内/);
+	assert.match(
+		(await readPdfTool({ page: 1, crop: { x: 0, y: 0, width: 0.5, height: 0.5 } })).result.text,
+		/pdfMode=image/,
+	);
+	assert.match(
+		(await readPdfTool({ page: 1, pdfMode: "image", crop: { x: 0.9, y: 0, width: 0.2, height: 1 } })).result.text,
+		/範囲内/,
+	);
 	assert.match((await readPdfTool({ page: 1, pdfMode: "image", offset: 10 })).result.text, /offset/);
 });
 

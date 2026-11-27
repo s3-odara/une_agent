@@ -69,7 +69,10 @@ const VALUED_TEXTBOX = /^(\s*- textbox\b.*\[ref=(\w+)\](?: \[[^\]]*\])*): .+$/;
 function describeField(node: unknown): FieldInfo {
 	const element = node as { tagName: string; type?: string; ownerDocument: { location: { origin: string } } };
 	const isInput = element.tagName === "INPUT" && typeof element.type === "string";
-	return { kind: (isInput ? (element.type as string) : element.tagName).toLowerCase(), origin: element.ownerDocument.location.origin };
+	return {
+		kind: (isInput ? (element.type as string) : element.tagName).toLowerCase(),
+		origin: element.ownerDocument.location.origin,
+	};
 }
 
 /**
@@ -83,10 +86,13 @@ async function hidePasswords(page: Page, tree: string): Promise<string> {
 			if (match === null) return line;
 			const [, head, ref] = match as unknown as [string, string, string];
 			// A field that cannot be asked about is hidden too: showing a text value is not worth risking a password.
-			const kind = await page.getByRef(ref).evaluate(describeField, undefined, { timeout: 2_000 }).then(
-				(field) => field.kind,
-				() => "password",
-			);
+			const kind = await page
+				.getByRef(ref)
+				.evaluate(describeField, undefined, { timeout: 2_000 })
+				.then(
+					(field) => field.kind,
+					() => "password",
+				);
 			return kind === "password" ? `${head}: ${HIDDEN}` : line;
 		}),
 	);
@@ -95,7 +101,14 @@ async function hidePasswords(page: Page, tree: string): Promise<string> {
 
 /** Runs in the page. It does not take clicks, so it cannot change what the next click hits. */
 function addMark(point: { x: number; y: number }): void {
-	const doc = (globalThis as unknown as { document: { createElement(tag: string): { id: string; style: { cssText: string } }; documentElement: { append(node: unknown): void } } }).document;
+	const doc = (
+		globalThis as unknown as {
+			document: {
+				createElement(tag: string): { id: string; style: { cssText: string } };
+				documentElement: { append(node: unknown): void };
+			};
+		}
+	).document;
 	const mark = doc.createElement("div");
 	mark.id = "__agent_click_mark";
 	mark.style.cssText = `position:fixed;left:${point.x - 10}px;top:${point.y - 10}px;width:20px;height:20px;border:3px solid #ff0040;border-radius:50%;box-sizing:border-box;pointer-events:none;z-index:2147483647`;
@@ -103,7 +116,9 @@ function addMark(point: { x: number; y: number }): void {
 }
 
 function removeMark(): void {
-	(globalThis as unknown as { document: { getElementById(id: string): { remove(): void } | null } }).document.getElementById("__agent_click_mark")?.remove();
+	(globalThis as unknown as { document: { getElementById(id: string): { remove(): void } | null } }).document
+		.getElementById("__agent_click_mark")
+		?.remove();
 }
 
 export class PlaywrightBrowsers implements Browsers {
@@ -167,7 +182,11 @@ export class PlaywrightBrowsers implements Browsers {
 			},
 			snapshot: async () => {
 				const page = await current();
-				return { url: page.url(), title: await page.title(), tree: await hidePasswords(page, await page.ariaSnapshot({ mode: "ai" })) };
+				return {
+					url: page.url(),
+					title: await page.title(),
+					tree: await hidePasswords(page, await page.ariaSnapshot({ mode: "ai" })),
+				};
 			},
 			read: async (whole) => {
 				const page = await current();
@@ -192,8 +211,7 @@ export class PlaywrightBrowsers implements Browsers {
 				else await page.getByRef(ref).press(key);
 				await settle(profile.pages.get(roomId) ?? page);
 			},
-			field: async (ref) =>
-				(await current()).getByRef(ref).evaluate(describeField),
+			field: async (ref) => (await current()).getByRef(ref).evaluate(describeField),
 			screenshot: async ({ fullPage = false, format, mark }) => {
 				const page = await current();
 				if (mark !== undefined) await page.evaluate(addMark, mark).catch(() => {});

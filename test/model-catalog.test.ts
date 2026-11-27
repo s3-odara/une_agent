@@ -7,7 +7,18 @@ import { getClientVersion } from "@earendil-works/pi-ai/utils/identity";
 import { createAgentModels, prepareModels } from "../src/harness.ts";
 
 const NEW = { provider: "openai-codex", modelId: "gpt-9-test" };
-const newModel = { id: NEW.modelId, name: "Test", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100, type: "chat" };
+const newModel = {
+	id: NEW.modelId,
+	name: "Test",
+	api: "openai-codex-responses",
+	baseUrl: "https://chatgpt.com/backend-api",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 1000,
+	maxTokens: 100,
+	type: "chat",
+};
 
 /** Stands in for pi.dev: a Codex catalog with one model the bundled catalog does not know. */
 function piDev(t: TestContext, answer: () => Promise<Response> = async () => Response.json([newModel])) {
@@ -22,7 +33,10 @@ function piDev(t: TestContext, answer: () => Promise<Response> = async () => Res
 /** Codex counts as configured once a login is stored; reading the catalog never uses or refreshes it. */
 function loggedIn(): string {
 	const dir = mkdtempSync(join(tmpdir(), "catalog-"));
-	writeFileSync(join(dir, "auth.json"), JSON.stringify({ "openai-codex": { type: "oauth", access: "a", refresh: "r", expires: 0 } }));
+	writeFileSync(
+		join(dir, "auth.json"),
+		JSON.stringify({ "openai-codex": { type: "oauth", access: "a", refresh: "r", expires: 0 } }),
+	);
 	return dir;
 }
 
@@ -53,7 +67,13 @@ test("a later start without pi.dev uses the catalog saved last time, and does no
 
 test("a catalog saved by another pi-ai version is not used", async (t) => {
 	const dir = loggedIn();
-	writeFileSync(join(dir, "model-catalog.json"), JSON.stringify({ piAi: "0.0.1", providers: { "openai-codex": { models: [{ ...newModel, provider: "openai-codex" }] } } }));
+	writeFileSync(
+		join(dir, "model-catalog.json"),
+		JSON.stringify({
+			piAi: "0.0.1",
+			providers: { "openai-codex": { models: [{ ...newModel, provider: "openai-codex" }] } },
+		}),
+	);
 	piDev(t, async () => new Response(null, { status: 503 }));
 	await assert.rejects(prepareModels(createAgentModels(dir), [NEW]), /gpt-9-test.*not in the catalog.*gpt-6\.1-sol/);
 });
@@ -62,7 +82,10 @@ test("a provider without a login stops the start and says how to log in", async 
 	piDev(t);
 	const dir = mkdtempSync(join(tmpdir(), "catalog-"));
 	await assert.rejects(prepareModels(createAgentModels(dir), [NEW]), /openai-codex.*just model-login openai-codex/);
-	await assert.rejects(prepareModels(createAgentModels(dir), [{ provider: "unknown-test-provider", modelId: "x" }]), /unknown model provider "unknown-test-provider".*openai-codex/);
+	await assert.rejects(
+		prepareModels(createAgentModels(dir), [{ provider: "unknown-test-provider", modelId: "x" }]),
+		/unknown model provider "unknown-test-provider".*openai-codex/,
+	);
 });
 
 test("only the providers the config uses are fetched", async (t) => {

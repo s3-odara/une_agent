@@ -16,8 +16,16 @@ for (const [rule, markdown, speech] of [
 	["a heading is read as a sentence", "## 明日の予定", "明日の予定。"],
 	["a list item is read as a sentence, without its marks or emphasis", "- **10:00** 歯医者", "10:00 歯医者。"],
 	["a link is read as its text", "[地図](https://maps.example.com/x)を見て", "地図を見て。"],
-	["a bare URL is not spelled out", "詳しくは https://example.com を見てください。", "詳しくは （リンク） を見てください。"],
-	["a table is read row by row, without its rule", "| 時刻 | 天気 |\n|---|---|\n| 午前 | 晴れ |", "時刻、天気。午前、晴れ。"],
+	[
+		"a bare URL is not spelled out",
+		"詳しくは https://example.com を見てください。",
+		"詳しくは （リンク） を見てください。",
+	],
+	[
+		"a table is read row by row, without its rule",
+		"| 時刻 | 天気 |\n|---|---|\n| 午前 | 晴れ |",
+		"時刻、天気。午前、晴れ。",
+	],
 	["code is not read out", "```\nrm -rf /\n```", "（コードは文字で送りました）。"],
 	["inline marks are dropped", "*強調*と`コード`", "強調とコード。"],
 ] as const) {
@@ -35,7 +43,10 @@ test("a long answer is read up to the end of the sentence that fits, and says th
 test("a WAV file is read as its rate and samples", () => {
 	const pcm = readWav(wav([0, 0.5, -0.5], 4));
 	assert.equal(pcm.sampleRate, 4);
-	assert.deepEqual([...pcm.samples].map((sample) => Math.round(sample * 100) / 100), [0, 0.5, -0.5]);
+	assert.deepEqual(
+		[...pcm.samples].map((sample) => Math.round(sample * 100) / 100),
+		[0, 0.5, -0.5],
+	);
 });
 
 test("a file that is not a WAV file is refused", () => {
@@ -84,7 +95,9 @@ async function setup(options: { tts?: boolean; voice?: boolean; transcript?: (pa
 	const transcriber = new FakeTranscriber(options.transcript ?? (() => " 明日の天気は？ "));
 	const synthesizer = new FakeSynthesizer();
 	const voice: VoiceOptions | undefined =
-		options.voice === false ? undefined : { transcriber, ...(options.tts === false ? {} : { synthesizer }), outDir: join(env.dir, "out") };
+		options.voice === false
+			? undefined
+			: { transcriber, ...(options.tts === false ? {} : { synthesizer }), outDir: join(env.dir, "out") };
 	const bridge = env.bridge({ voice, sendRetryDelaysMs: [] });
 	let n = 0;
 	return {
@@ -97,7 +110,14 @@ async function setup(options: { tts?: boolean; voice?: boolean; transcript?: (pa
 			return path;
 		},
 		send: async (path: string, roomId = "!a:example.org", eventId = `$v${++n}`) => {
-			const event: GatewayEvent = { type: "message", roomId, eventId, body: "Voice message.ogg", ts: 0, attachment: { path, mimeType: "audio/ogg", voice: true } };
+			const event: GatewayEvent = {
+				type: "message",
+				roomId,
+				eventId,
+				body: "Voice message.ogg",
+				ts: 0,
+				attachment: { path, mimeType: "audio/ogg", voice: true },
+			};
 			env.link.emit(event);
 			await bridge.idle();
 		},
@@ -113,14 +133,22 @@ test("a voice message is put to the model as its transcript, marked as heard rat
 	assert.match(lastInput(requests[0]!), /音声\] 明日の天気は？$/);
 });
 
-test("a voice message gets a text answer then a spoken answer without waiting for the transcript notice", { timeout: 5_000 }, async () => {
+test("a voice message gets a text answer then a spoken answer without waiting for the transcript notice", {
+	timeout: 5_000,
+}, async () => {
 	await using t = await setup();
 	t.env.faux.setResponses([fauxAssistantMessage("晴れです。")]);
 	const { link } = t.env;
-	link.beforeSent = (send) => send.type === "send" && send.notice ? link.waitFor("sendAttachment") : undefined;
+	link.beforeSent = (send) => (send.type === "send" && send.notice ? link.waitFor("sendAttachment") : undefined);
 	await t.send(t.recording("v"));
 	assert.deepEqual(
-		link.commands.flatMap((command) => command.type === "send" ? [command.body] : command.type === "sendAttachment" && command.voice !== undefined ? ["voice"] : []),
+		link.commands.flatMap((command) =>
+			command.type === "send"
+				? [command.body]
+				: command.type === "sendAttachment" && command.voice !== undefined
+					? ["voice"]
+					: [],
+		),
 		["🎤 明日の天気は？", "晴れです。", "voice"],
 	);
 });
@@ -163,7 +191,10 @@ test("a voice message offered again after a lost ack is not transcribed or answe
 	await t.send(again, "!a:example.org", "$v");
 
 	assert.equal(t.transcriber.heard.length, 1);
-	assert.deepEqual(t.env.link.of("send").map((send) => send.body), ["🎤 明日の天気は？", "はい。"]);
+	assert.deepEqual(
+		t.env.link.of("send").map((send) => send.body),
+		["🎤 明日の天気は？", "はい。"],
+	);
 	assert.equal(t.env.link.of("ack").length, 2);
 	assert.equal(existsSync(again), false);
 });
@@ -246,7 +277,9 @@ test("a ledger made before voice messages keeps its pending answers, as text ans
 
 	const db = new HostDb(path);
 	try {
-		assert.deepEqual(db.pendingDeliveries(), [{ eventId: "$old", roomId: "!r:example.org", submissionId: 4, voice: false }]);
+		assert.deepEqual(db.pendingDeliveries(), [
+			{ eventId: "$old", roomId: "!r:example.org", submissionId: 4, voice: false },
+		]);
 	} finally {
 		db.close();
 	}

@@ -22,7 +22,10 @@ const at = (local: string) => localToEpoch(local, tz);
 async function makeCalendar(base: string, name: string, component: "VEVENT" | "VTODO"): Promise<void> {
 	const response = await fetch(new URL(`/${username}/${name.toLowerCase()}-${Date.now()}/`, base), {
 		method: "MKCALENDAR",
-		headers: { authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`, "content-type": "application/xml; charset=utf-8" },
+		headers: {
+			authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+			"content-type": "application/xml; charset=utf-8",
+		},
 		body: `<?xml version="1.0" encoding="utf-8"?>
 <C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop>
 <D:displayname>${name}</D:displayname>
@@ -42,7 +45,15 @@ async function fresh() {
 	await makeCalendar(url!, events, "VEVENT");
 	await makeCalendar(url!, todos, "VTODO");
 	const backend = connectCalDav({ url: url!, username, password, calendars: [events, todos] });
-	return { events, todos, calendars: new Calendars(backend, { [events]: { kind: "events", description: "" }, [todos]: { kind: "todos", description: "" } }, tz) };
+	return {
+		events,
+		todos,
+		calendars: new Calendars(
+			backend,
+			{ [events]: { kind: "events", description: "" }, [todos]: { kind: "todos", description: "" } },
+			tz,
+		),
+	};
 }
 
 test("creating twice under one UID, as a rerun does, stores one event", needsServer, async () => {
@@ -57,7 +68,12 @@ test("creating twice under one UID, as a rerun does, stores one event", needsSer
 
 test("only the events in the range are listed, with what was stored", needsServer, async () => {
 	const { events, calendars } = await fresh();
-	const id = await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30", location: "駅前" }, now);
+	const id = await calendars.create(
+		events,
+		"e1",
+		{ summary: "歯医者", start: "2026-11-18T15:30", location: "駅前" },
+		now,
+	);
 	await calendars.create(events, "e2", { summary: "旅行", start: "2026-11-20", end: "2026-11-21" }, now);
 	await calendars.create(events, "e3", { summary: "範囲の外", start: "2026-12-20T10:00" }, now);
 	const listed = await calendars.events(...week);
@@ -72,17 +88,26 @@ test("only the events in the range are listed, with what was stored", needsServe
 	assert.equal(listed[0]?.location, "駅前");
 });
 
-test("a listed event's ETag names the same revision as one read on its own, as the change watcher needs", needsServer, async () => {
-	const { events, calendars } = await fresh();
-	const id = await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30" }, now);
-	const [item] = await calendars.events(...week);
-	assert.ok(item?.modified !== undefined, "the listing carries a modification time");
-	assert.equal(await calendars.etag(id), item?.etag?.replace(/^W\//, "").replace(/^"|"$/g, ""));
-});
+test(
+	"a listed event's ETag names the same revision as one read on its own, as the change watcher needs",
+	needsServer,
+	async () => {
+		const { events, calendars } = await fresh();
+		const id = await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30" }, now);
+		const [item] = await calendars.events(...week);
+		assert.ok(item?.modified !== undefined, "the listing carries a modification time");
+		assert.equal(await calendars.etag(id), item?.etag?.replace(/^W\//, "").replace(/^"|"$/g, ""));
+	},
+);
 
 test("a change is stored, as a new revision", needsServer, async () => {
 	const { events, calendars } = await fresh();
-	const id = await calendars.create(events, "e1", { summary: "歯医者", start: "2026-11-18T15:30", location: "駅前" }, now);
+	const id = await calendars.create(
+		events,
+		"e1",
+		{ summary: "歯医者", start: "2026-11-18T15:30", location: "駅前" },
+		now,
+	);
 	const before = await calendars.etag(id);
 	await calendars.update(id, { start: "2026-11-18T16:00", location: "" }, now + 60_000);
 	const [item] = await calendars.events(...week);
@@ -112,21 +137,34 @@ test("removing twice succeeds, and leaves the event gone", needsServer, async ()
 });
 
 test("a calendar the account does not have is named in the error", needsServer, async () => {
-	const missing = new Calendars(connectCalDav({ url: url!, username, password, calendars: ["No-Such-Calendar"] }), { "No-Such-Calendar": { kind: "events", description: "" } }, tz);
+	const missing = new Calendars(
+		connectCalDav({ url: url!, username, password, calendars: ["No-Such-Calendar"] }),
+		{ "No-Such-Calendar": { kind: "events", description: "" } },
+		tz,
+	);
 	await assert.rejects(missing.events(...week), /No-Such-Calendar/);
 });
 
-test("a recurring event, with one occurrence moved and one removed, reads back from the server as it was left", needsServer, async () => {
-	const { events, calendars } = await fresh();
-	const id = await calendars.create(events, "r1", { summary: "朝会", start: "2026-11-16T08:00", rrule: "FREQ=DAILY;UNTIL=20261119" }, now);
-	await calendars.update(`${id}@2026-11-17T08:00`, { start: "2026-11-17T10:00" }, now, "this");
-	await calendars.remove(`${id}@2026-11-18T08:00`, now, "this");
-	assert.deepEqual(
-		(await calendars.events(...week)).map((event) => [event.occurrence, event.start]),
-		[
-			["2026-11-16T08:00", at("2026-11-16T08:00")],
-			["2026-11-17T08:00", at("2026-11-17T10:00")],
-			["2026-11-19T08:00", at("2026-11-19T08:00")],
-		],
-	);
-});
+test(
+	"a recurring event, with one occurrence moved and one removed, reads back from the server as it was left",
+	needsServer,
+	async () => {
+		const { events, calendars } = await fresh();
+		const id = await calendars.create(
+			events,
+			"r1",
+			{ summary: "朝会", start: "2026-11-16T08:00", rrule: "FREQ=DAILY;UNTIL=20261119" },
+			now,
+		);
+		await calendars.update(`${id}@2026-11-17T08:00`, { start: "2026-11-17T10:00" }, now, "this");
+		await calendars.remove(`${id}@2026-11-18T08:00`, now, "this");
+		assert.deepEqual(
+			(await calendars.events(...week)).map((event) => [event.occurrence, event.start]),
+			[
+				["2026-11-16T08:00", at("2026-11-16T08:00")],
+				["2026-11-17T08:00", at("2026-11-17T10:00")],
+				["2026-11-19T08:00", at("2026-11-19T08:00")],
+			],
+		);
+	},
+);

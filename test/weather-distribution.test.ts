@@ -9,28 +9,55 @@ import { call, message, noting, offered, type ToolResult } from "./fakes.ts";
 const point = { lat: 35.025, lon: 140.03 };
 const next = { ...point, lon: 140.09 };
 const collection = (...features: object[]) => Response.json({ type: "FeatureCollection", features });
-const ring = (west: number, east: number, south = 35, north = 35.05) => [[west, south], [east, south], [east, north], [west, north], [west, south]];
-const polygon = (level: string, ...rings: number[][][]) => ({ type: "Feature", properties: { level }, geometry: { type: "Polygon", coordinates: rings } });
-const temperature = (lon: number, value: string) => ({ type: "Feature", properties: { value }, geometry: { type: "Point", coordinates: [lon, point.lat] } });
+const ring = (west: number, east: number, south = 35, north = 35.05) => [
+	[west, south],
+	[east, south],
+	[east, north],
+	[west, north],
+	[west, south],
+];
+const polygon = (level: string, ...rings: number[][][]) => ({
+	type: "Feature",
+	properties: { level },
+	geometry: { type: "Polygon", coordinates: rings },
+});
+const temperature = (lon: number, value: string) => ({
+	type: "Feature",
+	properties: { value },
+	geometry: { type: "Point", coordinates: [lon, point.lat] },
+});
 
 function forecastFixture(requests = new Set<string>()): typeof fetch {
-	const frame = (validtime: string, elements: string[], basetime = "20261122080000") => ({ basetime, validtime, member: "none", elements });
+	const frame = (validtime: string, elements: string[], basetime = "20261122080000") => ({
+		basetime,
+		validtime,
+		member: "none",
+		elements,
+	});
 	return async (input) => {
 		const url = new URL(String(input));
 		requests.add(url.href);
-		if (url.pathname.endsWith("/targetTimes.json")) return Response.json([
-			frame("20261123150000", ["wm", "r3", "temp_point"]),
-			frame("20261123000000", ["min_temp_point"]),
-			frame("20261123090000", ["wm", "r3", "s3", "temp_point", "max_temp_point"]),
-			frame("20261123000000", ["wm"], "20261122020000"),
-		]);
+		if (url.pathname.endsWith("/targetTimes.json"))
+			return Response.json([
+				frame("20261123150000", ["wm", "r3", "temp_point"]),
+				frame("20261123000000", ["min_temp_point"]),
+				frame("20261123090000", ["wm", "r3", "s3", "temp_point", "max_temp_point"]),
+				frame("20261123000000", ["wm"], "20261122020000"),
+			]);
 		const element = url.searchParams.get("id");
-		if (element === "wm") return collection(polygon("Rain", ring(140.0625, 140.125)), polygon("Clear", ring(140.25, 140.3125), ring(140, 140.0625)));
-		if (element === "r3" && url.pathname.includes("/20261123150000/")) return collection(polygon("1<=mm<5"), polygon("NoData"));
-		if (element === "r3") return collection(
-			polygon("20<=mm"), polygon("1<=mm<5", ring(140.0625, 140.125)),
-			polygon("NoData", ring(-45, 315, -85, 85).slice(0, -1), ring(140, 140.125)),
-		);
+		if (element === "wm")
+			return collection(
+				polygon("Rain", ring(140.0625, 140.125)),
+				polygon("Clear", ring(140.25, 140.3125), ring(140, 140.0625)),
+			);
+		if (element === "r3" && url.pathname.includes("/20261123150000/"))
+			return collection(polygon("1<=mm<5"), polygon("NoData"));
+		if (element === "r3")
+			return collection(
+				polygon("20<=mm"),
+				polygon("1<=mm<5", ring(140.0625, 140.125)),
+				polygon("NoData", ring(-45, 315, -85, 85).slice(0, -1), ring(140, 140.125)),
+			);
 		if (element === "s3") return new Response(null, { status: 503 });
 		if (element === "temp_point") return collection(temperature(140.031, "-2"), temperature(140.094, "1"));
 		if (element === "max_temp_point") return collection(temperature(140.031, "7"));
@@ -42,7 +69,9 @@ function forecastFixture(requests = new Set<string>()): typeof fetch {
 test("the point forecast shows mesh weather, rainfall bands, and distinct interval and temperature times", async () => {
 	const distribution = jmaWeatherDistribution(forecastFixture());
 	const results: ToolResult[] = [];
-	await using env = await agentEnv({ extensions: () => [createWeatherExtension(jmaForecast(undefined), distribution)] });
+	await using env = await agentEnv({
+		extensions: () => [createWeatherExtension(jmaForecast(undefined), distribution)],
+	});
 	const bridge = env.bridge();
 	env.faux.setResponses([call("weather_forecast", point), noting(results)]);
 	env.link.emit(message("!a:example.org", "$1", "この地点の天気は？"));
@@ -74,7 +103,7 @@ test("the point forecast does not disclose the requested coordinates to JMA", as
 	const forPoint = new Set<string>();
 	const forNeighbor = new Set<string>();
 	await jmaWeatherDistribution(forecastFixture(forPoint))(point);
-	await jmaWeatherDistribution(forecastFixture(forNeighbor))({ lat: 34.69, lon: 135.50 });
+	await jmaWeatherDistribution(forecastFixture(forNeighbor))({ lat: 34.69, lon: 135.5 });
 	assert.ok(forPoint.size > 0);
 	assert.deepEqual(forPoint, forNeighbor);
 });
@@ -83,7 +112,10 @@ test("codemode can select dry, wet and missing cells without exposing the range 
 	const distributionGrid = jmaWeatherDistributionGrid(forecastFixture());
 	const results: ToolResult[] = [];
 	const requests: NonNullable<Parameters<typeof noting>[1]> = [];
-	await using env = await agentEnv({ extensions: () => [createWeatherExtension(jmaForecast(undefined), undefined, distributionGrid)], codemode: {} });
+	await using env = await agentEnv({
+		extensions: () => [createWeatherExtension(jmaForecast(undefined), undefined, distributionGrid)],
+		codemode: {},
+	});
 	const code = `const g = await tools.weather_forecast_grid({ lat: 35.025, lon: 140.0625, sizeMeters: 50000 });
 	const rain = g.frames[1].layers.rain;
 	const row = g.latitudeEdges.findIndex(edge => edge < 35.025) - 1;

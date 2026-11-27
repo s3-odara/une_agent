@@ -41,7 +41,10 @@ test("replacing changes the one entry that matches, and dates it anew", () => {
 	t.store.add("shared", calm, "ユーザーは緑茶を好む", "2026-11-17");
 	t.store.add("shared", calm, "ユーザーは朝6時のブリーフを希望", "2026-11-17");
 	t.store.replace("shared", blunt, "緑茶", "ユーザーはほうじ茶を好む", "2026-11-18");
-	assert.deepEqual(t.store.entries("shared", calm), ["ユーザーはほうじ茶を好む (2026-11-18)", "ユーザーは朝6時のブリーフを希望 (2026-11-17)"]);
+	assert.deepEqual(t.store.entries("shared", calm), [
+		"ユーザーはほうじ茶を好む (2026-11-18)",
+		"ユーザーは朝6時のブリーフを希望 (2026-11-17)",
+	]);
 });
 
 test("replacing again, as a rerun after a crash does, changes nothing more", () => {
@@ -105,7 +108,10 @@ async function toolSetup(options: { timezone?: string; now?: () => number } = {}
 		now: options.now,
 		extensions: ({ config, db }) => [
 			createMemoryExtension({
-				store: new MemoryStore(join(config.dataDir, "memory"), { shared: config.memory.sharedLimit, private: config.memory.privateLimit }),
+				store: new MemoryStore(join(config.dataDir, "memory"), {
+					shared: config.memory.sharedLimit,
+					private: config.memory.privateLimit,
+				}),
 				personaOf: (conversationId) => {
 					const roomId = db.roomOf(conversationId);
 					if (roomId === undefined) return undefined;
@@ -120,7 +126,11 @@ async function toolSetup(options: { timezone?: string; now?: () => number } = {}
 	let n = 0;
 	return {
 		env,
-		store: () => new MemoryStore(join(env.config.dataDir, "memory"), { shared: env.config.memory.sharedLimit, private: env.config.memory.privateLimit }),
+		store: () =>
+			new MemoryStore(join(env.config.dataDir, "memory"), {
+				shared: env.config.memory.sharedLimit,
+				private: env.config.memory.privateLimit,
+			}),
 		say: async (roomId: string, body: string) => {
 			env.link.emit(message(roomId, `$${++n}`, body));
 			await bridge.idle();
@@ -129,7 +139,8 @@ async function toolSetup(options: { timezone?: string; now?: () => number } = {}
 	};
 }
 
-const remember = (scope: "shared" | "private", text: string) => fauxAssistantMessage([fauxToolCall("memory_add", { scope, text })], { stopReason: "toolUse" });
+const remember = (scope: "shared" | "private", text: string) =>
+	fauxAssistantMessage([fauxToolCall("memory_add", { scope, text })], { stopReason: "toolUse" });
 
 test("what one persona remembers is in what every persona is given", async () => {
 	await using t = await toolSetup();

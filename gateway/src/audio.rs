@@ -27,7 +27,13 @@ pub struct VadConfig {
 
 impl Default for VadConfig {
     fn default() -> Self {
-        Self { threshold: 0.5, start_ms: 208, end_silence_ms: 1400, max_ms: 30_000, pre_roll_ms: 300 }
+        Self {
+            threshold: 0.5,
+            start_ms: 208,
+            end_silence_ms: 1400,
+            max_ms: 30_000,
+            pre_roll_ms: 300,
+        }
     }
 }
 
@@ -52,7 +58,12 @@ struct Open {
 
 impl Segmenter {
     pub fn new(config: VadConfig) -> Self {
-        Self { config, recent: VecDeque::new(), voiced_run_ms: 0, open: None }
+        Self {
+            config,
+            recent: VecDeque::new(),
+            voiced_run_ms: 0,
+            open: None,
+        }
     }
 
     /// Whatever was heard so far is dropped, the start of an utterance too.
@@ -64,7 +75,11 @@ impl Segmenter {
         let config = self.config;
         let Some(open) = &mut self.open else {
             self.recent.push_back(frame.to_vec());
-            self.voiced_run_ms = if speech { self.voiced_run_ms + FRAME_MS } else { 0 };
+            self.voiced_run_ms = if speech {
+                self.voiced_run_ms + FRAME_MS
+            } else {
+                0
+            };
             let keep = ((config.pre_roll_ms + config.start_ms) / FRAME_MS).max(1) as usize;
             while self.recent.len() > keep {
                 self.recent.pop_front();
@@ -73,13 +88,21 @@ impl Segmenter {
                 return None;
             }
             let samples: Vec<i16> = self.recent.drain(..).flatten().collect();
-            self.open = Some(Open { samples, silence_run_ms: 0 });
+            self.open = Some(Open {
+                samples,
+                silence_run_ms: 0,
+            });
             self.voiced_run_ms = 0;
             return Some(Cut::SpeechStarted);
         };
         open.samples.extend_from_slice(frame);
-        open.silence_run_ms = if speech { 0 } else { open.silence_run_ms + FRAME_MS };
-        let too_long = open.samples.len() as u64 * 1000 >= u64::from(config.max_ms) * u64::from(VAD_RATE);
+        open.silence_run_ms = if speech {
+            0
+        } else {
+            open.silence_run_ms + FRAME_MS
+        };
+        let too_long =
+            open.samples.len() as u64 * 1000 >= u64::from(config.max_ms) * u64::from(VAD_RATE);
         if open.silence_run_ms < config.end_silence_ms && !too_long {
             return None;
         }
@@ -103,14 +126,23 @@ impl Decimator {
         let mut taps: Vec<f32> = (0..LEN)
             .map(|n| {
                 let x = n as f32 - middle;
-                let sinc = if x == 0.0 { 2.0 * cutoff } else { (2.0 * std::f32::consts::PI * cutoff * x).sin() / (std::f32::consts::PI * x) };
-                let window = 0.54 - 0.46 * (2.0 * std::f32::consts::PI * n as f32 / (LEN - 1) as f32).cos();
+                let sinc = if x == 0.0 {
+                    2.0 * cutoff
+                } else {
+                    (2.0 * std::f32::consts::PI * cutoff * x).sin() / (std::f32::consts::PI * x)
+                };
+                let window =
+                    0.54 - 0.46 * (2.0 * std::f32::consts::PI * n as f32 / (LEN - 1) as f32).cos();
                 sinc * window
             })
             .collect();
         let sum: f32 = taps.iter().sum();
         taps.iter_mut().for_each(|tap| *tap /= sum);
-        Self { history: VecDeque::from(vec![0.0; LEN]), taps, phase: 0 }
+        Self {
+            history: VecDeque::from(vec![0.0; LEN]),
+            taps,
+            phase: 0,
+        }
     }
 
     pub fn push(&mut self, samples: &[i16]) -> Vec<i16> {
@@ -120,8 +152,17 @@ impl Decimator {
             self.history.push_back(f32::from(sample));
             self.phase = (self.phase + 1) % 3;
             if self.phase == 0 {
-                let value: f32 = self.history.iter().zip(&self.taps).map(|(x, tap)| x * tap).sum();
-                out.push(value.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16);
+                let value: f32 = self
+                    .history
+                    .iter()
+                    .zip(&self.taps)
+                    .map(|(x, tap)| x * tap)
+                    .sum();
+                out.push(
+                    value
+                        .round()
+                        .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16,
+                );
             }
         }
         out
@@ -137,7 +178,12 @@ pub struct Cutter<D> {
 
 impl<D: FnMut(&[i16]) -> bool> Cutter<D> {
     pub fn new(config: VadConfig, is_speech: D) -> Self {
-        Self { decimator: Decimator::new(), pending: Vec::with_capacity(FRAME_SAMPLES * 2), is_speech, segmenter: Segmenter::new(config) }
+        Self {
+            decimator: Decimator::new(),
+            pending: Vec::with_capacity(FRAME_SAMPLES * 2),
+            is_speech,
+            segmenter: Segmenter::new(config),
+        }
     }
 
     /// While `deaf` (the bot is talking), nothing is cut: its own voice and the chime come back through the listener's
@@ -182,9 +228,13 @@ pub fn write_wav(path: &Path, samples: &[i16], sample_rate: u32) -> Result<()> {
 }
 
 pub fn read_wav(bytes: &[u8]) -> Result<(Vec<i16>, u32)> {
-    anyhow::ensure!(bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE", "not a WAV file");
+    anyhow::ensure!(
+        bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE",
+        "not a WAV file"
+    );
     let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
-    let u32_at = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    let u32_at =
+        |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
     let (mut channels, mut rate, mut bits) = (1usize, 0u32, 0u16);
     let mut offset = 12;
     while offset + 8 <= bytes.len() {
@@ -196,10 +246,20 @@ pub fn read_wav(bytes: &[u8]) -> Result<(Vec<i16>, u32)> {
             rate = u32_at(start + 4);
             bits = u16_at(start + 14);
         } else if id == b"data" {
-            anyhow::ensure!(bits == 16 && rate > 0, "unsupported WAV: {bits} bits at {rate} Hz");
+            anyhow::ensure!(
+                bits == 16 && rate > 0,
+                "unsupported WAV: {bits} bits at {rate} Hz"
+            );
             let end = (start + size).min(bytes.len());
             let frames = (end - start) / (2 * channels);
-            let samples = (0..frames).map(|i| i16::from_le_bytes([bytes[start + i * 2 * channels], bytes[start + i * 2 * channels + 1]])).collect();
+            let samples = (0..frames)
+                .map(|i| {
+                    i16::from_le_bytes([
+                        bytes[start + i * 2 * channels],
+                        bytes[start + i * 2 * channels + 1],
+                    ])
+                })
+                .collect();
             return Ok((samples, rate));
         }
         offset = start + size + (size % 2);
@@ -212,7 +272,13 @@ mod tests {
     use super::*;
 
     fn config() -> VadConfig {
-        VadConfig { threshold: 0.5, start_ms: 48, end_silence_ms: 160, max_ms: 1_600, pre_roll_ms: 32 }
+        VadConfig {
+            threshold: 0.5,
+            start_ms: 48,
+            end_silence_ms: 160,
+            max_ms: 1_600,
+            pre_roll_ms: 32,
+        }
     }
 
     fn feed(segmenter: &mut Segmenter, pattern: &str) -> Vec<Cut> {
@@ -230,8 +296,13 @@ mod tests {
     }
 
     fn frames_of(cut: &Cut) -> Vec<i16> {
-        let Cut::Utterance(samples) = cut else { panic!("not an utterance: {cut:?}") };
-        samples.chunks(FRAME_SAMPLES).map(|chunk| chunk[0]).collect()
+        let Cut::Utterance(samples) = cut else {
+            panic!("not an utterance: {cut:?}")
+        };
+        samples
+            .chunks(FRAME_SAMPLES)
+            .map(|chunk| chunk[0])
+            .collect()
     }
 
     #[test]
@@ -274,7 +345,10 @@ mod tests {
     fn a_long_utterance_is_passed_on_in_parts() {
         let mut segmenter = Segmenter::new(config());
         // max 1.6 s = 100 frames.
-        let cuts = feed(&mut segmenter, &format!("{}{}", "s".repeat(150), ".".repeat(10)));
+        let cuts = feed(
+            &mut segmenter,
+            &format!("{}{}", "s".repeat(150), ".".repeat(10)),
+        );
         assert_eq!(cuts.len(), 4);
         assert_eq!(cuts[2], Cut::SpeechStarted);
         assert_eq!(frames_of(&cuts[1]), (0..100).collect::<Vec<i16>>());
@@ -284,11 +358,28 @@ mod tests {
 
     #[test]
     fn decimation_keeps_speech_and_drops_what_16_khz_cannot_hold() {
-        let tone = |hz: f32| -> Vec<i16> { (0..48_000).map(|i| ((2.0 * std::f32::consts::PI * hz * i as f32 / 48_000.0).sin() * 10_000.0) as i16).collect() };
-        let peak = |samples: &[i16]| samples[100..].iter().map(|s| s.unsigned_abs()).max().unwrap();
+        let tone = |hz: f32| -> Vec<i16> {
+            (0..48_000)
+                .map(|i| {
+                    ((2.0 * std::f32::consts::PI * hz * i as f32 / 48_000.0).sin() * 10_000.0)
+                        as i16
+                })
+                .collect()
+        };
+        let peak = |samples: &[i16]| {
+            samples[100..]
+                .iter()
+                .map(|s| s.unsigned_abs())
+                .max()
+                .unwrap()
+        };
         let low = Decimator::new().push(&tone(1_000.0));
         assert_eq!(low.len(), 16_000);
-        assert!((9_000..=10_100).contains(&peak(&low)), "1 kHz kept: {}", peak(&low));
+        assert!(
+            (9_000..=10_100).contains(&peak(&low)),
+            "1 kHz kept: {}",
+            peak(&low)
+        );
         // 12 kHz would fold back to 4 kHz without the filter.
         let high = Decimator::new().push(&tone(12_000.0));
         assert!(peak(&high) < 300, "12 kHz removed: {}", peak(&high));
@@ -297,19 +388,38 @@ mod tests {
     #[test]
     fn a_stream_in_pieces_of_any_size_is_cut_where_the_speech_is() {
         let silence = |ms: usize| vec![0i16; ms * 48];
-        let tone = (0..400 * 48).map(|i| ((2.0 * std::f32::consts::PI * 1_000.0 * i as f32 / 48_000.0).sin() * 10_000.0) as i16);
-        let stream: Vec<i16> = silence(200).into_iter().chain(tone).chain(silence(500)).collect();
-        let mut cutter = Cutter::new(config(), |frame: &[i16]| frame.iter().any(|s| s.unsigned_abs() > 5_000));
+        let tone = (0..400 * 48).map(|i| {
+            ((2.0 * std::f32::consts::PI * 1_000.0 * i as f32 / 48_000.0).sin() * 10_000.0) as i16
+        });
+        let stream: Vec<i16> = silence(200)
+            .into_iter()
+            .chain(tone)
+            .chain(silence(500))
+            .collect();
+        let mut cutter = Cutter::new(config(), |frame: &[i16]| {
+            frame.iter().any(|s| s.unsigned_abs() > 5_000)
+        });
         // Uneven pieces, as a network delivers them.
-        let cuts: Vec<Cut> = stream.chunks(487).flat_map(|piece| cutter.push(piece, false)).collect();
+        let cuts: Vec<Cut> = stream
+            .chunks(487)
+            .flat_map(|piece| cutter.push(piece, false))
+            .collect();
 
         assert_eq!(cuts.len(), 2);
         assert_eq!(cuts[0], Cut::SpeechStarted);
-        let Cut::Utterance(utterance) = &cuts[1] else { panic!("not an utterance: {:?}", cuts[1]) };
+        let Cut::Utterance(utterance) = &cuts[1] else {
+            panic!("not an utterance: {:?}", cuts[1])
+        };
         // The tone, with up to the pre-roll before it and the ending silence after it, at 16 kHz.
         let ms = utterance.len() * 1000 / VAD_RATE as usize;
-        assert!((400 + 160..=400 + 160 + 32 + 2 * FRAME_MS as usize).contains(&ms), "{ms} ms");
-        assert!(utterance.iter().any(|s| s.unsigned_abs() > 5_000), "the speech is in it");
+        assert!(
+            (400 + 160..=400 + 160 + 32 + 2 * FRAME_MS as usize).contains(&ms),
+            "{ms} ms"
+        );
+        assert!(
+            utterance.iter().any(|s| s.unsigned_abs() > 5_000),
+            "the speech is in it"
+        );
     }
 
     #[test]
@@ -319,7 +429,10 @@ mod tests {
         let path = dir.join("a.wav");
         write_wav(&path, &[0, 1, -1, i16::MAX, i16::MIN], 48_000).unwrap();
         let (samples, rate) = read_wav(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!((samples, rate), (vec![0, 1, -1, i16::MAX, i16::MIN], 48_000));
+        assert_eq!(
+            (samples, rate),
+            (vec![0, 1, -1, i16::MAX, i16::MIN], 48_000)
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -343,12 +456,14 @@ mod tests {
         }
 
         fn vad_config_strategy() -> impl Strategy<Value = VadConfig> {
-            (1u32..=12, 1u32..=20, 10u32..=80, 0u32..=10).prop_map(|(start, end, max, pre)| VadConfig {
-                threshold: 0.5,
-                start_ms: start * FRAME_MS,
-                end_silence_ms: end * FRAME_MS,
-                max_ms: max * FRAME_MS,
-                pre_roll_ms: pre * FRAME_MS,
+            (1u32..=12, 1u32..=20, 10u32..=80, 0u32..=10).prop_map(|(start, end, max, pre)| {
+                VadConfig {
+                    threshold: 0.5,
+                    start_ms: start * FRAME_MS,
+                    end_silence_ms: end * FRAME_MS,
+                    max_ms: max * FRAME_MS,
+                    pre_roll_ms: pre * FRAME_MS,
+                }
             })
         }
 

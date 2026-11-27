@@ -13,7 +13,9 @@ type Session = {
 	readonly calendars: ReadonlyMap<string, DAVCalendar>;
 };
 
-const TODO_FILTER = [{ "comp-filter": { _attributes: { name: "VCALENDAR" }, "comp-filter": { _attributes: { name: "VTODO" } } } }];
+const TODO_FILTER = [
+	{ "comp-filter": { _attributes: { name: "VCALENDAR" }, "comp-filter": { _attributes: { name: "VTODO" } } } },
+];
 
 function displayName(calendar: DAVCalendar): string {
 	return typeof calendar.displayName === "string" ? calendar.displayName : "";
@@ -63,12 +65,22 @@ export function connectCalDav(options: CalDavOptions): CalDavBackend {
 		return calendar;
 	};
 
-	const objectUrl = (calendar: DAVCalendar, file: string): string => new URL(encodeURIComponent(file), calendar.url.endsWith("/") ? calendar.url : `${calendar.url}/`).href;
+	const objectUrl = (calendar: DAVCalendar, file: string): string =>
+		new URL(encodeURIComponent(file), calendar.url.endsWith("/") ? calendar.url : `${calendar.url}/`).href;
 
 	const raws = (objects: { url: string; etag?: string; data?: unknown }[]): RawObject[] =>
-		objects.flatMap((object) => (typeof object.data === "string" && object.data !== "" ? [{ url: object.url, etag: object.etag, data: object.data }] : []));
+		objects.flatMap((object) =>
+			typeof object.data === "string" && object.data !== ""
+				? [{ url: object.url, etag: object.etag, data: object.data }]
+				: [],
+		);
 
-	const request = async (url: string, method: string, headers: Record<string, string>, body?: string): Promise<Response> => {
+	const request = async (
+		url: string,
+		method: string,
+		headers: Record<string, string>,
+		body?: string,
+	): Promise<Response> => {
 		const response = await fetch(url, { method, headers: { authorization, ...headers }, body });
 		// The body is not needed, and an unread one keeps the connection busy.
 		if (method !== "GET") await response.body?.cancel();
@@ -87,7 +99,10 @@ export function connectCalDav(options: CalDavOptions): CalDavBackend {
 					}),
 				),
 			),
-		todos: (name) => use(async (current) => raws(await current.client.fetchCalendarObjects({ calendar: calendarOf(current, name), filters: TODO_FILTER }))),
+		todos: (name) =>
+			use(async (current) =>
+				raws(await current.client.fetchCalendarObjects({ calendar: calendarOf(current, name), filters: TODO_FILTER })),
+			),
 		get: (name, file) =>
 			use(async (current) => {
 				const url = objectUrl(calendarOf(current, name), file);
@@ -101,7 +116,12 @@ export function connectCalDav(options: CalDavOptions): CalDavBackend {
 			}),
 		create: (name, file, data) =>
 			use(async (current) => {
-				const response = await request(objectUrl(calendarOf(current, name), file), "PUT", { "content-type": "text/calendar; charset=utf-8", "if-none-match": "*" }, data);
+				const response = await request(
+					objectUrl(calendarOf(current, name), file),
+					"PUT",
+					{ "content-type": "text/calendar; charset=utf-8", "if-none-match": "*" },
+					data,
+				);
 				if (response.status === 412) return "exists";
 				if (!response.ok) throw failed("PUT", response);
 				return "created";
@@ -109,7 +129,12 @@ export function connectCalDav(options: CalDavOptions): CalDavBackend {
 		update: (object) =>
 			use(async () => {
 				const condition: Record<string, string> = object.etag === undefined ? {} : { "if-match": object.etag };
-				const response = await request(object.url, "PUT", { "content-type": "text/calendar; charset=utf-8", ...condition }, object.data);
+				const response = await request(
+					object.url,
+					"PUT",
+					{ "content-type": "text/calendar; charset=utf-8", ...condition },
+					object.data,
+				);
 				if (response.status === 412) return "conflict";
 				if (!response.ok) throw failed("PUT", response);
 				return "updated";

@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { type CalItem, type Calendars, type EventItem, formatEvent, formatTodo, normalizeEtag, type TodoItem } from "./calendar.ts";
+import {
+	type CalItem,
+	type Calendars,
+	type EventItem,
+	formatEvent,
+	formatTodo,
+	normalizeEtag,
+	type TodoItem,
+} from "./calendar.ts";
 import type { Config } from "./config.ts";
 import { errorMessage } from "./errors.ts";
 import type { HostDb, Wake } from "./hostdb.ts";
@@ -30,7 +38,13 @@ function dueReminders(todos: readonly TodoItem[], today: string, leadDays: reado
 		const days = daysBetween(today, todo.due.date);
 		if (!leadDays.includes(days)) return [];
 		const when = days === 0 ? "今日が期日" : days === 1 ? "明日が期日" : `${days}日後が期日`;
-		return [{ kind: "reminder" as const, key: `due:${todo.id}:${todo.due.date}:${days}`, line: `${when}: ${formatTodo(todo, tz)}` }];
+		return [
+			{
+				kind: "reminder" as const,
+				key: `due:${todo.id}:${todo.due.date}:${days}`,
+				line: `${when}: ${formatTodo(todo, tz)}`,
+			},
+		];
 	});
 }
 
@@ -39,7 +53,12 @@ function dueReminders(todos: readonly TodoItem[], today: string, leadDays: reado
  * check. The second condition matters: an event made long ago enters the lookahead window as time passes and is new
  * to the snapshot without being news. An item that does not say when it was written is never reported.
  */
-function changedItems(items: readonly CalItem[], seen: ReadonlyMap<string, string>, since: number | undefined, tz: string): Trigger[] {
+function changedItems(
+	items: readonly CalItem[],
+	seen: ReadonlyMap<string, string>,
+	since: number | undefined,
+	tz: string,
+): Trigger[] {
 	if (since === undefined) return [];
 	const reported = new Set<string>();
 	return items.flatMap((item) => {
@@ -50,7 +69,8 @@ function changedItems(items: readonly CalItem[], seen: ReadonlyMap<string, strin
 		// A recurring event is reported once, by its next occurrence.
 		reported.add(item.id);
 		const what = seen.has(item.id) ? "変更された" : "追加された";
-		const line = item.kind === "event" ? `${what}予定: ${formatEvent(item, tz)}` : `${what}タスク: ${formatTodo(item, tz)}`;
+		const line =
+			item.kind === "event" ? `${what}予定: ${formatEvent(item, tz)}` : `${what}タスク: ${formatTodo(item, tz)}`;
 		return [{ kind: "change" as const, key: `chg:${item.id}:${etag}`, line }];
 	});
 }
@@ -88,16 +108,14 @@ const ASIDE = [
 ];
 
 /** A check comes several times a day whether or not there is anything to say. */
-const CHECK = [
-	"- 話題の補足、雑談、挨拶だけのためには話しかけない。",
-	"- 会話の中ですでに伝えたことは繰り返さない。",
-];
+const CHECK = ["- 話題の補足、雑談、挨拶だけのためには話しかけない。", "- 会話の中ですでに伝えたことは繰り返さない。"];
 
 /**
  * The brief mentions the day's events; without this, the model takes the reminder of one for a repetition and stays
  * silent.
  */
-export const NEAR = "（時刻や期日が近づいたという知らせ。朝のブリーフなどで予定そのものに触れていても、近づいたことはまだ伝えていないので伝える）";
+export const NEAR =
+	"（時刻や期日が近づいたという知らせ。朝のブリーフなどで予定そのものに触れていても、近づいたことはまだ伝えていないので伝える）";
 
 /**
  * When to wake the model is decided here in code, without the model: at the brief, at the check times, when the
@@ -121,7 +139,10 @@ export class Scheduler {
 
 	start(): void {
 		const minutes = this.#options.config.proactive?.tickMinutes ?? 15;
-		this.#timers = [setTimeout(() => void this.tick(), this.#options.startDelayMs ?? 20_000), setInterval(() => void this.tick(), minutes * 60_000)];
+		this.#timers = [
+			setTimeout(() => void this.tick(), this.#options.startDelayMs ?? 20_000),
+			setInterval(() => void this.tick(), minutes * 60_000),
+		];
 	}
 
 	stop(): void {
@@ -191,7 +212,9 @@ export class Scheduler {
 			const changes = await tidy.run(today);
 			db.setValue("tidy.fingerprint", tidy.fingerprint());
 			if (changes.length > 0 && config.proactive !== undefined) {
-				await this.#options.notice(config.proactive.roomId, `tidy:${today}`, formatTidy(changes)).catch((error) => this.#log(`tidy notice failed: ${errorMessage(error)}`));
+				await this.#options
+					.notice(config.proactive.roomId, `tidy:${today}`, formatTidy(changes))
+					.catch((error) => this.#log(`tidy notice failed: ${errorMessage(error)}`));
 			}
 		}
 		db.setValue("tidy.date", today);
@@ -239,13 +262,20 @@ export class Scheduler {
 		let todos: TodoItem[] = [];
 		if (calendars !== undefined) {
 			try {
-				[events, todos] = await Promise.all([calendars.events(startOfDay(today, tz), startOfDay(addDays(today, LOOKAHEAD_DAYS), tz)), calendars.todos()]);
+				[events, todos] = await Promise.all([
+					calendars.events(startOfDay(today, tz), startOfDay(addDays(today, LOOKAHEAD_DAYS), tz)),
+					calendars.todos(),
+				]);
 			} catch (error) {
 				// Said once a day: a brief that silently never comes is worse than one message about why.
 				const key = `caldav-down:${today}`;
 				this.#log(`calendar fetch failed: ${errorMessage(error)}`);
 				if (watching && !db.wasNotified(key)) {
-					await this.#options.notice(proactive.roomId, key, `カレンダー（CalDAV）に接続できません: ${errorMessage(error)}\n復旧するまで、ブリーフと定時の確認はしません。`);
+					await this.#options.notice(
+						proactive.roomId,
+						key,
+						`カレンダー（CalDAV）に接続できません: ${errorMessage(error)}\n復旧するまで、ブリーフと定時の確認はしません。`,
+					);
 					db.markNotified([key], now);
 				}
 				return;
@@ -268,16 +298,38 @@ export class Scheduler {
 
 		if (briefDue) {
 			// The brief covers everything due right now, so none of it is woken for again.
-			this.#wake(now, { key: `brief:${today}`, roomId: proactive.roomId, kind: "brief", content: await this.#brief(now, stamp, today, events, todos, triggers) });
-			db.markNotified([`brief:${today}`, ...(checkDue === undefined ? [] : [`check:${today}:${checkDue}`]), ...keys], now);
+			this.#wake(now, {
+				key: `brief:${today}`,
+				roomId: proactive.roomId,
+				kind: "brief",
+				content: await this.#brief(now, stamp, today, events, todos, triggers),
+			});
+			db.markNotified(
+				[`brief:${today}`, ...(checkDue === undefined ? [] : [`check:${today}:${checkDue}`]), ...keys],
+				now,
+			);
 		} else if (checkDue !== undefined || triggers.length > 0) {
-			const key = checkDue !== undefined ? `check:${today}:${checkDue}` : `check:${createHash("sha256").update(keys.join("\n")).digest("hex").slice(0, 16)}`;
-			this.#wake(now, { key, roomId: proactive.roomId, kind: "check", content: this.#check(stamp, today, events, todos, triggers) });
+			const key =
+				checkDue !== undefined
+					? `check:${today}:${checkDue}`
+					: `check:${createHash("sha256").update(keys.join("\n")).digest("hex").slice(0, 16)}`;
+			this.#wake(now, {
+				key,
+				roomId: proactive.roomId,
+				kind: "check",
+				content: this.#check(stamp, today, events, todos, triggers),
+			});
 			db.markNotified([...(checkDue === undefined ? [] : [key]), ...keys], now);
 		}
 
 		if (watchCalendar) {
-			db.replaceSeenItems(new Map([...upcoming, ...todos].flatMap((item) => (normalizeEtag(item.etag) === "" ? [] : [[item.id, normalizeEtag(item.etag)] as const]))));
+			db.replaceSeenItems(
+				new Map(
+					[...upcoming, ...todos].flatMap((item) =>
+						normalizeEtag(item.etag) === "" ? [] : [[item.id, normalizeEtag(item.etag)] as const],
+					),
+				),
+			);
 			db.setValue("calendar.checked", String(now));
 		}
 	}
@@ -310,12 +362,21 @@ export class Scheduler {
 		const tomorrow = addDays(today, 1);
 		const on = (date: string) => {
 			const [from, to] = [startOfDay(date, tz), startOfDay(addDays(date, 1), tz)];
-			const lines = events.filter((event) => event.start < to && Math.max(event.end, event.start + 1) > from).map((event) => `- ${formatEvent(event, tz)}`);
+			const lines = events
+				.filter((event) => event.start < to && Math.max(event.end, event.start + 1) > from)
+				.map((event) => `- ${formatEvent(event, tz)}`);
 			return lines.length === 0 ? ["- なし"] : lines;
 		};
 		const open = todos.filter((todo) => !todo.done);
-		const dated = open.flatMap((todo) => (todo.due === undefined ? [] : [{ todo, days: daysBetween(today, todo.due.date) }]));
-		const soon = dated.filter(({ days }) => days <= 7).map(({ todo, days }) => `- ${formatTodo(todo, tz)}${days < 0 ? `（期日を${-days}日過ぎている）` : days === 0 ? "（今日）" : ""}`);
+		const dated = open.flatMap((todo) =>
+			todo.due === undefined ? [] : [{ todo, days: daysBetween(today, todo.due.date) }],
+		);
+		const soon = dated
+			.filter(({ days }) => days <= 7)
+			.map(
+				({ todo, days }) =>
+					`- ${formatTodo(todo, tz)}${days < 0 ? `（期日を${-days}日過ぎている）` : days === 0 ? "（今日）" : ""}`,
+			);
 		const later = open.length - soon.length;
 		return [
 			"",
@@ -336,12 +397,26 @@ export class Scheduler {
 		const reminders = triggers.filter((trigger) => trigger.kind === "reminder");
 		const news = triggers.filter((trigger) => trigger.kind === "change");
 		return [
-			...(reminders.length === 0 ? [] : ["", "## いま近づいていること", near, ...reminders.map((trigger) => `- ${trigger.line}`)]),
-			...(news.length === 0 ? [] : ["", "## 前回の確認以降に追加・変更された項目（ユーザーかほかの人が書いた）", ...news.map((trigger) => `- ${trigger.line}`)]),
+			...(reminders.length === 0
+				? []
+				: ["", "## いま近づいていること", near, ...reminders.map((trigger) => `- ${trigger.line}`)]),
+			...(news.length === 0
+				? []
+				: [
+						"",
+						"## 前回の確認以降に追加・変更された項目（ユーザーかほかの人が書いた）",
+						...news.map((trigger) => `- ${trigger.line}`),
+					]),
 		];
 	}
 
-	#check(stamp: string, today: string, events: readonly EventItem[], todos: readonly TodoItem[], triggers: readonly Trigger[]): string {
+	#check(
+		stamp: string,
+		today: string,
+		events: readonly EventItem[],
+		todos: readonly TodoItem[],
+		triggers: readonly Trigger[],
+	): string {
 		return [
 			`[定時チェック ${stamp}]`,
 			...ASIDE,
@@ -353,7 +428,14 @@ export class Scheduler {
 		].join("\n");
 	}
 
-	async #brief(now: number, stamp: string, today: string, events: readonly EventItem[], todos: readonly TodoItem[], triggers: readonly Trigger[]): Promise<string> {
+	async #brief(
+		now: number,
+		stamp: string,
+		today: string,
+		events: readonly EventItem[],
+		todos: readonly TodoItem[],
+		triggers: readonly Trigger[],
+	): Promise<string> {
 		const { weather } = this.#options;
 		let forecast: string | undefined;
 		if (weather !== undefined) {
@@ -372,8 +454,15 @@ export class Scheduler {
 			...ASIDE,
 			"",
 			"下の材料とこれまでの会話から、今日の朝のブリーフを書く。",
-			...(calendar ? ["- 今日と明日の予定を時刻順に伝える。予定の無い日は無いと書く。", "- 7日以内に期日が来るタスクと、期日を過ぎたタスクがあれば伝える（無いことは書かない）。"] : []),
-			...(forecast === undefined ? [] : ["- 天気を一言で伝える。外出を伴いそうな予定があれば、その時間帯の降水確率に触れる。"]),
+			...(calendar
+				? [
+						"- 今日と明日の予定を時刻順に伝える。予定の無い日は無いと書く。",
+						"- 7日以内に期日が来るタスクと、期日を過ぎたタスクがあれば伝える（無いことは書かない）。",
+					]
+				: []),
+			...(forecast === undefined
+				? []
+				: ["- 天気を一言で伝える。外出を伴いそうな予定があれば、その時間帯の降水確率に触れる。"]),
 			"- 会話に出ていた用事で、今日気にかけるとよいことがあれば一言添える。",
 			"- 材料と会話に無いことは書かない。短く、読みやすく。",
 			...this.#calendarLines(today, events, todos),

@@ -25,7 +25,13 @@ export type Aside = {
 	readonly from: { readonly conversationId: number; readonly entryId: number };
 };
 
-export type Timer = { readonly id: string; readonly roomId: string; readonly dueAt: number; readonly note: string; readonly createdAt: number };
+export type Timer = {
+	readonly id: string;
+	readonly roomId: string;
+	readonly dueAt: number;
+	readonly note: string;
+	readonly createdAt: number;
+};
 
 export type Decision = "approve" | "approve_session" | "approve_always" | "reject";
 
@@ -136,10 +142,15 @@ export class HostDb {
 			);
 		`);
 		// Ledgers made before voice messages lack the column.
-		const columns = this.#db.prepare("PRAGMA table_info(deliveries)").all().map((row) => String(row.name));
+		const columns = this.#db
+			.prepare("PRAGMA table_info(deliveries)")
+			.all()
+			.map((row) => String(row.name));
 		if (!columns.includes("voice")) this.#db.exec("ALTER TABLE deliveries ADD COLUMN voice INTEGER NOT NULL DEFAULT 0");
 		// Ledgers made before conversations were mapped to rooms on their own.
-		this.#db.exec("INSERT OR IGNORE INTO conversation_rooms (conversation_id, room_id) SELECT conversation_id, room_id FROM rooms");
+		this.#db.exec(
+			"INSERT OR IGNORE INTO conversation_rooms (conversation_id, room_id) SELECT conversation_id, room_id FROM rooms",
+		);
 		// Every browser tool call asks whether its run was started by the user.
 		this.#db.exec("CREATE INDEX IF NOT EXISTS deliveries_submission ON deliveries(submission_id)");
 	}
@@ -151,7 +162,9 @@ export class HostDb {
 
 	/** Also for a conversation the room has moved on from, or one made aside from it. */
 	roomOf(conversationId: number): string | undefined {
-		const row = this.#db.prepare("SELECT room_id FROM conversation_rooms WHERE conversation_id = ?").get(conversationId);
+		const row = this.#db
+			.prepare("SELECT room_id FROM conversation_rooms WHERE conversation_id = ?")
+			.get(conversationId);
 		return row === undefined ? undefined : String(row.room_id);
 	}
 
@@ -165,17 +178,23 @@ export class HostDb {
 	setConversation(roomId: string, conversationId: number): void {
 		this.addConversationRoom(conversationId, roomId);
 		this.#db
-			.prepare("INSERT INTO rooms (room_id, conversation_id) VALUES (?, ?) ON CONFLICT (room_id) DO UPDATE SET conversation_id = excluded.conversation_id")
+			.prepare(
+				"INSERT INTO rooms (room_id, conversation_id) VALUES (?, ?) ON CONFLICT (room_id) DO UPDATE SET conversation_id = excluded.conversation_id",
+			)
 			.run(roomId, conversationId);
 	}
 
 	addConversationRoom(conversationId: number, roomId: string): void {
-		this.#db.prepare("INSERT OR IGNORE INTO conversation_rooms (conversation_id, room_id) VALUES (?, ?)").run(conversationId, roomId);
+		this.#db
+			.prepare("INSERT OR IGNORE INTO conversation_rooms (conversation_id, room_id) VALUES (?, ?)")
+			.run(conversationId, roomId);
 	}
 
 	/** A wake of a key already asked for is left as it is. */
 	addWake(wake: Omit<Wake, "aside">): void {
-		this.#db.prepare("DELETE FROM wakes WHERE outcome IS NOT NULL AND created_at < ?").run(wake.createdAt - 30 * 86_400_000);
+		this.#db
+			.prepare("DELETE FROM wakes WHERE outcome IS NOT NULL AND created_at < ?")
+			.run(wake.createdAt - 30 * 86_400_000);
 		this.#db
 			.prepare("INSERT OR IGNORE INTO wakes (key, room_id, kind, content, created_at) VALUES (?, ?, ?, ?, ?)")
 			.run(wake.key, wake.roomId, wake.kind, wake.content, wake.createdAt);
@@ -209,16 +228,27 @@ export class HostDb {
 
 	/** Counts what people said in the room, so a check can tell whether anything was said since the last. */
 	noteActivity(roomId: string): void {
-		this.#db.prepare("INSERT INTO room_activity (room_id, seq) VALUES (?, 1) ON CONFLICT (room_id) DO UPDATE SET seq = seq + 1").run(roomId);
+		this.#db
+			.prepare(
+				"INSERT INTO room_activity (room_id, seq) VALUES (?, 1) ON CONFLICT (room_id) DO UPDATE SET seq = seq + 1",
+			)
+			.run(roomId);
 	}
 
 	activity(): Map<string, number> {
-		return new Map(this.#db.prepare("SELECT room_id, seq FROM room_activity").all().map((row) => [String(row.room_id), Number(row.seq)]));
+		return new Map(
+			this.#db
+				.prepare("SELECT room_id, seq FROM room_activity")
+				.all()
+				.map((row) => [String(row.room_id), Number(row.seq)]),
+		);
 	}
 
 	/** An opaque item a model's server compacted a conversation into, for that model, by a hash of the summary it stands for. */
 	addNativeCompaction(id: string, model: string, item: unknown): void {
-		this.#db.prepare("INSERT OR REPLACE INTO native_compactions (id, model, item) VALUES (?, ?, ?)").run(id, model, JSON.stringify(item));
+		this.#db
+			.prepare("INSERT OR REPLACE INTO native_compactions (id, model, item) VALUES (?, ?, ?)")
+			.run(id, model, JSON.stringify(item));
 	}
 
 	nativeCompaction(id: string): { readonly model: string; readonly item: unknown } | undefined {
@@ -242,7 +272,9 @@ export class HostDb {
 	}
 
 	removeTimer(id: string, roomId: string): boolean {
-		return this.#db.prepare("DELETE FROM timers WHERE id = ? AND room_id = ? AND fired = 0").run(id, roomId).changes > 0;
+		return (
+			this.#db.prepare("DELETE FROM timers WHERE id = ? AND room_id = ? AND fired = 0").run(id, roomId).changes > 0
+		);
 	}
 
 	markTimerFired(id: string): void {
@@ -262,7 +294,9 @@ export class HostDb {
 
 	setPendingSubmission(eventId: string, conversationId: number): void {
 		this.#db
-			.prepare("INSERT INTO pending_submissions (event_id, conversation_id) VALUES (?, ?) ON CONFLICT (event_id) DO UPDATE SET conversation_id = excluded.conversation_id")
+			.prepare(
+				"INSERT INTO pending_submissions (event_id, conversation_id) VALUES (?, ?) ON CONFLICT (event_id) DO UPDATE SET conversation_id = excluded.conversation_id",
+			)
 			.run(eventId, conversationId);
 	}
 
@@ -281,7 +315,9 @@ export class HostDb {
 
 	/** Without a reply event when nothing was sent. */
 	markDelivered(eventId: string, replyEventId?: string): void {
-		this.#db.prepare("UPDATE deliveries SET delivered = 1, reply_event_id = ? WHERE event_id = ?").run(replyEventId ?? null, eventId);
+		this.#db
+			.prepare("UPDATE deliveries SET delivered = 1, reply_event_id = ? WHERE event_id = ?")
+			.run(replyEventId ?? null, eventId);
 	}
 
 	hasDelivery(eventId: string): boolean {
@@ -294,7 +330,9 @@ export class HostDb {
 	}
 
 	pendingDeliveries(): Delivery[] {
-		const rows = this.#db.prepare("SELECT event_id, room_id, submission_id, voice FROM deliveries WHERE delivered = 0 ORDER BY rowid").all();
+		const rows = this.#db
+			.prepare("SELECT event_id, room_id, submission_id, voice FROM deliveries WHERE delivered = 0 ORDER BY rowid")
+			.all();
 		return rows.map((row) => ({
 			eventId: String(row.event_id),
 			roomId: String(row.room_id),
@@ -338,14 +376,23 @@ export class HostDb {
 	/** So the watcher does not report the agent's own work back to the user. */
 	setSeenItem(id: string, etag: string | undefined): void {
 		if (etag === undefined) this.#db.prepare("DELETE FROM calendar_seen WHERE id = ?").run(id);
-		else this.#db.prepare("INSERT INTO calendar_seen (id, etag) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET etag = excluded.etag").run(id, etag);
+		else
+			this.#db
+				.prepare(
+					"INSERT INTO calendar_seen (id, etag) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET etag = excluded.etag",
+				)
+				.run(id, etag);
 	}
 
 	addApproval(row: Omit<ApprovalRow, "promptEventId" | "decision" | "reason">): void {
 		this.#db
-			.prepare("INSERT OR IGNORE INTO approvals (id, room_id, run_key, tool, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+			.prepare(
+				"INSERT OR IGNORE INTO approvals (id, room_id, run_key, tool, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+			)
 			.run(row.id, row.roomId, row.runKey, row.tool, row.summary, row.createdAt);
-		this.#db.prepare("DELETE FROM approvals WHERE decision IS NOT NULL AND created_at < ?").run(row.createdAt - 7 * 86_400_000);
+		this.#db
+			.prepare("DELETE FROM approvals WHERE decision IS NOT NULL AND created_at < ?")
+			.run(row.createdAt - 7 * 86_400_000);
 	}
 
 	approval(id: string): ApprovalRow | undefined {
@@ -354,13 +401,17 @@ export class HostDb {
 	}
 
 	approvalByPrompt(roomId: string, promptEventId: string): ApprovalRow | undefined {
-		const row = this.#db.prepare("SELECT * FROM approvals WHERE room_id = ? AND prompt_event_id = ?").get(roomId, promptEventId);
+		const row = this.#db
+			.prepare("SELECT * FROM approvals WHERE room_id = ? AND prompt_event_id = ?")
+			.get(roomId, promptEventId);
 		return row === undefined ? undefined : approvalRow(row);
 	}
 
 	undecidedApprovals(roomId: string): ApprovalRow[] {
 		return this.#db
-			.prepare("SELECT * FROM approvals WHERE room_id = ? AND decision IS NULL AND prompt_event_id IS NOT NULL ORDER BY created_at, rowid")
+			.prepare(
+				"SELECT * FROM approvals WHERE room_id = ? AND decision IS NULL AND prompt_event_id IS NOT NULL ORDER BY created_at, rowid",
+			)
 			.all(roomId)
 			.map(approvalRow);
 	}
@@ -372,7 +423,10 @@ export class HostDb {
 	decideApproval(id: string, decision: Decision, reason?: string, at?: number): boolean {
 		this.#db.exec("BEGIN");
 		try {
-			const changed = this.#db.prepare("UPDATE approvals SET decision = ?, reason = ? WHERE id = ? AND decision IS NULL").run(decision, reason ?? null, id).changes > 0;
+			const changed =
+				this.#db
+					.prepare("UPDATE approvals SET decision = ?, reason = ? WHERE id = ? AND decision IS NULL")
+					.run(decision, reason ?? null, id).changes > 0;
 			if (changed && decision === "approve_always") {
 				this.#db
 					.prepare("INSERT OR IGNORE INTO approval_rules (tool, created_at) SELECT tool, ? FROM approvals WHERE id = ?")
@@ -387,15 +441,26 @@ export class HostDb {
 	}
 
 	approvedForRun(runKey: string, tool: string): boolean {
-		return this.#db.prepare("SELECT 1 FROM approvals WHERE run_key = ? AND tool = ? AND decision = 'approve_session'").get(runKey, tool) !== undefined;
+		return (
+			this.#db
+				.prepare("SELECT 1 FROM approvals WHERE run_key = ? AND tool = ? AND decision = 'approve_session'")
+				.get(runKey, tool) !== undefined
+		);
 	}
 
 	alwaysApproved(): string[] {
-		return this.#db.prepare("SELECT tool FROM approval_rules ORDER BY tool").all().map((row) => String(row.tool));
+		return this.#db
+			.prepare("SELECT tool FROM approval_rules ORDER BY tool")
+			.all()
+			.map((row) => String(row.tool));
 	}
 
 	setAlwaysApproved(tool: string, on: boolean, at: number): boolean {
-		if (on) return this.#db.prepare("INSERT OR IGNORE INTO approval_rules (tool, created_at) VALUES (?, ?)").run(tool, at).changes > 0;
+		if (on)
+			return (
+				this.#db.prepare("INSERT OR IGNORE INTO approval_rules (tool, created_at) VALUES (?, ?)").run(tool, at)
+					.changes > 0
+			);
 		return this.#db.prepare("DELETE FROM approval_rules WHERE tool = ?").run(tool).changes > 0;
 	}
 
@@ -405,7 +470,9 @@ export class HostDb {
 	}
 
 	setValue(key: string, value: string): void {
-		this.#db.prepare("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key, value);
+		this.#db
+			.prepare("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+			.run(key, value);
 	}
 
 	close(): void {
@@ -423,13 +490,22 @@ function wakeRow(row: Record<string, unknown>): Wake {
 		...(row.aside_id === null
 			? {}
 			: {
-					aside: { conversationId: Number(row.aside_id), from: { conversationId: Number(row.from_id), entryId: Number(row.from_entry) } },
+					aside: {
+						conversationId: Number(row.aside_id),
+						from: { conversationId: Number(row.from_id), entryId: Number(row.from_entry) },
+					},
 				}),
 	};
 }
 
 function timerRow(row: Record<string, unknown>): Timer {
-	return { id: String(row.id), roomId: String(row.room_id), dueAt: Number(row.due_at), note: String(row.note), createdAt: Number(row.created_at) };
+	return {
+		id: String(row.id),
+		roomId: String(row.room_id),
+		dueAt: Number(row.due_at),
+		note: String(row.note),
+		createdAt: Number(row.created_at),
+	};
 }
 
 function approvalRow(row: Record<string, unknown>): ApprovalRow {

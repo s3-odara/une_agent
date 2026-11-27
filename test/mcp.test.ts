@@ -30,12 +30,21 @@ class FakeMcpServer {
 			request.on("end", () => {
 				if (this.down) return void response.writeHead(503).end();
 				if (request.method === "DELETE") return void response.writeHead(204).end();
-				const message = JSON.parse(body) as { id?: number; method: string; params?: { name?: string; arguments?: unknown } };
+				const message = JSON.parse(body) as {
+					id?: number;
+					method: string;
+					params?: { name?: string; arguments?: unknown };
+				};
 				const session = request.headers["mcp-session-id"];
 				if (message.method === "initialize") {
 					const id = `s${++this.#n}`;
 					this.sessions.add(id);
-					return this.#reply(response, message.id, { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1" } }, { "mcp-session-id": id });
+					return this.#reply(
+						response,
+						message.id,
+						{ protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1" } },
+						{ "mcp-session-id": id },
+					);
 				}
 				if (typeof session !== "string" || !this.sessions.has(session)) return void response.writeHead(404).end();
 				if (message.method === "notifications/cancelled") this.cancelled.resolve();
@@ -43,13 +52,25 @@ class FakeMcpServer {
 				if (message.method === "tools/list") {
 					return this.#reply(response, message.id, {
 						tools: [
-							{ name: "search_web_pages", description: "Web を検索する", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-							{ name: "fetch_page_content", description: "ページを取得する", inputSchema: { type: "object", properties: { url: { type: "string" } } } },
+							{
+								name: "search_web_pages",
+								description: "Web を検索する",
+								inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+							},
+							{
+								name: "fetch_page_content",
+								description: "ページを取得する",
+								inputSchema: { type: "object", properties: { url: { type: "string" } } },
+							},
 						],
 					});
 				}
 				if (message.method === "tools/call") {
-					this.calls.push({ name: message.params?.name ?? "", args: message.params?.arguments, headers: request.headers });
+					this.calls.push({
+						name: message.params?.name ?? "",
+						args: message.params?.arguments,
+						headers: request.headers,
+					});
 					this.called.resolve();
 					const query = (message.params?.arguments as { query?: string } | undefined)?.query;
 					if (query === "終わらない") return;
@@ -62,7 +83,13 @@ class FakeMcpServer {
 		});
 	}
 
-	#reply(response: import("node:http").ServerResponse, id: number | undefined, result: unknown, headers: Record<string, string> = {}, error?: unknown): void {
+	#reply(
+		response: import("node:http").ServerResponse,
+		id: number | undefined,
+		result: unknown,
+		headers: Record<string, string> = {},
+		error?: unknown,
+	): void {
 		const payload = JSON.stringify({ jsonrpc: "2.0", id, ...(error === undefined ? { result } : { error }) });
 		response.writeHead(200, { "content-type": "application/json", ...headers }).end(payload);
 	}
@@ -77,12 +104,21 @@ class FakeMcpServer {
 	}
 }
 
-async function setup(options: { down?: boolean; headers?: Record<string, string>; exposure?: "codemode" | "direct" } = {}) {
+async function setup(
+	options: { down?: boolean; headers?: Record<string, string>; exposure?: "codemode" | "direct" } = {},
+) {
 	const server = new FakeMcpServer();
 	server.down = options.down === true;
 	const url = await server.start();
 	const servers: Record<string, McpServer> = {
-		keenable: { url, headers: options.headers ?? {}, tools: ["search_web_pages"], replay: "safe", exposure: options.exposure ?? "direct", description: "Web を検索する" },
+		keenable: {
+			url,
+			headers: options.headers ?? {},
+			tools: ["search_web_pages"],
+			replay: "safe",
+			exposure: options.exposure ?? "direct",
+			description: "Web を検索する",
+		},
 	};
 	const env = await agentEnv({ codemode: { servers } });
 	const installed = Promise.withResolvers<void>();
@@ -178,7 +214,10 @@ test("a server left to codemode is announced before connecting without changing 
 
 test("a script calls a tool of a server left to codemode, and gets its result marked as from outside", async () => {
 	await using t = await setup({ exposure: "codemode" });
-	t.env.faux.setResponses([call("codemode", { code: 'return await tools.mcp__keenable__search_web_pages({ query: "緑茶" });' }), t.noting]);
+	t.env.faux.setResponses([
+		call("codemode", { code: 'return await tools.mcp__keenable__search_web_pages({ query: "緑茶" });' }),
+		t.noting,
+	]);
 	await t.say("緑茶を調べて");
 	assert.deepEqual(
 		t.server.calls.map(({ args }) => args),
@@ -253,7 +292,9 @@ for (const [value, sent] of [
 ] as const) {
 	test(`a header from the environment is ${value ? "sent when the variable is set" : `left out when the variable is ${value === "" ? "empty" : "unset"}`}`, () => {
 		using dir = tempDir();
-		const config = testConfig(dir.path, { mcp: { keenable: { url: "https://api.keenable.ai/mcp", headersFromEnv: { "X-API-Key": "KEENABLE_API_KEY" } } } });
+		const config = testConfig(dir.path, {
+			mcp: { keenable: { url: "https://api.keenable.ai/mcp", headersFromEnv: { "X-API-Key": "KEENABLE_API_KEY" } } },
+		});
 		const servers = serversFromConfig(config.mcp, value === undefined ? {} : { KEENABLE_API_KEY: value });
 		assert.deepEqual(servers.keenable?.headers, sent);
 	});

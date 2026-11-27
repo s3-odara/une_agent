@@ -8,7 +8,11 @@ import { readWav } from "../src/tts.ts";
 import { tempDir } from "./env.ts";
 import { wav } from "./fakes.ts";
 
-const tone = (rate: number) => wav(Array.from({ length: rate }, (_, i) => Math.sin((2 * Math.PI * 440 * i) / rate) / 4), rate);
+const tone = (rate: number) =>
+	wav(
+		Array.from({ length: rate }, (_, i) => Math.sin((2 * Math.PI * 440 * i) / rate) / 4),
+		rate,
+	);
 
 let haveFfmpeg = true;
 try {
@@ -24,7 +28,9 @@ test("a recording already at 16 kHz mono, as a call's utterances are, is passed 
 	assert.deepEqual(await toWav16k(path), readFileSync(path));
 });
 
-test("a recording in another form is converted to 16 kHz mono", { skip: haveFfmpeg ? false : "ffmpeg is not installed" }, async () => {
+test("a recording in another form is converted to 16 kHz mono", {
+	skip: haveFfmpeg ? false : "ffmpeg is not installed",
+}, async () => {
 	using dir = tempDir();
 	const path = join(dir.path, "v.wav");
 	writeFileSync(path, tone(48_000));

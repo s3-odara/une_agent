@@ -17,13 +17,16 @@ const JSON_TEXT = '{\r\n  "お茶": "緑茶"  \r\n\r\n\r\n}\n';
 const CSV_TEXT = 'name,description\r\n"tea","green, steamed"  \r\n';
 const XML_TEXT = '<?xml version="1.0"?>\n<rss><channel><title>緑茶</title></channel></rss>\n';
 
-const PARAGRAPH = "緑茶は茶葉を摘んだ直後に加熱して発酵を止めた茶で、蒸し製と釜炒り製がある。日本では蒸し製が主流で、煎茶、玉露、かぶせ茶などに分かれる。";
+const PARAGRAPH =
+	"緑茶は茶葉を摘んだ直後に加熱して発酵を止めた茶で、蒸し製と釜炒り製がある。日本では蒸し製が主流で、煎茶、玉露、かぶせ茶などに分かれる。";
 
-const html = (title: string, body: string, head = "") => `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${title}</title>${head}</head><body>${body}</body></html>`;
+const html = (title: string, body: string, head = "") =>
+	`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${title}</title>${head}</head><body>${body}</body></html>`;
 
 function site(beacon: string): Server {
 	return createServer((request, response) => {
-		const page = (status: number, text: string) => response.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(text);
+		const page = (status: number, text: string) =>
+			response.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(text);
 		switch (new URL(request.url ?? "/", "http://localhost").pathname) {
 			case "/article":
 				return page(
@@ -37,36 +40,70 @@ function site(beacon: string): Server {
 				);
 			case "/rendered":
 				// The content exists only once the page's script has run.
-				return page(200, html("動的なページ", '<div id="app"></div><script>document.getElementById("app").innerHTML = "<p>スクリプトが書いた本文</p>";</script>'));
+				return page(
+					200,
+					html(
+						"動的なページ",
+						'<div id="app"></div><script>document.getElementById("app").innerHTML = "<p>スクリプトが書いた本文</p>";</script>',
+					),
+				);
 			case "/strict":
 				// A page whose policy forbids every script, which must not stop the extraction.
-				response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": "script-src 'none'" });
-				return response.end(html("厳しいページ", `<article><h1>見出し</h1>${`<p>${PARAGRAPH}</p>`.repeat(3)}</article>`));
+				response.writeHead(200, {
+					"content-type": "text/html; charset=utf-8",
+					"content-security-policy": "script-src 'none'",
+				});
+				return response.end(
+					html("厳しいページ", `<article><h1>見出し</h1>${`<p>${PARAGRAPH}</p>`.repeat(3)}</article>`),
+				);
 			case "/leak":
 				// The page tries to reach another server on this host, which the proxy must refuse.
-				return page(200, html("外へ出るページ", `<p>表の本文</p><img src="${beacon}/img"><script>fetch("${beacon}/fetch").catch(() => {});</script>`));
+				return page(
+					200,
+					html(
+						"外へ出るページ",
+						`<p>表の本文</p><img src="${beacon}/img"><script>fetch("${beacon}/fetch").catch(() => {});</script>`,
+					),
+				);
 			case "/plain":
-				return void response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end("ただのテキスト\n二行目");
+				return void response
+					.writeHead(200, { "content-type": "text/plain; charset=utf-8" })
+					.end("ただのテキスト\n二行目");
 			case "/data":
 				return void response.writeHead(200, { "content-type": "application/problem+json" }).end(JSON_TEXT);
 			case "/csv":
-				return void response.writeHead(200, { "content-type": "text/csv", "content-disposition": "attachment; filename=tea.csv" }).end(CSV_TEXT);
+				return void response
+					.writeHead(200, { "content-type": "text/csv", "content-disposition": "attachment; filename=tea.csv" })
+					.end(CSV_TEXT);
 			case "/feed":
 				return void response.writeHead(200, { "content-type": "application/rss+xml" }).end(XML_TEXT);
 			case "/diagram":
 				return void response.writeHead(302, { location: "/asset", "content-type": "text/plain" }).end("redirect");
 			case "/asset":
-				return void response.writeHead(200, { "content-type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="6000" height="4000"><rect width="6000" height="4000" fill="red"/></svg>');
+				return void response
+					.writeHead(200, { "content-type": "image/svg+xml" })
+					.end(
+						'<svg xmlns="http://www.w3.org/2000/svg" width="6000" height="4000"><rect width="6000" height="4000" fill="red"/></svg>',
+					);
 			case "/wide":
-				return void response.writeHead(200, { "content-type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="12001" height="20"/>');
+				return void response
+					.writeHead(200, { "content-type": "image/svg+xml" })
+					.end('<svg xmlns="http://www.w3.org/2000/svg" width="12001" height="20"/>');
 			case "/large":
 				response.writeHead(200, { "content-type": "application/json" });
 				response.write('"');
 				return void response.end("x".repeat(5 * 1024 * 1024) + '"');
 			case "/document":
-				return void response.writeHead(200, { "content-type": "application/pdf", "content-disposition": "attachment; filename=document.pdf" }).end(samplePdf());
+				return void response
+					.writeHead(200, {
+						"content-type": "application/pdf",
+						"content-disposition": "attachment; filename=document.pdf",
+					})
+					.end(samplePdf());
 			case "/file":
-				return void response.writeHead(200, { "content-type": "application/zip", "content-disposition": "attachment; filename=a.zip" }).end("PK");
+				return void response
+					.writeHead(200, { "content-type": "application/zip", "content-disposition": "attachment; filename=a.zip" })
+					.end("PK");
 			case "/missing":
 				return page(404, html("見つかりません", "<p>ページがありません</p>"));
 			default:
@@ -96,7 +133,14 @@ async function realReader(t: TestContext) {
 		assert.ok("markdown" in result);
 		return result;
 	};
-	return { base: `http://127.0.0.1:${port}`, inside: inside.url, reader, readText, hits: inside.hits, [Symbol.asyncDispose]: dispose };
+	return {
+		base: `http://127.0.0.1:${port}`,
+		inside: inside.url,
+		reader,
+		readText,
+		hits: inside.hits,
+		[Symbol.asyncDispose]: dispose,
+	};
 }
 
 test("an article is read as its main content in Markdown, without the site's navigation", async (t) => {
@@ -173,7 +217,11 @@ test("a plain text page is read as it is", async (t) => {
 test("JSON, CSV attachments, and RSS are read without changing whitespace or markup", async (t) => {
 	await using r = await realReader(t);
 	if (r === undefined) return;
-	for (const [path, body] of [["/data", JSON_TEXT], ["/csv", CSV_TEXT], ["/feed", XML_TEXT]] as const) {
+	for (const [path, body] of [
+		["/data", JSON_TEXT],
+		["/csv", CSV_TEXT],
+		["/feed", XML_TEXT],
+	] as const) {
 		assert.equal((await r.readText(`${r.base}${path}`)).markdown, body);
 	}
 });
@@ -188,10 +236,18 @@ test("a large image is cropped at source resolution", async (t) => {
 	const full = await r.reader.renderImage(result);
 	const crop = await r.reader.renderImage(result, { x: 0.5, y: 0.5, width: 0.125, height: 0.125 });
 
-	for (const [image, dimensions] of [[full, [1280, 853]], [crop, [750, 500]]] as const) {
-		const decoded = spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", "pipe:0"], {
-			input: Buffer.from(image.data, "base64"), encoding: "utf8",
-		});
+	for (const [image, dimensions] of [
+		[full, [1280, 853]],
+		[crop, [750, 500]],
+	] as const) {
+		const decoded = spawnSync(
+			"ffprobe",
+			["-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", "pipe:0"],
+			{
+				input: Buffer.from(image.data, "base64"),
+				encoding: "utf8",
+			},
+		);
 		assert.equal(decoded.status, 0, decoded.stderr);
 		assert.deepEqual(decoded.stdout.trim().split(",").map(Number), dimensions);
 	}

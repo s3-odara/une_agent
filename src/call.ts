@@ -74,7 +74,9 @@ export class Calls {
 					return;
 				}
 				this.#log(`left the call in ${event.roomId}: ${event.reason}`);
-				this.#track(this.#options.notice(event.roomId, `callleft:${randomUUID()}`, `通話から抜けました（${event.reason}）。`));
+				this.#track(
+					this.#options.notice(event.roomId, `callleft:${randomUUID()}`, `通話から抜けました（${event.reason}）。`),
+				);
 				return;
 			}
 			case "callSpeech": {
@@ -83,7 +85,9 @@ export class Calls {
 			}
 			case "callUtterance": {
 				const room = this.#room(event.roomId);
-				const next = room.tail.then(() => this.#hear(event, room)).catch((error) => this.#log(`a call utterance in ${event.roomId} failed: ${errorMessage(error)}`));
+				const next = room.tail
+					.then(() => this.#hear(event, room))
+					.catch((error) => this.#log(`a call utterance in ${event.roomId} failed: ${errorMessage(error)}`));
 				room.tail = next;
 				this.#track(next);
 				return;
@@ -191,11 +195,7 @@ export class Calls {
 		} catch (error) {
 			const reason = errorMessage(error);
 			this.#log(`making speech for a call in ${roomId} failed: ${reason}`);
-			await this.#options.notice(
-				roomId,
-				`callvoice:${randomUUID()}`,
-				`音声を作れませんでした（${reason}）。`,
-			);
+			await this.#options.notice(roomId, `callvoice:${randomUUID()}`, `音声を作れませんでした（${reason}）。`);
 			return;
 		}
 		if (this.#rooms.get(roomId) !== room || this.#overtaken(room, turn)) return;

@@ -1,5 +1,11 @@
 import { lookup } from "node:dns/promises";
-import { createServer, type IncomingMessage, request as httpRequest, type Server, type ServerResponse } from "node:http";
+import {
+	createServer,
+	type IncomingMessage,
+	request as httpRequest,
+	type Server,
+	type ServerResponse,
+} from "node:http";
 import { BlockList, connect, isIP, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 
@@ -79,7 +85,10 @@ export class EgressProxy {
 	private constructor(options: EgressOptions) {
 		this.#allow = options.allow ?? ((address) => isPublicAddress(address));
 		this.#server = createServer((request, response) => void this.#forward(request, response));
-		this.#server.on("connect", (request: IncomingMessage, socket: Duplex, head: Buffer) => void this.#tunnel(request, socket, head));
+		this.#server.on(
+			"connect",
+			(request: IncomingMessage, socket: Duplex, head: Buffer) => void this.#tunnel(request, socket, head),
+		);
 		this.#server.on("connection", (socket) => this.#keep(socket));
 	}
 
@@ -107,7 +116,10 @@ export class EgressProxy {
 		} else {
 			let timer: NodeJS.Timeout | undefined;
 			const timeout = new Promise<never>((_, reject) => {
-				timer = setTimeout(() => reject(new EgressError(`${bare} の名前解決が時間内に終わりませんでした。`)), LOOKUP_TIMEOUT_MS);
+				timer = setTimeout(
+					() => reject(new EgressError(`${bare} の名前解決が時間内に終わりませんでした。`)),
+					LOOKUP_TIMEOUT_MS,
+				);
 			});
 			try {
 				const found = await Promise.race([lookup(bare, { all: true, verbatim: true }), timeout]);
@@ -121,7 +133,9 @@ export class EgressProxy {
 		}
 		// One address that is not allowed refuses the whole name: a name that also points inside is not trusted to pick.
 		if (addresses.length === 0 || addresses.some((address) => !this.#allow(address, port))) {
-			throw new EgressError(`${bare} はこのホストか内部のネットワークを指しているので開けません。開けるのはインターネット上の公開されたアドレスだけです。`);
+			throw new EgressError(
+				`${bare} はこのホストか内部のネットワークを指しているので開けません。開けるのはインターネット上の公開されたアドレスだけです。`,
+			);
 		}
 		return addresses[0] as string;
 	}
@@ -174,10 +188,13 @@ export class EgressProxy {
 		const headers = { ...request.headers };
 		delete headers["proxy-connection"];
 		delete headers["proxy-authorization"];
-		const upstream = httpRequest({ host: address, port, method: request.method, path: `${url.pathname}${url.search}`, headers, setHost: false }, (reply) => {
-			response.writeHead(reply.statusCode ?? 502, reply.statusMessage, reply.headers);
-			reply.pipe(response);
-		});
+		const upstream = httpRequest(
+			{ host: address, port, method: request.method, path: `${url.pathname}${url.search}`, headers, setHost: false },
+			(reply) => {
+				response.writeHead(reply.statusCode ?? 502, reply.statusMessage, reply.headers);
+				reply.pipe(response);
+			},
+		);
 		upstream.on("error", () => {
 			if (!response.headersSent) response.writeHead(502).end();
 			else response.destroy();

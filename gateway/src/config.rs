@@ -53,9 +53,14 @@ fn default_device_name() -> String {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut config: Config = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        anyhow::ensure!(!config.matrix.allowed_users.is_empty(), "matrix.allowedUsers must list at least one user ID");
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut config: Config =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        anyhow::ensure!(
+            !config.matrix.allowed_users.is_empty(),
+            "matrix.allowedUsers must list at least one user ID"
+        );
         let absolute = std::path::absolute(path)?;
         config.base_dir = absolute.parent().map(Path::to_owned).unwrap_or_default();
         Ok(config)
@@ -91,11 +96,23 @@ mod tests {
     fn call_vad_uses_defaults_and_overrides() {
         assert_eq!(
             parse(r#", "voice": { "call": {} }"#).call_vad(),
-            Some(VadConfig { threshold: 0.5, start_ms: 208, end_silence_ms: 1400, max_ms: 30_000, pre_roll_ms: 300 })
+            Some(VadConfig {
+                threshold: 0.5,
+                start_ms: 208,
+                end_silence_ms: 1400,
+                max_ms: 30_000,
+                pre_roll_ms: 300
+            })
         );
         assert_eq!(
             parse(r#", "voice": { "call": { "vad": { "endSilenceMs": 700 } } }"#).call_vad(),
-            Some(VadConfig { threshold: 0.5, start_ms: 208, end_silence_ms: 700, max_ms: 30_000, pre_roll_ms: 300 })
+            Some(VadConfig {
+                threshold: 0.5,
+                start_ms: 208,
+                end_silence_ms: 700,
+                max_ms: 30_000,
+                pre_roll_ms: 300
+            })
         );
     }
 }

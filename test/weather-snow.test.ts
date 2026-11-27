@@ -10,18 +10,24 @@ const point = { lat: 43.025, lon: 141.03125 };
 const neighbor = { lat: 43.025, lon: 141.09375 };
 const ALL_ELEMENTS = [
 	"snowd",
-	"snowf03h", "snowf03h_nd",
-	"snowf06h", "snowf06h_nd",
-	"snowf12h", "snowf12h_nd",
-	"snowf24h", "snowf24h_nd",
-	"snowf48h", "snowf48h_nd",
-	"snowf72h", "snowf72h_nd",
+	"snowf03h",
+	"snowf03h_nd",
+	"snowf06h",
+	"snowf06h_nd",
+	"snowf12h",
+	"snowf12h_nd",
+	"snowf24h",
+	"snowf24h_nd",
+	"snowf48h",
+	"snowf48h_nd",
+	"snowf72h",
+	"snowf72h_nd",
 ];
 
 function pixelOf(lat: number, lon: number) {
 	const world = 256 * 2 ** 10;
-	const col = Math.floor((lon + 180) / 360 * world);
-	const row = Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * world);
+	const col = Math.floor(((lon + 180) / 360) * world);
+	const row = Math.floor(((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * world);
 	return { path: `10/${Math.floor(col / 256)}/${Math.floor(row / 256)}.png`, x: col % 256, y: row % 256 };
 }
 
@@ -40,26 +46,47 @@ function png(pixels: readonly [x: number, y: number, rgba: readonly number[]][] 
 	header.set([8, 6], 8);
 	const scanlines = Buffer.alloc(256 * 1025);
 	for (const [x, y, color] of pixels) scanlines.set(color, y * 1025 + 1 + x * 4);
-	return new Response(new Uint8Array(Buffer.concat([
-		Buffer.from("89504e470d0a1a0a", "hex"), chunk("IHDR", header), chunk("IDAT", deflateSync(scanlines)), chunk("IEND", Buffer.alloc(0)),
-	])));
+	return new Response(
+		new Uint8Array(
+			Buffer.concat([
+				Buffer.from("89504e470d0a1a0a", "hex"),
+				chunk("IHDR", header),
+				chunk("IDAT", deflateSync(scanlines)),
+				chunk("IEND", Buffer.alloc(0)),
+			]),
+		),
+	);
 }
 
-const ring = (west: number, east: number, south = 43, north = 43.05) => [[west, south], [east, south], [east, north], [west, north], [west, south]];
-const noDataMask = (...validHoles: number[][][]) => Response.json({
-	type: "FeatureCollection",
-	features: [{
-		type: "Feature",
-		properties: { level: "NoData" },
-		geometry: {
-			type: "Polygon",
-			coordinates: [
-				[[-45, 85], [315, 85], [315, -85], [-45, -85]],
-				...validHoles,
-			],
-		},
-	}],
-});
+const ring = (west: number, east: number, south = 43, north = 43.05) => [
+	[west, south],
+	[east, south],
+	[east, north],
+	[west, north],
+	[west, south],
+];
+const noDataMask = (...validHoles: number[][][]) =>
+	Response.json({
+		type: "FeatureCollection",
+		features: [
+			{
+				type: "Feature",
+				properties: { level: "NoData" },
+				geometry: {
+					type: "Polygon",
+					coordinates: [
+						[
+							[-45, 85],
+							[315, 85],
+							[315, -85],
+							[-45, -85],
+						],
+						...validHoles,
+					],
+				},
+			},
+		],
+	});
 
 const frame = (basetime: string, validtime: string, elements = ALL_ELEMENTS) => ({ basetime, validtime, elements });
 
@@ -94,12 +121,20 @@ function snowFixture(): typeof fetch {
 		if (element === "snowd") {
 			if (valid === "20261126090000") return png([[p.x, p.y, [160, 210, 255, 255]]]);
 			if (valid === "20261126100000") return png([[p.x, p.y, [33, 140, 255, 255]]]);
-			if (valid === "20261126110000") return png([[p.x, p.y, [0, 65, 255, 255]], [n.x, n.y, [250, 245, 0, 255]]]);
+			if (valid === "20261126110000")
+				return png([
+					[p.x, p.y, [0, 65, 255, 255]],
+					[n.x, n.y, [250, 245, 0, 255]],
+				]);
 			if (valid === "20261126120000") return png();
 			if (valid === "20261126130000") return new Response(null, { status: 503 });
 		}
 		if (element === "snowf03h") {
-			if (valid === "20261126110000") return png([[p.x, p.y, [242, 242, 255, 255]], [n.x, n.y, [160, 210, 255, 255]]]);
+			if (valid === "20261126110000")
+				return png([
+					[p.x, p.y, [242, 242, 255, 255]],
+					[n.x, n.y, [160, 210, 255, 255]],
+				]);
 			if (valid === "20261126120000") return png([[n.x, n.y, [33, 140, 255, 255]]]);
 			if (valid === "20261126130000") return png([[p.x, p.y, [180, 0, 104, 255]]]);
 		}
@@ -126,7 +161,11 @@ test("weather_snow reports current and forecast depth and all snowfall bands, se
 	assert.match(text, /基準 11-26 20:00/);
 	const lines = text.split("\n");
 	assert.ok(lines.includes("| 時刻 | 積雪 | 3h降雪 | 6h降雪 | 12h降雪 | 24h降雪 | 48h降雪 | 72h降雪 |"));
-	assert.ok(lines.includes("| 11-26 20:00（実況） | 20以上50未満 | 3未満 | 5以上10未満 | 15以上20未満 | 40以上50未満 | 60以上80未満 | 100以上120未満 |"));
+	assert.ok(
+		lines.includes(
+			"| 11-26 20:00（実況） | 20以上50未満 | 3未満 | 5以上10未満 | 15以上20未満 | 40以上50未満 | 60以上80未満 | 100以上120未満 |",
+		),
+	);
 	assert.ok(lines.includes("| 11-26 21:00 | なし | 欠測 | なし | なし | なし | なし | なし |"));
 	assert.ok(lines.includes("| 11-26 22:00 | 取得・判定できず | 30以上 | なし | なし | なし | なし | なし |"));
 
@@ -155,7 +194,8 @@ test("weather_snow treats coordinates outside the snow depth domain as missing w
 	let tileRequests = 0;
 	const snow = jmaSnow(async (input) => {
 		const path = new URL(String(input)).pathname;
-		if (path.endsWith("/targetTimes.json")) return Response.json([frame("20261126110000", "20261126110000", ["snowd", "snowf03h", "snowf03h_nd"])]);
+		if (path.endsWith("/targetTimes.json"))
+			return Response.json([frame("20261126110000", "20261126110000", ["snowd", "snowf03h", "snowf03h_nd"])]);
 		if (path.includes("_nd/")) return noDataMask(ring(141, 141.125));
 		tileRequests++;
 		return new Response(null, { status: 500 });

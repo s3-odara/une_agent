@@ -23,7 +23,10 @@ import { fromServer } from "./untrusted.ts";
 
 export type McpServer = Omit<McpServerConfig, "headersFromEnv">;
 
-export function serversFromConfig(servers: Readonly<Record<string, McpServerConfig>>, env: NodeJS.ProcessEnv): Record<string, McpServer> {
+export function serversFromConfig(
+	servers: Readonly<Record<string, McpServerConfig>>,
+	env: NodeJS.ProcessEnv,
+): Record<string, McpServer> {
 	return Object.fromEntries(
 		Object.entries(servers).map(([name, server]) => {
 			const fromEnv = Object.entries(server.headersFromEnv).flatMap(([header, variable]) => {
@@ -82,7 +85,11 @@ class McpSession {
 		if (this.#client === undefined) {
 			const client = new McpClient({ name: "agent", version: "1.0.0" });
 			// Without the server-to-client stream: nothing the server could send there is acted on.
-			const transport = new StreamableHttpTransport({ url: this.#url, headers: { ...this.#headers }, openGetStream: false });
+			const transport = new StreamableHttpTransport({
+				url: this.#url,
+				headers: { ...this.#headers },
+				openGetStream: false,
+			});
 			const opening = client.connect(transport).then(
 				() => client,
 				async (error: unknown) => {
@@ -113,11 +120,16 @@ const prefixOf = (server: string) => `${mcpNamespace(server)}__`;
 
 /** Whether a tool is one of a server the config says only reads (`replay: "safe"`). */
 export function mcpReads(servers: Readonly<Record<string, McpServer>>): (tool: string) => boolean {
-	const prefixes = Object.entries(servers).flatMap(([name, server]) => (server.replay === "safe" ? [prefixOf(name)] : []));
+	const prefixes = Object.entries(servers).flatMap(([name, server]) =>
+		server.replay === "safe" ? [prefixOf(name)] : [],
+	);
 	return (tool) => prefixes.some((prefix) => tool.startsWith(prefix));
 }
 
-export function createToolAccessExtensions(sandbox: CodemodeSandboxBase, servers: Readonly<Record<string, McpServer>>): Extension[] {
+export function createToolAccessExtensions(
+	sandbox: CodemodeSandboxBase,
+	servers: Readonly<Record<string, McpServer>>,
+): Extension[] {
 	return [
 		createCodemodeExtension({ sandbox }),
 		createToolSearchExtension(),
@@ -149,7 +161,10 @@ function createMcpTools(server: string, session: McpSession, tools: readonly Too
 				const result = await session.callTool(tool.name, args as Record<string, unknown>, context.abortSignal);
 				const { content } = await limitMcpContent(toLlmContent(result), saveIn(api.env, context));
 				if (result.isError === true) {
-					throw new Error(content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n") || `${tool.name} が失敗しました。`);
+					throw new Error(
+						content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n") ||
+							`${tool.name} が失敗しました。`,
+					);
 				}
 				return { output: [{ type: "text" as const, text: fromServer(server) }, ...content] };
 			},

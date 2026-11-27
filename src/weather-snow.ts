@@ -1,4 +1,20 @@
-import { clockJst, decodePngTile, frames, gridFor, inBatches, inJst, JMA_5KM_MESH, meshCell, noDataMask, square, tileOf, validatePoint, type Cell, type Frame, type Point } from "./jma-grid.ts";
+import {
+	clockJst,
+	decodePngTile,
+	frames,
+	gridFor,
+	inBatches,
+	inJst,
+	JMA_5KM_MESH,
+	meshCell,
+	noDataMask,
+	square,
+	tileOf,
+	validatePoint,
+	type Cell,
+	type Frame,
+	type Point,
+} from "./jma-grid.ts";
 import { markdownTable } from "./text.ts";
 
 const ROOT = "https://www.jma.go.jp/bosai/jmatile/data/snow";
@@ -7,7 +23,15 @@ const HOUR = 3_600_000;
 export const SNOW_GRID_MAX_METERS = 50_000;
 export const SNOW_MAX_PAST_HOURS = 24;
 
-const LAYERS = ["depth", "snowfall3h", "snowfall6h", "snowfall12h", "snowfall24h", "snowfall48h", "snowfall72h"] as const;
+const LAYERS = [
+	"depth",
+	"snowfall3h",
+	"snowfall6h",
+	"snowfall12h",
+	"snowfall24h",
+	"snowfall48h",
+	"snowfall72h",
+] as const;
 type Layer = (typeof LAYERS)[number];
 type LayerResult = { status: "available"; rows: (number | null)[][] } | { status: "unavailable" };
 
@@ -45,13 +69,27 @@ const legends: Record<Layer, string[]> = {
 
 // Legend SVGs and actual PNG tiles differ slightly on the lightest blue and yellow swatches.
 const DEPTH_COLORS = new Map<string, number>([
-	["160,210,255", 1], ["33,140,255", 2], ["0,65,255", 3],
-	["250,245,0", 4], ["255,245,0", 4], ["255,153,0", 5], ["255,40,0", 6], ["180,0,104", 7],
+	["160,210,255", 1],
+	["33,140,255", 2],
+	["0,65,255", 3],
+	["250,245,0", 4],
+	["255,245,0", 4],
+	["255,153,0", 5],
+	["255,40,0", 6],
+	["180,0,104", 7],
 ]);
 
 const SNOWFALL_COLORS = new Map<string, number>([
-	["242,242,255", 1], ["240,240,248", 1], ["160,210,255", 2], ["33,140,255", 3], ["0,65,255", 4],
-	["250,245,0", 5], ["255,245,0", 5], ["255,153,0", 6], ["255,40,0", 7], ["180,0,104", 8],
+	["242,242,255", 1],
+	["240,240,248", 1],
+	["160,210,255", 2],
+	["33,140,255", 3],
+	["0,65,255", 4],
+	["250,245,0", 5],
+	["255,245,0", 5],
+	["255,153,0", 6],
+	["255,40,0", 7],
+	["180,0,104", 8],
 ]);
 
 function classifyPixel(rgba: Buffer, offset: number, layer: Layer): number | null {
@@ -79,9 +117,14 @@ function selectFrames(all: readonly Frame[], pastHours: number): Frame[] {
 	if (relevant.length === 0) return [];
 	const latest = Math.max(...relevant.map(({ base }) => base));
 	return relevant
-		.filter((frame) =>
-			(frame.base === latest && frame.valid >= latest) ||
-			(pastHours > 0 && frame.base === frame.valid && frame.valid < latest && frame.valid >= latest - pastHours * HOUR))
+		.filter(
+			(frame) =>
+				(frame.base === latest && frame.valid >= latest) ||
+				(pastHours > 0 &&
+					frame.base === frame.valid &&
+					frame.valid < latest &&
+					frame.valid >= latest - pastHours * HOUR),
+		)
 		.sort((a, b) => a.valid - b.valid);
 }
 
@@ -97,7 +140,11 @@ function client(fetchSnow: typeof fetch) {
 	const readCoverage = async (frame: Frame, element: string) => {
 		const maskElement = `${element}_nd`;
 		if (!frame.elements.includes(maskElement)) throw new Error("JMA snow: missing coverage layer");
-		return noDataMask(await json(`${frame.basetime}/${frame.member}/${frame.validtime}/surf/${maskElement}/data.geojson?id=${maskElement}`));
+		return noDataMask(
+			await json(
+				`${frame.basetime}/${frame.member}/${frame.validtime}/surf/${maskElement}/data.geojson?id=${maskElement}`,
+			),
+		);
 	};
 
 	const readLayer = async (frame: Frame, layer: Layer, cells: Cell[][]): Promise<LayerResult> => {
@@ -105,21 +152,25 @@ function client(fetchSnow: typeof fetch) {
 		try {
 			const missing = layer === "depth" ? (point: Point) => !inDepthDomain(point) : await readCoverage(frame, element);
 			const paths = new Set<string>();
-			const targets = cells.map((row) => row.map((cell) => {
-				if (missing(cell)) return null;
-				const target = tileOf(cell);
-				paths.add(target.path);
-				return target;
-			}));
+			const targets = cells.map((row) =>
+				row.map((cell) => {
+					if (missing(cell)) return null;
+					const target = tileOf(cell);
+					paths.add(target.path);
+					return target;
+				}),
+			);
 			const prefix = `${frame.basetime}/${frame.member}/${frame.validtime}/surf/${element}`;
 			const tiles = new Map<string, Buffer | undefined>();
 			for (const path of paths) tiles.set(path, await readTile(`${prefix}/${path}`).catch(() => undefined));
 			if (tiles.size > 0 && ![...tiles.values()].some((tile) => tile !== undefined)) return { status: "unavailable" };
-			const rows = targets.map((row) => row.map((target) => {
-				if (target === null) return null;
-				const rgba = tiles.get(target.path);
-				return rgba === undefined ? null : classifyPixel(rgba, target.offset, layer);
-			}));
+			const rows = targets.map((row) =>
+				row.map((target) => {
+					if (target === null) return null;
+					const rgba = tiles.get(target.path);
+					return rgba === undefined ? null : classifyPixel(rgba, target.offset, layer);
+				}),
+			);
 			return { status: "available", rows };
 		} catch {
 			return { status: "unavailable" };
@@ -156,8 +207,18 @@ export function jmaSnowGrid(fetchSnow = fetch) {
 		validatePoint(query);
 		const pastHours = validatePastHours(query.pastHours);
 		const bounds = square(query, SNOW_GRID_MAX_METERS);
-		const { grid: { longitudeEdges, latitudeEdges }, cells } = gridFor("snow", bounds, JMA_5KM_MESH, 0);
-		return { bounds, longitudeEdges, latitudeEdges, unit: "cm" as const, legends, frames: await read(cells, pastHours) };
+		const {
+			grid: { longitudeEdges, latitudeEdges },
+			cells,
+		} = gridFor("snow", bounds, JMA_5KM_MESH, 0);
+		return {
+			bounds,
+			longitudeEdges,
+			latitudeEdges,
+			unit: "cm" as const,
+			legends,
+			frames: await read(cells, pastHours),
+		};
 	};
 }
 

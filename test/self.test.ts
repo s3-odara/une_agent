@@ -22,7 +22,10 @@ async function setup(options: { readonly config: unknown }) {
 			}),
 		],
 	});
-	writeFileSync(join(env.dir, "config.json"), typeof options.config === "string" ? options.config : JSON.stringify(options.config));
+	writeFileSync(
+		join(env.dir, "config.json"),
+		typeof options.config === "string" ? options.config : JSON.stringify(options.config),
+	);
 	const bridge = env.bridge();
 	const results: ToolResult[] = [];
 	return {
@@ -50,7 +53,7 @@ test("a restart with a config that loads goes ahead", async () => {
 });
 
 const BROKEN: [string, unknown][] = [
-	["JSON that does not parse", "{ \"model\": "],
+	["JSON that does not parse", '{ "model": '],
 	["a room given a persona that is not defined", { ...BASE_CONFIG, rooms: { [ROOM]: "nobody" } }],
 	["a persona whose SOUL file is missing", { ...BASE_CONFIG, personas: { default: "missing.md" } }],
 ];
@@ -86,7 +89,11 @@ function writeSkill(dir: string, name: string, text: string): string {
 
 test("the model is told of each skill, a person's own included, by its description and where to read it", async () => {
 	await using t = await setup({ config: BASE_CONFIG });
-	const path = writeSkill(t.env.dir, "shopping", "---\nname: shopping\ndescription: 日用品の買い物を頼まれたとき。\n---\n\n# 買い物\n");
+	const path = writeSkill(
+		t.env.dir,
+		"shopping",
+		"---\nname: shopping\ndescription: 日用品の買い物を頼まれたとき。\n---\n\n# 買い物\n",
+	);
 	const requests: Request[] = [];
 	t.env.faux.setResponses([answer("ok", requests)]);
 	await t.say("こんにちは");

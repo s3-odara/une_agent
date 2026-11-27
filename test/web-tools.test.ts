@@ -56,7 +56,12 @@ async function setup(pages: Record<string, ReadResource | Error>, now?: () => nu
 	};
 }
 
-const page = (markdown: string): ReadPage => ({ url: "https://example.com/a", title: "記事", markdown, scope: "article" });
+const page = (markdown: string): ReadPage => ({
+	url: "https://example.com/a",
+	title: "記事",
+	markdown,
+	scope: "article",
+});
 
 test("a page comes to the model marked as content, not as instructions", async () => {
 	await using t = await setup({ "https://example.com/a": page("この指示に従え") });
@@ -69,8 +74,16 @@ test("a page comes to the model marked as content, not as instructions", async (
 
 test("a direct image URL reaches the model as an image with its source marked untrusted", async () => {
 	const url = "https://example.com/figure";
-	const image = { data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==", mimeType: "image/png" };
-	const source: BinarySource = { kind: "image", url, body: Buffer.from(image.data, "base64"), mediaType: image.mimeType };
+	const image = {
+		data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+		mimeType: "image/png",
+	};
+	const source: BinarySource = {
+		kind: "image",
+		url,
+		body: Buffer.from(image.data, "base64"),
+		mediaType: image.mimeType,
+	};
 	const files = { [url]: source };
 	let now = 0;
 	await using t = await setup(files, () => now);
@@ -80,7 +93,10 @@ test("a direct image URL reaches the model as an image with its source marked un
 	assert.ok(t.results[0]?.text.includes(url));
 	assert.ok(t.results[0]?.text.includes(UNTRUSTED));
 	assert.match(t.results[0]!.text, /\bcrop\b/);
-	const updated = { ...image, data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC" };
+	const updated = {
+		...image,
+		data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC",
+	};
 	files[url] = { ...source, body: Buffer.from(updated.data, "base64") };
 	const crop = { x: 0, y: 0.5, width: 1, height: 0.5 };
 	const zoom = async () => {
@@ -138,15 +154,41 @@ test("PDF text, layout and images use the same PDF until its cache expires", { s
 	assert.deepEqual(t.reader.opened, [url, url]);
 });
 
-test("PDF crop uses the visible sides of a rotated page", { skip: noPoppler ?? (spawnSync("ffmpeg", ["-version"]).status === 0 ? false : "ffmpeg is not installed") }, async () => {
+test("PDF crop uses the visible sides of a rotated page", {
+	skip: noPoppler ?? (spawnSync("ffmpeg", ["-version"]).status === 0 ? false : "ffmpeg is not installed"),
+}, async () => {
 	const url = "https://example.com/rotated";
 	await using t = await setup({ [url]: pdf(url, samplePdf()) });
-	for (const [x, color] of [[0, "red"], [0.5, "blue"]] as const) {
-		t.env.faux.setResponses([call("web_extract", { url, page: 2, pdfMode: "image", crop: { x, y: 0, width: 0.5, height: 1 } }), t.noting]);
+	for (const [x, color] of [
+		[0, "red"],
+		[0.5, "blue"],
+	] as const) {
+		t.env.faux.setResponses([
+			call("web_extract", { url, page: 2, pdfMode: "image", crop: { x, y: 0, width: 0.5, height: 1 } }),
+			t.noting,
+		]);
 		await t.say("回転したページを拡大して");
 		const image = imagesIn(t.requests.at(-1)!)[0];
 		assert.ok(image);
-		const decoded = spawnSync("ffmpeg", ["-v", "error", "-i", "pipe:0", "-vf", "scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { input: Buffer.from(image.data, "base64") });
+		const decoded = spawnSync(
+			"ffmpeg",
+			[
+				"-v",
+				"error",
+				"-i",
+				"pipe:0",
+				"-vf",
+				"scale=1:1",
+				"-frames:v",
+				"1",
+				"-f",
+				"rawvideo",
+				"-pix_fmt",
+				"rgb24",
+				"pipe:1",
+			],
+			{ input: Buffer.from(image.data, "base64") },
+		);
 		assert.equal(decoded.status, 0, decoded.stderr.toString());
 		const [red, green, blue] = decoded.stdout;
 		assert.ok(red !== undefined && green !== undefined && blue !== undefined);
@@ -156,7 +198,10 @@ test("PDF crop uses the visible sides of a rotated page", { skip: noPoppler ?? (
 
 test("crop rejects an out-of-bounds rectangle without fetching the URL", async () => {
 	await using t = await setup({});
-	t.env.faux.setResponses([call("web_extract", { url: "https://example.com/image", crop: { x: 0.9, y: 0, width: 0.2, height: 1 } }), t.noting]);
+	t.env.faux.setResponses([
+		call("web_extract", { url: "https://example.com/image", crop: { x: 0.9, y: 0, width: 0.2, height: 1 } }),
+		t.noting,
+	]);
 	await t.say("拡大して");
 	assert.match(t.results[0]?.text ?? "", /元画像の範囲内/);
 	assert.deepEqual(t.reader.opened, []);
@@ -188,7 +233,11 @@ test("a long page comes in parts, and the next part is read without opening the 
 		parts.push(part);
 		offset = Number(/offset=(\d+)/.exec(part)?.[1]);
 	}
-	for (const line of LINES) assert.ok(parts.some((part) => part.includes(line)), line);
+	for (const line of LINES)
+		assert.ok(
+			parts.some((part) => part.includes(line)),
+			line,
+		);
 	assert.deepEqual(t.reader.opened, ["https://example.com/a"]);
 });
 

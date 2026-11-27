@@ -40,7 +40,9 @@ export class Credentials {
 			try {
 				origin = new URL(site).origin;
 			} catch {
-				throw new CredentialError(`認証情報ファイルのキー「${site}」は URL ではありません。https://example.com の形で書いてください。`);
+				throw new CredentialError(
+					`認証情報ファイルのキー「${site}」は URL ではありません。https://example.com の形で書いてください。`,
+				);
 			}
 			const entry = value as { username?: unknown; password?: unknown } | null;
 			if (typeof entry?.username !== "string" || typeof entry.password !== "string" || entry.password === "") {
@@ -75,7 +77,9 @@ export class Credentials {
 
 	/** Not secret: the user is shown them with `!cred list`. */
 	usernames(): [origin: string, username: string][] {
-		return [...this.#load()].map(([origin, credential]): [string, string] => [origin, credential.username]).sort(([a], [b]) => a.localeCompare(b));
+		return [...this.#load()]
+			.map(([origin, credential]): [string, string] => [origin, credential.username])
+			.sort(([a], [b]) => a.localeCompare(b));
 	}
 
 	#write(raw: Record<string, unknown>): void {
@@ -96,7 +100,10 @@ export class Credentials {
 		let clean = text;
 		let passwords: string[];
 		try {
-			passwords = [...[...this.#load().values()].map((credential) => credential.password), ...others.filter((other) => other !== "")];
+			passwords = [
+				...[...this.#load().values()].map((credential) => credential.password),
+				...others.filter((other) => other !== ""),
+			];
 		} catch {
 			passwords = others.filter((other) => other !== "");
 		}

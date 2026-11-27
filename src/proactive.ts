@@ -66,7 +66,10 @@ export class Proactive {
 				const rooms = Map.groupBy(this.#options.db.openWakes(), (wake) => wake.roomId);
 				await Promise.all(
 					[...rooms.values()].map(async (wakes) => {
-						for (const wake of wakes) await this.#weigh(wake).catch((error) => this.#log(`weighing ${wake.key} failed: ${errorMessage(error)}`));
+						for (const wake of wakes)
+							await this.#weigh(wake).catch((error) =>
+								this.#log(`weighing ${wake.key} failed: ${errorMessage(error)}`),
+							);
 					}),
 				);
 			} while (this.#again);
@@ -90,7 +93,10 @@ export class Proactive {
 			db.setAside(wake.key, undefined);
 			return;
 		}
-		const submission = await conversation.submit({ type: "input", content: wake.content, requestId: `wake:${wake.key}` }, context);
+		const submission = await conversation.submit(
+			{ type: "input", content: wake.content, requestId: `wake:${wake.key}` },
+			context,
+		);
 		const answer = await answerOf(harness, await submission.wait(context), context);
 		if (!answer.ok && answer.empty) return db.endWake(wake.key, "silent");
 		if (!answer.ok) {
@@ -138,7 +144,8 @@ const READS: ReadonlySet<string> = new Set([
 	TOOL_SEARCH_TOOL_NAME,
 ]);
 
-export const WEIGHING_REFUSAL = "自分から話しかけるかを決めている間は、書き込むツールは使えません。書き込みや実行が必要なら、この返答でユーザーに提案・確認してください。";
+export const WEIGHING_REFUSAL =
+	"自分から話しかけるかを決めている間は、書き込むツールは使えません。書き込みや実行が必要なら、この返答でユーザーに提案・確認してください。";
 
 export type ProactiveExtensionOptions = {
 	readonly db: HostDb;
@@ -173,11 +180,13 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 		tools: [
 			defineTool({
 				name: "stay_silent",
-				description: "自分から話しかけるかを決める確認で、いまは話しかけないときに呼ぶ。呼ぶときは文章を書かない。確認のとき以外は使えない。",
+				description:
+					"自分から話しかけるかを決める確認で、いまは話しかけないときに呼ぶ。呼ぶときは文章を書かない。確認のとき以外は使えない。",
 				parameters: obj({}),
 				replay: "safe",
 				execute: async (_args, api) => {
-					if (!db.isWeighing(Number(api.conversationId))) throw new Error("自分から話しかけるかを決める確認のときだけ使えます。");
+					if (!db.isWeighing(Number(api.conversationId)))
+						throw new Error("自分から話しかけるかを決める確認のときだけ使えます。");
 					return { ...textOutput("今回は話しかけません。"), control: { terminate: true } };
 				},
 			}),
@@ -185,8 +194,15 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 				name: "timer_add",
 				description: "決まった時刻に自分から実行・報告するよう登録する。",
 				parameters: obj({
-					at: str({ description: "時刻。ユーザーの現地時刻で YYYY-MM-DDTHH:MM", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$" }),
-					note: str({ description: "その時刻に何をするか。会話を読み返さなくても分かるように具体的に（例: 14時の面接の結果を聞く / ~/app のテストが通ればデプロイする）", minLength: 1 }),
+					at: str({
+						description: "時刻。ユーザーの現地時刻で YYYY-MM-DDTHH:MM",
+						pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$",
+					}),
+					note: str({
+						description:
+							"その時刻に何をするか。会話を読み返さなくても分かるように具体的に（例: 14時の面接の結果を聞く / ~/app のテストが通ればデプロイする）",
+						minLength: 1,
+					}),
 				}),
 				replay: "safe",
 				execute: async (args, api, context) => {
@@ -206,7 +222,11 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 				replay: "safe",
 				execute: async (_args, api) => {
 					const timers = db.timers(roomOf(api.conversationId));
-					return textOutput(timers.length === 0 ? "登録はありません。" : timers.map((timer) => `- ${formatStamp(timer.dueAt, tz)} ${timer.note} [${timer.id}]`).join("\n"));
+					return textOutput(
+						timers.length === 0
+							? "登録はありません。"
+							: timers.map((timer) => `- ${formatStamp(timer.dueAt, tz)} ${timer.note} [${timer.id}]`).join("\n"),
+					);
 				},
 			}),
 			defineTool({
@@ -223,7 +243,8 @@ export function createProactiveExtension(options: ProactiveExtensionOptions) {
 		],
 		hooks: [
 			hook(ToolTask, {
-				beforeTool: (call, api) => (db.isWeighing(Number(api.conversationId)) && !reads(call.name) ? { block: WEIGHING_REFUSAL } : undefined),
+				beforeTool: (call, api) =>
+					db.isWeighing(Number(api.conversationId)) && !reads(call.name) ? { block: WEIGHING_REFUSAL } : undefined,
 			}),
 		],
 	});

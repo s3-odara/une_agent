@@ -36,7 +36,10 @@ export class FileCredentialStore implements CredentialStore {
 		return Object.entries(this.#read()).map(([providerId, credential]) => ({ providerId, type: credential.type }));
 	}
 
-	modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
+	modify(
+		providerId: string,
+		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+	): Promise<Credential | undefined> {
 		return this.#serial(async () => {
 			const current = this.#read()[providerId];
 			const next = await fn(current);

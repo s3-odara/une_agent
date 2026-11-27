@@ -5,7 +5,11 @@ use tokio::io::{AsyncWriteExt, stdout};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Event {
     Ready {
         user_id: String,
@@ -15,22 +19,49 @@ pub enum Event {
         upload_limit: Option<u64>,
     },
     Message(Message),
-    Undecryptable { room_id: String, event_id: String },
-    MediaFailed { room_id: String, event_id: String, reason: String },
-    Sent { request_id: String, event_id: String },
+    Undecryptable {
+        room_id: String,
+        event_id: String,
+    },
+    MediaFailed {
+        room_id: String,
+        event_id: String,
+        reason: String,
+    },
+    Sent {
+        request_id: String,
+        event_id: String,
+    },
     Error {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
         message: String,
     },
     /// Not stored: one missed while the gateway was down is not offered again.
-    Reaction { room_id: String, event_id: String, relates_to: String, key: String },
-    CallLeft { room_id: String, reason: String },
-    CallSpeech { room_id: String },
+    Reaction {
+        room_id: String,
+        event_id: String,
+        relates_to: String,
+        key: String,
+    },
+    CallLeft {
+        room_id: String,
+        reason: String,
+    },
+    CallSpeech {
+        room_id: String,
+    },
     /// The agent deletes the file once done.
-    CallUtterance { room_id: String, path: String, started_at: u64 },
+    CallUtterance {
+        room_id: String,
+        path: String,
+        started_at: u64,
+    },
     /// Played to the end, or not played at all because it could not be.
-    CallSpoken { room_id: String, id: String },
+    CallSpoken {
+        room_id: String,
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -87,7 +118,11 @@ pub struct File {
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[cfg_attr(test, derive(Serialize))]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Command {
     Ack {
         event_id: String,
@@ -163,7 +198,8 @@ mod tests {
 
     /// Read and written back unchanged: no field is missing, misnamed, dropped or added on either side.
     fn assert_round_trips<T: serde::de::DeserializeOwned + Serialize>(example: &Value) {
-        let read: T = serde_json::from_value(example.clone()).unwrap_or_else(|error| panic!("{example}: {error}"));
+        let read: T = serde_json::from_value(example.clone())
+            .unwrap_or_else(|error| panic!("{example}: {error}"));
         assert_eq!(&serde_json::to_value(&read).unwrap(), example);
     }
 

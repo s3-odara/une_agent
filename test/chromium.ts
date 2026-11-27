@@ -8,7 +8,9 @@ import { noLandlock } from "./landlock.ts";
  * Why the tests that drive a real Chromium are skipped, if they are. A Chromium that is there but does not start fails
  * them: that is how a sandbox that keeps it from starting shows.
  */
-export const noChromium = existsSync(process.env.AGENT_CHROMIUM ?? "") ? noLandlock() : "AGENT_CHROMIUM is not set (the dev shell sets it)";
+export const noChromium = existsSync(process.env.AGENT_CHROMIUM ?? "")
+	? noLandlock()
+	: "AGENT_CHROMIUM is not set (the dev shell sets it)";
 
 /** As the agent's proxy lets the browser reach only public addresses, this one lets it reach only `port` on this host. */
 export function egressTo(port: number): Promise<EgressProxy> {

@@ -18,7 +18,11 @@ function camera() {
 				name: "shoot",
 				description: "画面を撮る",
 				parameters: obj({}),
-				execute: async () => ({ output: [{ type: "image" as const, data: Buffer.from(`shot-${++n}`).toString("base64"), mimeType: "image/png" }] }),
+				execute: async () => ({
+					output: [
+						{ type: "image" as const, data: Buffer.from(`shot-${++n}`).toString("base64"), mimeType: "image/png" },
+					],
+				}),
 			}),
 		],
 	});
@@ -27,7 +31,19 @@ function camera() {
 /** The shots sent in a request, by number, oldest first. */
 function shotsIn(request: Request): number[] {
 	return request.messages.flatMap((item) =>
-		Array.isArray(item.content) ? item.content.flatMap((block: { type: string; data?: string }) => (block.type === "image" ? [Number(Buffer.from(block.data ?? "", "base64").toString().slice(5))] : [])) : [],
+		Array.isArray(item.content)
+			? item.content.flatMap((block: { type: string; data?: string }) =>
+					block.type === "image"
+						? [
+								Number(
+									Buffer.from(block.data ?? "", "base64")
+										.toString()
+										.slice(5),
+								),
+							]
+						: [],
+				)
+			: [],
 	);
 }
 

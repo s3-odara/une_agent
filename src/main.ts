@@ -52,7 +52,10 @@ await openConfig(configPath, models);
 
 const db = new HostDb(join(config.dataDir, "host.sqlite"));
 const personas = Object.entries(config.personas).map(([name, item]) => ({ name, privateMemory: item.privateMemory }));
-const store = new MemoryStore(join(config.dataDir, "memory"), { shared: config.memory.sharedLimit, private: config.memory.privateLimit });
+const store = new MemoryStore(join(config.dataDir, "memory"), {
+	shared: config.memory.sharedLimit,
+	private: config.memory.privateLimit,
+});
 /** Looked up at each use so a config change applies at once. */
 function personaOfConversation(conversationId: number) {
 	const roomId = db.roomOf(conversationId);
@@ -70,8 +73,14 @@ const weather = jmaForecast(config.weather);
 let calendars: Calendars | undefined;
 if (config.caldav !== undefined) {
 	const password = process.env.CALDAV_PASSWORD;
-	if (password === undefined || password === "") throw new Error("config.json has a caldav section, but CALDAV_PASSWORD is not set");
-	const backend = connectCalDav({ url: config.caldav.url, username: config.caldav.username, password, calendars: Object.keys(config.caldav.calendars) });
+	if (password === undefined || password === "")
+		throw new Error("config.json has a caldav section, but CALDAV_PASSWORD is not set");
+	const backend = connectCalDav({
+		url: config.caldav.url,
+		username: config.caldav.username,
+		password,
+		calendars: Object.keys(config.caldav.calendars),
+	});
 	calendars = new Calendars(backend, config.caldav.calendars, config.timezone);
 }
 // Both browsers reach only public addresses, through this.
@@ -110,7 +119,9 @@ const extensions = [
 		configPath: resolve(configPath),
 		workDir: config.baseDir,
 		roomOf: (conversationId) => db.roomOf(conversationId),
-		...(config.voice === undefined ? {} : { voice: { spoken: config.voice.tts !== undefined, calls: config.voice.call !== undefined } }),
+		...(config.voice === undefined
+			? {}
+			: { voice: { spoken: config.voice.tts !== undefined, calls: config.voice.call !== undefined } }),
 		check: () => openConfig(configPath, models),
 		restart: () => void restartWhenIdle(),
 	}),
@@ -140,23 +151,34 @@ const extensions = [
 					db,
 					profileOf: (conversationId) => personaOfConversation(conversationId)?.browserProfile,
 					codes,
-					screenshots: { send: (roomId, txnId, image) => viaBridge().sendAttachment(roomId, txnId, { ...image, mimeType: "image/png" }), dir: join(config.dataDir, "browser-shots") },
+					screenshots: {
+						send: (roomId, txnId, image) =>
+							viaBridge().sendAttachment(roomId, txnId, { ...image, mimeType: "image/png" }),
+						dir: join(config.dataDir, "browser-shots"),
+					},
 				}),
 			]),
 	...(web === undefined ? [] : [web.extension]),
-	...(browsers === undefined && web === undefined && Object.keys(config.mcp).length === 0 ? [] : [createOutsideExtension({ extract: web !== undefined, browser: browsers !== undefined })]),
+	...(browsers === undefined && web === undefined && Object.keys(config.mcp).length === 0
+		? []
+		: [createOutsideExtension({ extract: web !== undefined, browser: browsers !== undefined })]),
 	...createToolAccessExtensions(codemodeSandbox, mcpServers),
 	// Last: it is the one section that changes within a conversation, and a change re-reads all that follows it.
 	memory,
 ];
 
 const registry = createRegistry();
-const harness = await openAgentHarness(await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")), models, context, {
-	extensions,
-	registry,
-	env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? config.baseDir }),
-	compaction: compactionSettings(models, usedModels(config), config.compaction.at),
-});
+const harness = await openAgentHarness(
+	await openNodeSqliteStorage(join(config.dataDir, "session.sqlite")),
+	models,
+	context,
+	{
+		extensions,
+		registry,
+		env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? config.baseDir }),
+		compaction: compactionSettings(models, usedModels(config), config.compaction.at),
+	},
+);
 // Their tools are installed when each server answers; the agent does not wait for them.
 const mcp = new McpServers({
 	registry,
@@ -169,15 +191,31 @@ harness.resume();
 const transcriber =
 	config.voice === undefined
 		? undefined
-		: new WhisperServer({ ...config.voice.stt, socketPath: join(config.dataDir, "stt.sock"), idleMs: config.voice.stt.idleMinutes * 60_000 });
+		: new WhisperServer({
+				...config.voice.stt,
+				socketPath: join(config.dataDir, "stt.sock"),
+				idleMs: config.voice.stt.idleMinutes * 60_000,
+			});
 const synthesizer = config.voice?.tts === undefined ? undefined : new Voicevox({ url: config.voice.tts.url });
 const voice =
 	transcriber === undefined
 		? undefined
-		: { transcriber, ...(synthesizer === undefined ? {} : { synthesizer }), outDir: join(config.dataDir, "voice", "out") };
+		: {
+				transcriber,
+				...(synthesizer === undefined ? {} : { synthesizer }),
+				outDir: join(config.dataDir, "voice", "out"),
+			};
 
 const gateway = spawnGateway(config.gatewayBin, ["run", "--config", configPath]);
-bridge = new Bridge({ harness, db, link: gateway, config, context, voice, handlers: [new CredentialCommands(credentials), codes, approvals] });
+bridge = new Bridge({
+	harness,
+	db,
+	link: gateway,
+	config,
+	context,
+	voice,
+	handlers: [new CredentialCommands(credentials), codes, approvals],
+});
 bridge.start();
 if (config.voice?.call !== undefined && transcriber !== undefined && synthesizer !== undefined) {
 	new Calls({
@@ -252,7 +290,12 @@ async function restartWhenIdle(): Promise<void> {
 
 /** Pages are read in a browser of its own, without the logins of the agent's browser. */
 function startWeb(egress: EgressProxy, maxChars: number) {
-	const reader = new PlaywrightReader({ egress, timezone: config.timezone, executablePath: config.browser?.executablePath, idleMs: (config.browser?.idleMinutes ?? 10) * 60_000 });
+	const reader = new PlaywrightReader({
+		egress,
+		timezone: config.timezone,
+		executablePath: config.browser?.executablePath,
+		idleMs: (config.browser?.idleMinutes ?? 10) * 60_000,
+	});
 	return {
 		extension: createWebExtension({ reader, maxChars }),
 		close: () => reader.close(),

@@ -4,7 +4,15 @@ import { errorMessage } from "./errors.ts";
 import { IdleChromium, launchSandboxed } from "./sandbox.ts";
 import { extractFrom, settle } from "./page.ts";
 import { httpUrl } from "./urls.ts";
-import { decodeText, interceptAsset, ReadError, readImage, type BinarySource, type Crop, type Image } from "./web-assets.ts";
+import {
+	decodeText,
+	interceptAsset,
+	ReadError,
+	readImage,
+	type BinarySource,
+	type Crop,
+	type Image,
+} from "./web-assets.ts";
 
 export { ReadError };
 
@@ -45,7 +53,10 @@ export class PlaywrightReader implements PageReader {
 	constructor(options: PlaywrightReaderOptions) {
 		this.#options = options;
 		this.#timeoutMs = options.timeoutMs ?? 45_000;
-		this.#chromium = new IdleChromium((onClosed) => launchSandboxed({ proxy: options.egress.url, executablePath: options.executablePath }, onClosed), options.idleMs);
+		this.#chromium = new IdleChromium(
+			(onClosed) => launchSandboxed({ proxy: options.egress.url, executablePath: options.executablePath }, onClosed),
+			options.idleMs,
+		);
 	}
 
 	async read(url: string, whole: boolean, signal?: AbortSignal): Promise<ReadResource> {
@@ -57,7 +68,10 @@ export class PlaywrightReader implements PageReader {
 		}
 		// The proxy refuses it anyway; asking first gives the reason instead of a browser error.
 		try {
-			await this.#options.egress.resolve(target.hostname, Number(target.port || (target.protocol === "https:" ? 443 : 80)));
+			await this.#options.egress.resolve(
+				target.hostname,
+				Number(target.port || (target.protocol === "https:" ? 443 : 80)),
+			);
 		} catch (error) {
 			if (error instanceof EgressError) throw new ReadError(error.message);
 			throw error;
@@ -125,7 +139,8 @@ export class PlaywrightReader implements PageReader {
 }
 
 function openFailure(message: string): string {
-	if (message.includes("Download is starting")) return "この URL はページではなくファイルのダウンロードなので読めません。";
+	if (message.includes("Download is starting"))
+		return "この URL はページではなくファイルのダウンロードなので読めません。";
 	if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED/.test(message)) {
 		return "接続できませんでした（このホストか内部のネットワークへの転送か、相手のサーバーに届かなかった可能性があります）。";
 	}

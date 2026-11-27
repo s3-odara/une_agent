@@ -94,7 +94,10 @@ test("a tool that failed is shown as failed, with its error", async () => {
 test("the model's thinking and what it said before calling a tool are shown, and the answer is not", async () => {
 	await using env = await progressEnv();
 	env.faux.setResponses([
-		fauxAssistantMessage([fauxThinking("天気を調べる必要がある"), fauxText("調べてみます"), fauxToolCall("lookup", { city: "Kyoto" })], { stopReason: "toolUse" }),
+		fauxAssistantMessage(
+			[fauxThinking("天気を調べる必要がある"), fauxText("調べてみます"), fauxToolCall("lookup", { city: "Kyoto" })],
+			{ stopReason: "toolUse" },
+		),
 		fauxAssistantMessage([fauxThinking("晴れと答えればよい"), fauxText("晴れです")]),
 	]);
 	const bridge = env.bridge({ progressIntervalMs: 0 });
@@ -112,7 +115,10 @@ test("the model's thinking and what it said before calling a tool are shown, and
 test("recorded thinking that is too long is shown cut short", async () => {
 	await using env = await progressEnv();
 	env.faux.setResponses([
-		fauxAssistantMessage([fauxThinking("考え".repeat(300)), fauxText("調べてみます"), fauxToolCall("lookup", { city: "Kyoto" })], { stopReason: "toolUse" }),
+		fauxAssistantMessage(
+			[fauxThinking("考え".repeat(300)), fauxText("調べてみます"), fauxToolCall("lookup", { city: "Kyoto" })],
+			{ stopReason: "toolUse" },
+		),
 		fauxAssistantMessage("晴れです"),
 	]);
 	const bridge = env.bridge({ progressIntervalMs: 0 });
@@ -176,13 +182,18 @@ test("the calls a script made are shown under it, with their arguments and how t
 	const lines = progress(env.link).shown.split("\n");
 	const at = lines.findIndex((line) => line.includes("codemode"));
 	assert.ok(lines[at + 1]?.startsWith("  ") && lines[at + 1]?.includes(TOOL_DONE) && lines[at + 1]?.includes("Kyoto"));
-	assert.ok(lines[at + 2]?.startsWith("  ") && lines[at + 2]?.includes(TOOL_FAILED) && lines[at + 2]?.includes("no such city"));
+	assert.ok(
+		lines[at + 2]?.startsWith("  ") && lines[at + 2]?.includes(TOOL_FAILED) && lines[at + 2]?.includes("no such city"),
+	);
 });
 
 test("while a script's call runs, the notice shows it running under the script", async () => {
 	const { promise: released, resolve: release } = Promise.withResolvers<string>();
 	await using env = await progressEnv(() => released);
-	env.faux.setResponses([call("codemode", { code: 'return await tools.lookup({ city: "Kyoto" });' }), fauxAssistantMessage("晴れです")]);
+	env.faux.setResponses([
+		call("codemode", { code: 'return await tools.lookup({ city: "Kyoto" });' }),
+		fauxAssistantMessage("晴れです"),
+	]);
 	const bridge = env.bridge({ progressIntervalMs: 0 });
 
 	env.link.emit(message(ROOM, "$1", "天気は?"));

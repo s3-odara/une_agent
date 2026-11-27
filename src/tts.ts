@@ -35,7 +35,11 @@ export class Voicevox implements Synthesizer {
 	async synthesize(text: string, speaker: number): Promise<Speech> {
 		const wav = await this.#synthesis(text, speaker, undefined);
 		const pcm = readWav(wav);
-		return { ogg: await this.#encode(wav), durationMs: Math.round((pcm.samples.length / pcm.sampleRate) * 1000), waveform: waveform(pcm.samples) };
+		return {
+			ogg: await this.#encode(wav),
+			durationMs: Math.round((pcm.samples.length / pcm.sampleRate) * 1000),
+			waveform: waveform(pcm.samples),
+		};
 	}
 
 	wav(text: string, speaker: number, sampleRate: number): Promise<Buffer> {
@@ -44,10 +48,16 @@ export class Voicevox implements Synthesizer {
 
 	async #synthesis(text: string, speaker: number, sampleRate: number | undefined): Promise<Buffer> {
 		const signal = AbortSignal.timeout(this.#timeoutMs);
-		let query = await this.#post(`/audio_query?${new URLSearchParams({ text, speaker: String(speaker) })}`, undefined, signal);
+		let query = await this.#post(
+			`/audio_query?${new URLSearchParams({ text, speaker: String(speaker) })}`,
+			undefined,
+			signal,
+		);
 		if (sampleRate !== undefined) {
 			// The engine resamples itself: 24 kHz by default.
-			query = Buffer.from(JSON.stringify({ ...JSON.parse(query.toString("utf8")), outputSamplingRate: sampleRate, outputStereo: false }));
+			query = Buffer.from(
+				JSON.stringify({ ...JSON.parse(query.toString("utf8")), outputSamplingRate: sampleRate, outputStereo: false }),
+			);
 		}
 		return this.#post(`/synthesis?${new URLSearchParams({ speaker: String(speaker) })}`, query, signal);
 	}
@@ -58,7 +68,10 @@ export class Voicevox implements Synthesizer {
 			signal,
 			...(body === undefined ? {} : { body, headers: { "content-type": "application/json" } }),
 		});
-		if (!response.ok) throw new Error(`VOICEVOX ${path.split("?")[0]} answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
+		if (!response.ok)
+			throw new Error(
+				`VOICEVOX ${path.split("?")[0]} answered ${response.status}: ${(await response.text()).slice(0, 200)}`,
+			);
 		return Buffer.from(await response.arrayBuffer());
 	}
 }
@@ -81,7 +94,8 @@ export function writeWav(samples: Int16Array, sampleRate: number): Buffer {
 }
 
 export function readWav(wav: Buffer): { samples: Float32Array; sampleRate: number } {
-	if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") throw new Error("not a WAV file");
+	if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE")
+		throw new Error("not a WAV file");
 	let channels = 1;
 	let sampleRate = 0;
 	let bits = 0;
@@ -123,7 +137,10 @@ export function waveform(samples: Float32Array, buckets = 64): number[] {
 
 /** Matrix clients play voice messages as Ogg Opus. */
 function wavToOggOpus(wav: Buffer): Promise<Buffer> {
-	return ffmpeg(["-f", "wav", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", "-f", "ogg", "pipe:1"], wav);
+	return ffmpeg(
+		["-f", "wav", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", "-f", "ogg", "pipe:1"],
+		wav,
+	);
 }
 
 /**
@@ -150,7 +167,16 @@ function speakable(markdown: string): string {
 	text = text
 		.split("\n")
 		.map((line) => line.trim())
-		.map((line) => (line.includes("|") ? line.replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()).filter((cell) => cell !== "").join("、") : line))
+		.map((line) =>
+			line.includes("|")
+				? line
+						.replace(/^\||\|$/g, "")
+						.split("|")
+						.map((cell) => cell.trim())
+						.filter((cell) => cell !== "")
+						.join("、")
+				: line,
+		)
 		.filter((line) => line !== "")
 		.map((line) => (/[。！？!?、,.:：]$/.test(line) ? line : `${line}。`))
 		.join("");

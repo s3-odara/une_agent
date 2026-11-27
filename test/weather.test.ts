@@ -12,9 +12,32 @@ const jmaFile = [
 	{
 		reportDatetime: "2026-11-17T05:00:00+09:00",
 		timeSeries: [
-			{ timeDefines: ["2026-11-17T05:00:00+09:00", "2026-11-18T00:00:00+09:00"], areas: [{ area: mainland, weathers: ["くもり　昼過ぎ　から　雨", "晴れ"] }, { area: island, weathers: ["雨", "雨"] }] },
-			{ timeDefines: ["2026-11-17T06:00:00+09:00", "2026-11-17T12:00:00+09:00", "2026-11-18T00:00:00+09:00"], areas: [{ area: island, pops: ["90", "90", "90"] }, { area: mainland, pops: ["30", "70", "10"] }] },
-			{ timeDefines: ["2026-11-17T09:00:00+09:00", "2026-11-17T00:00:00+09:00", "2026-11-18T00:00:00+09:00", "2026-11-18T09:00:00+09:00"], areas: [{ area: { name: "大島", code: "44172" }, temps: ["18", "18", "17", "19"] }, { area: { name: "東京", code: "44132" }, temps: ["15", "15", "9", "21"] }] },
+			{
+				timeDefines: ["2026-11-17T05:00:00+09:00", "2026-11-18T00:00:00+09:00"],
+				areas: [
+					{ area: mainland, weathers: ["くもり　昼過ぎ　から　雨", "晴れ"] },
+					{ area: island, weathers: ["雨", "雨"] },
+				],
+			},
+			{
+				timeDefines: ["2026-11-17T06:00:00+09:00", "2026-11-17T12:00:00+09:00", "2026-11-18T00:00:00+09:00"],
+				areas: [
+					{ area: island, pops: ["90", "90", "90"] },
+					{ area: mainland, pops: ["30", "70", "10"] },
+				],
+			},
+			{
+				timeDefines: [
+					"2026-11-17T09:00:00+09:00",
+					"2026-11-17T00:00:00+09:00",
+					"2026-11-18T00:00:00+09:00",
+					"2026-11-18T09:00:00+09:00",
+				],
+				areas: [
+					{ area: { name: "大島", code: "44172" }, temps: ["18", "18", "17", "19"] },
+					{ area: { name: "東京", code: "44132" }, temps: ["15", "15", "9", "21"] },
+				],
+			},
 		],
 	},
 ];
@@ -31,11 +54,15 @@ test("the forecast combines the requested area's weather and rain with its repre
 
 test("missing rain or temperature for an area is left out rather than borrowed from another area", () => {
 	const [weather, rain, temps] = jmaFile[0]!.timeSeries;
-	const file = [{ timeSeries: [
-		weather,
-		{ ...rain, areas: rain!.areas.filter((entry) => entry.area.name === island.name) },
-		{ ...temps, areas: temps!.areas.filter((entry) => entry.area.name === "大島") },
-	] }];
+	const file = [
+		{
+			timeSeries: [
+				weather,
+				{ ...rain, areas: rain!.areas.filter((entry) => entry.area.name === island.name) },
+				{ ...temps, areas: temps!.areas.filter((entry) => entry.area.name === "大島") },
+			],
+		},
+	];
 	const forecast = parseJmaForecast(file, tokyo);
 	assert.equal(forecast.area, mainland.name);
 	assert.ok(forecast.days.some((day) => day.weather !== undefined));
@@ -55,7 +82,9 @@ test("the model can request a municipality without changing the default forecast
 	const results: ToolResult[] = [];
 	await using env = await agentEnv({
 		config: { weather: { areaCode: "130010" } },
-		extensions: ({ config }) => [createWeatherExtension(jmaForecast(config.weather, async () => Response.json(jmaFile)))],
+		extensions: ({ config }) => [
+			createWeatherExtension(jmaForecast(config.weather, async () => Response.json(jmaFile))),
+		],
 	});
 	env.faux.setResponses([
 		call("weather_forecast_area", { place: "東京都大島町" }),
@@ -101,8 +130,10 @@ test("without a configured default, the model can resolve an ambiguous place and
 	});
 	await using env = await agentEnv({ extensions: () => [createWeatherExtension(weather)] });
 	env.faux.setResponses([
-		call("weather_forecast_area", { place: "府中市" }), noting(results),
-		call("weather_forecast_area", { place: "東京都府中市" }), noting(results),
+		call("weather_forecast_area", { place: "府中市" }),
+		noting(results),
+		call("weather_forecast_area", { place: "東京都府中市" }),
+		noting(results),
 	]);
 	const bridge = env.bridge();
 	env.link.emit(message("!a:example.org", "$1", "府中市の天気は?"));
@@ -153,13 +184,31 @@ test("a prefecture with one forecast area does not require a choice", async () =
 
 test("a weekly request uses the covering region and labels its actual temperature station", async () => {
 	const dates = ["2026-11-18T00:00:00+09:00", "2026-11-19T00:00:00+09:00"];
-	const weather = jmaForecast(undefined, async () => Response.json([jmaFile[0], {
-			reportDatetime: "2026-11-17T11:00:00+09:00",
-			timeSeries: [
-				{ timeDefines: dates, areas: [{ area: { code: "140000", name: "神奈川県" }, weatherCodes: ["100", "212"], pops: ["", "50"], reliabilities: ["", "B"] }] },
-				{ timeDefines: dates.slice(1), areas: [{ area: { code: "46106", name: "横浜" }, tempsMin: ["8"], tempsMax: ["18"] }] },
-			],
-	}]));
+	const weather = jmaForecast(undefined, async () =>
+		Response.json([
+			jmaFile[0],
+			{
+				reportDatetime: "2026-11-17T11:00:00+09:00",
+				timeSeries: [
+					{
+						timeDefines: dates,
+						areas: [
+							{
+								area: { code: "140000", name: "神奈川県" },
+								weatherCodes: ["100", "212"],
+								pops: ["", "50"],
+								reliabilities: ["", "B"],
+							},
+						],
+					},
+					{
+						timeDefines: dates.slice(1),
+						areas: [{ area: { code: "46106", name: "横浜" }, tempsMin: ["8"], tempsMax: ["18"] }],
+					},
+				],
+			},
+		]),
+	);
 	const results: ToolResult[] = [];
 	await using env = await agentEnv({ extensions: () => [createWeatherExtension(weather)] });
 	env.faux.setResponses([call("weather_forecast_area", { place: "小田原市", period: "week" }), noting(results)]);
@@ -178,7 +227,10 @@ test("a weekly request uses the covering region and labels its actual temperatur
 test("three-hour queries in one office disclose the same areas but show the requested area locally", async () => {
 	const requested = new Set<string>();
 	const weather = jmaForecast(undefined, async (input) => {
-		const area = new URL(String(input)).pathname.split("/").at(-1)!.replace(/\.json$/, "");
+		const area = new URL(String(input)).pathname
+			.split("/")
+			.at(-1)!
+			.replace(/\.json$/, "");
 		requested.add(area);
 		const west = area === "140020";
 		return Response.json({
@@ -186,7 +238,8 @@ test("three-hour queries in one office disclose the same areas but show the requ
 			reportDateTime: "2026-11-17T11:00:00+09:00",
 			areaTimeSeries: {
 				timeDefines: [{ dateTime: "2026-11-17T15:00:00+09:00", duration: "PT3H" }],
-				weather: [west ? "雨" : "晴れ"], wind: [{ direction: "北", range: "3 5" }],
+				weather: [west ? "雨" : "晴れ"],
+				wind: [{ direction: "北", range: "3 5" }],
 			},
 			pointTimeSeries: {
 				pointNameJP: west ? "小田原" : "横浜",
@@ -198,8 +251,10 @@ test("three-hour queries in one office disclose the same areas but show the requ
 	const results: ToolResult[] = [];
 	await using env = await agentEnv({ extensions: () => [createWeatherExtension(weather)] });
 	env.faux.setResponses([
-		call("weather_forecast_area", { place: "小田原市", period: "3h" }), noting(results),
-		call("weather_forecast_area", { place: "横浜市", period: "3h" }), noting(results),
+		call("weather_forecast_area", { place: "小田原市", period: "3h" }),
+		noting(results),
+		call("weather_forecast_area", { place: "横浜市", period: "3h" }),
+		noting(results),
 	]);
 	const bridge = env.bridge();
 	env.link.emit(message("!a:example.org", "$1", "小田原の時間ごとの天気は？"));

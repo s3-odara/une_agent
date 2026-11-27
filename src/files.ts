@@ -20,6 +20,7 @@ export function readJsonObject(path: string): Record<string, unknown> {
 		throw error;
 	}
 	const value: unknown = JSON.parse(text);
-	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError(`${path} is not a JSON object`);
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		throw new TypeError(`${path} is not a JSON object`);
 	return value as Record<string, unknown>;
 }

@@ -20,18 +20,27 @@ import { ics, MemoryCalDav } from "./fakes.ts";
 
 const tz = "Asia/Tokyo";
 const at = (local: string) => localToEpoch(local, tz);
-const raw = (data: string, file = "x.ics"): RawObject => ({ url: `https://dav.example.org/cal/Home/${file}`, etag: '"1"', data });
+const raw = (data: string, file = "x.ics"): RawObject => ({
+	url: `https://dav.example.org/cal/Home/${file}`,
+	etag: '"1"',
+	data,
+});
 const week = { from: at("2026-11-16T00:00"), to: at("2026-11-23T00:00") };
 const NOW = at("2026-11-17T09:00");
 
-const eventOf = (...lines: string[]) => parseEvents(raw(ics("BEGIN:VEVENT", "UID:1", "SUMMARY:歯医者", ...lines, "END:VEVENT")), "Home", week, tz)[0];
-const taskOf = (...lines: string[]) => parseTodo(raw(ics("BEGIN:VTODO", "UID:t", "SUMMARY:レポート提出", ...lines, "END:VTODO")), "ToDo", tz);
+const eventOf = (...lines: string[]) =>
+	parseEvents(raw(ics("BEGIN:VEVENT", "UID:1", "SUMMARY:歯医者", ...lines, "END:VEVENT")), "Home", week, tz)[0];
+const taskOf = (...lines: string[]) =>
+	parseTodo(raw(ics("BEGIN:VTODO", "UID:t", "SUMMARY:レポート提出", ...lines, "END:VTODO")), "ToDo", tz);
 
 for (const [form, when] of [
 	["in UTC", "DTSTART:20261117T063000Z"],
 	["in a zone of its own", "DTSTART;TZID=America/New_York:20261117T013000"],
 	["with no zone (floating), in the user's zone", "DTSTART:20261117T153000"],
-	["with a zone name that is not one (as Outlook writes), in the user's zone", "DTSTART;TZID=Tokyo Standard Time:20261117T153000"],
+	[
+		"with a zone name that is not one (as Outlook writes), in the user's zone",
+		"DTSTART;TZID=Tokyo Standard Time:20261117T153000",
+	],
 ] as const) {
 	test(`a start time ${form} is read as the instant it means`, () => {
 		assert.equal(eventOf(when, "DURATION:PT30M")?.start, at("2026-11-17T15:30"));
@@ -50,12 +59,31 @@ test("an event's id is its calendar and file", () => {
 });
 
 for (const [what, range, count] of [
-	["a range that starts as the event ends leaves it out", { from: at("2026-11-17T16:00"), to: at("2026-11-18T00:00") }, 0],
-	["a range that starts a minute before the end has it", { from: at("2026-11-17T15:59"), to: at("2026-11-18T00:00") }, 1],
-	["a range that ends as the event starts leaves it out", { from: at("2026-11-17T00:00"), to: at("2026-11-17T15:30") }, 0],
+	[
+		"a range that starts as the event ends leaves it out",
+		{ from: at("2026-11-17T16:00"), to: at("2026-11-18T00:00") },
+		0,
+	],
+	[
+		"a range that starts a minute before the end has it",
+		{ from: at("2026-11-17T15:59"), to: at("2026-11-18T00:00") },
+		1,
+	],
+	[
+		"a range that ends as the event starts leaves it out",
+		{ from: at("2026-11-17T00:00"), to: at("2026-11-17T15:30") },
+		0,
+	],
 ] as const) {
 	test(`only what overlaps the range is returned: ${what}`, () => {
-		const data = ics("BEGIN:VEVENT", "UID:1", "SUMMARY:x", "DTSTART:20261117T063000Z", "DTEND:20261117T070000Z", "END:VEVENT");
+		const data = ics(
+			"BEGIN:VEVENT",
+			"UID:1",
+			"SUMMARY:x",
+			"DTSTART:20261117T063000Z",
+			"DTEND:20261117T070000Z",
+			"END:VEVENT",
+		);
 		assert.equal(parseEvents(raw(data), "Home", range, tz).length, count);
 	});
 }
@@ -77,7 +105,9 @@ const daily = (rule: string[] = [], exception: string[] = []) => {
 		"END:VEVENT",
 		...exception,
 	);
-	return parseEvents(raw(data), "Home", { from: at("2026-11-16T00:00"), to: at("2026-11-21T00:00") }, tz).map((item) => [item.summary, item.start] as const);
+	return parseEvents(raw(data), "Home", { from: at("2026-11-16T00:00"), to: at("2026-11-21T00:00") }, tz).map(
+		(item) => [item.summary, item.start] as const,
+	);
 };
 
 test("a recurring event is expanded into its occurrences in the range", () => {
@@ -90,7 +120,15 @@ test("a recurring event is expanded into its occurrences in the range", () => {
 test("an occurrence moved on its own is read where it was moved to, as it was changed", () => {
 	const occurrences = daily(
 		[],
-		["BEGIN:VEVENT", "UID:r", "RECURRENCE-ID;TZID=Asia/Tokyo:20261118T080000", "SUMMARY:ゴミ捨て（夜）", "DTSTART;TZID=Asia/Tokyo:20261118T200000", "DTEND;TZID=Asia/Tokyo:20261118T201500", "END:VEVENT"],
+		[
+			"BEGIN:VEVENT",
+			"UID:r",
+			"RECURRENCE-ID;TZID=Asia/Tokyo:20261118T080000",
+			"SUMMARY:ゴミ捨て（夜）",
+			"DTSTART;TZID=Asia/Tokyo:20261118T200000",
+			"DTEND;TZID=Asia/Tokyo:20261118T201500",
+			"END:VEVENT",
+		],
 	);
 	assert.ok(occurrences.some(([summary, start]) => summary === "ゴミ捨て（夜）" && start === at("2026-11-18T20:00")));
 	assert.ok(!occurrences.some(([, start]) => start === at("2026-11-18T08:00")));
@@ -99,7 +137,16 @@ test("an occurrence moved on its own is read where it was moved to, as it was ch
 test("an occurrence cancelled on its own is left out", () => {
 	const occurrences = daily(
 		[],
-		["BEGIN:VEVENT", "UID:r", "RECURRENCE-ID;TZID=Asia/Tokyo:20261119T080000", "STATUS:CANCELLED", "SUMMARY:ゴミ捨て", "DTSTART;TZID=Asia/Tokyo:20261119T080000", "DTEND;TZID=Asia/Tokyo:20261119T081500", "END:VEVENT"],
+		[
+			"BEGIN:VEVENT",
+			"UID:r",
+			"RECURRENCE-ID;TZID=Asia/Tokyo:20261119T080000",
+			"STATUS:CANCELLED",
+			"SUMMARY:ゴミ捨て",
+			"DTSTART;TZID=Asia/Tokyo:20261119T080000",
+			"DTEND;TZID=Asia/Tokyo:20261119T081500",
+			"END:VEVENT",
+		],
 	);
 	assert.ok(!occurrences.some(([, start]) => start === at("2026-11-19T08:00")));
 });
@@ -128,21 +175,53 @@ test("a task without either is open", () => {
 });
 
 test("when an item was last written is read from its stamps", () => {
-	assert.equal(taskOf("DTSTAMP:20261116T010000Z", "LAST-MODIFIED:20261117T010000Z")?.modified, Date.UTC(2026, 10, 17, 1));
+	assert.equal(
+		taskOf("DTSTAMP:20261116T010000Z", "LAST-MODIFIED:20261117T010000Z")?.modified,
+		Date.UTC(2026, 10, 17, 1),
+	);
 });
 
 test("an event is shown with its day, times, title and place", () => {
-	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "歯医者", location: "駅前", allDay: false, start: at("2026-11-17T15:30"), end: at("2026-11-17T16:30") };
+	const item: EventItem = {
+		kind: "event",
+		id: "",
+		calendar: "",
+		uid: "",
+		summary: "歯医者",
+		location: "駅前",
+		allDay: false,
+		start: at("2026-11-17T15:30"),
+		end: at("2026-11-17T16:30"),
+	};
 	assert.equal(formatEvent(item, tz), "11/17(火) 15:30–16:30 歯医者 @駅前");
 });
 
 test("an all-day event over several days is shown as the range of its days", () => {
-	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "旅行", allDay: true, start: at("2026-11-20T00:00"), end: at("2026-11-23T00:00") };
+	const item: EventItem = {
+		kind: "event",
+		id: "",
+		calendar: "",
+		uid: "",
+		summary: "旅行",
+		allDay: true,
+		start: at("2026-11-20T00:00"),
+		end: at("2026-11-23T00:00"),
+	};
 	assert.equal(formatEvent(item, tz), "11/20(金)〜11/22(日) 終日 旅行");
 });
 
 test("a recurring event is shown as one, with its rule", () => {
-	const item: EventItem = { kind: "event", id: "", calendar: "", uid: "", summary: "ゴミ捨て", allDay: false, rule: "FREQ=DAILY", start: at("2026-11-17T08:00"), end: at("2026-11-17T08:15") };
+	const item: EventItem = {
+		kind: "event",
+		id: "",
+		calendar: "",
+		uid: "",
+		summary: "ゴミ捨て",
+		allDay: false,
+		rule: "FREQ=DAILY",
+		start: at("2026-11-17T08:00"),
+		end: at("2026-11-17T08:15"),
+	};
 	assert.match(formatEvent(item, tz), /繰り返し.*FREQ=DAILY/);
 });
 
@@ -152,7 +231,12 @@ test("a task is shown with its due date, and its time when it has one", () => {
 });
 
 test("a built event reads back as asked, an hour long when no end is given, without the spaces around its title", () => {
-	const event = parseEvents(raw(buildEvent("u1", { summary: " 歯医者 ", start: "2026-11-17T15:30", location: "駅前" }, tz, NOW)), "Home", week, tz)[0];
+	const event = parseEvents(
+		raw(buildEvent("u1", { summary: " 歯医者 ", start: "2026-11-17T15:30", location: "駅前" }, tz, NOW)),
+		"Home",
+		week,
+		tz,
+	)[0];
 	assert.deepEqual(
 		[event?.uid, event?.summary, event?.location, event?.start, event?.end],
 		["u1", "歯医者", "駅前", at("2026-11-17T15:30"), at("2026-11-17T16:30")],
@@ -160,12 +244,21 @@ test("a built event reads back as asked, an hour long when no end is given, with
 });
 
 test("a built all-day event covers its last day", () => {
-	const event = parseEvents(raw(buildEvent("u2", { summary: "旅行", start: "2026-11-20", end: "2026-11-22" }, tz, NOW)), "Home", week, tz)[0];
+	const event = parseEvents(
+		raw(buildEvent("u2", { summary: "旅行", start: "2026-11-20", end: "2026-11-22" }, tz, NOW)),
+		"Home",
+		week,
+		tz,
+	)[0];
 	assert.deepEqual([event?.allDay, event?.start, event?.end], [true, at("2026-11-20T00:00"), at("2026-11-23T00:00")]);
 });
 
 test("a built task reads back with its due date and time", () => {
-	const todo = parseTodo(raw(buildTodo("u3", { summary: "レポート提出", due: "2026-11-20T17:00" }, tz, NOW)), "ToDo", tz);
+	const todo = parseTodo(
+		raw(buildTodo("u3", { summary: "レポート提出", due: "2026-11-20T17:00" }, tz, NOW)),
+		"ToDo",
+		tz,
+	);
 	assert.deepEqual(todo?.due, { date: "2026-11-20", at: at("2026-11-20T17:00") });
 });
 
@@ -201,7 +294,10 @@ test("moving an event's start keeps its length", () => {
 
 test("a change keeps what it does not touch, the alarm too", () => {
 	const changed = applyChanges(DENTIST, { summary: "歯科検診" }, tz, NOW).data;
-	assert.deepEqual([readBack(changed).summary, readBack(changed).location, readBack(changed).start], ["歯科検診", "駅前", at("2026-11-17T15:30")]);
+	assert.deepEqual(
+		[readBack(changed).summary, readBack(changed).location, readBack(changed).start],
+		["歯科検診", "駅前", at("2026-11-17T15:30")],
+	);
 	assert.match(changed, /BEGIN:VALARM/);
 });
 
@@ -219,7 +315,14 @@ test("a due date for an event is refused", () => {
 
 function store() {
 	const backend = new MemoryCalDav();
-	return { backend, calendars: new Calendars(backend, { Home: { kind: "events", description: "" }, ToDo: { kind: "todos", description: "" } }, tz) };
+	return {
+		backend,
+		calendars: new Calendars(
+			backend,
+			{ Home: { kind: "events", description: "" }, ToDo: { kind: "todos", description: "" } },
+			tz,
+		),
+	};
 }
 
 test("creating again under the same UID, as a rerun after a crash does, stores nothing new", async () => {
@@ -260,14 +363,25 @@ test("an item that does not exist, or a calendar that is not configured, is refu
 });
 
 /** Mondays at 08:00, four of them in `month`. */
-const WEEKLY = buildEvent("w", { summary: "朝会", start: "2026-11-16T08:00", end: "2026-11-16T08:30", rrule: "FREQ=WEEKLY;BYDAY=MO" }, tz, NOW);
+const WEEKLY = buildEvent(
+	"w",
+	{ summary: "朝会", start: "2026-11-16T08:00", end: "2026-11-16T08:30", rrule: "FREQ=WEEKLY;BYDAY=MO" },
+	tz,
+	NOW,
+);
 const month = { from: at("2026-11-16T00:00"), to: at("2026-12-14T00:00") };
-const occurrences = (data: string) => parseEvents(raw(data), "Home", month, tz).map((event) => `${localMinute(event.start, tz)} ${event.summary}`);
+const occurrences = (data: string) =>
+	parseEvents(raw(data), "Home", month, tz).map((event) => `${localMinute(event.start, tz)} ${event.summary}`);
 const thisOne = (occurrence: string) => ({ scope: "this" as const, occurrence });
 const all = { scope: "all" as const };
 
 test("a weekly event made at an early hour falls on the weekday asked for, not on the day before as in UTC", () => {
-	assert.deepEqual(occurrences(WEEKLY), ["2026-11-16T08:00 朝会", "2026-11-23T08:00 朝会", "2026-11-30T08:00 朝会", "2026-12-07T08:00 朝会"]);
+	assert.deepEqual(occurrences(WEEKLY), [
+		"2026-11-16T08:00 朝会",
+		"2026-11-23T08:00 朝会",
+		"2026-11-30T08:00 朝会",
+		"2026-12-07T08:00 朝会",
+	]);
 });
 
 test("each occurrence is listed under when it falls, and an all-day one under its day", () => {
@@ -280,12 +394,25 @@ test("each occurrence is listed under when it falls, and an all-day one under it
 });
 
 test("a repeat given a last day keeps that day's occurrence, even late at night", () => {
-	const nightly = buildEvent("n", { summary: "日記", start: "2026-11-16T23:30", rrule: "FREQ=DAILY;UNTIL=20261118" }, tz, NOW);
+	const nightly = buildEvent(
+		"n",
+		{ summary: "日記", start: "2026-11-16T23:30", rrule: "FREQ=DAILY;UNTIL=20261118" },
+		tz,
+		NOW,
+	);
 	assert.deepEqual(occurrences(nightly), ["2026-11-16T23:30 日記", "2026-11-17T23:30 日記", "2026-11-18T23:30 日記"]);
 });
 
 test("a rule another client ended with a UNTIL in UTC keeps its last occurrence late in the day", () => {
-	const data = ics("BEGIN:VEVENT", "UID:n", "SUMMARY:日記", "DTSTART;TZID=Asia/Tokyo:20261116T233000", "DURATION:PT15M", "RRULE:FREQ=DAILY;UNTIL=20261118T145959Z", "END:VEVENT");
+	const data = ics(
+		"BEGIN:VEVENT",
+		"UID:n",
+		"SUMMARY:日記",
+		"DTSTART;TZID=Asia/Tokyo:20261116T233000",
+		"DURATION:PT15M",
+		"RRULE:FREQ=DAILY;UNTIL=20261118T145959Z",
+		"END:VEVENT",
+	);
 	assert.equal(occurrences(data).at(-1), "2026-11-18T23:30 日記");
 });
 
@@ -304,15 +431,31 @@ test("a recurring event is changed or removed only when told whether one occurre
 });
 
 test("changing one occurrence leaves the others as they were", () => {
-	const changed = applyChanges(WEEKLY, { start: "2026-11-24T10:00", summary: "朝会（火曜）" }, tz, NOW, thisOne("2026-11-23T08:00")).data;
-	assert.deepEqual(occurrences(changed), ["2026-11-16T08:00 朝会", "2026-11-24T10:00 朝会（火曜）", "2026-11-30T08:00 朝会", "2026-12-07T08:00 朝会"]);
+	const changed = applyChanges(
+		WEEKLY,
+		{ start: "2026-11-24T10:00", summary: "朝会（火曜）" },
+		tz,
+		NOW,
+		thisOne("2026-11-23T08:00"),
+	).data;
+	assert.deepEqual(occurrences(changed), [
+		"2026-11-16T08:00 朝会",
+		"2026-11-24T10:00 朝会（火曜）",
+		"2026-11-30T08:00 朝会",
+		"2026-12-07T08:00 朝会",
+	]);
 });
 
 test("a moved occurrence is still listed as the occurrence it was, so it can be changed again", () => {
 	const moved = applyChanges(WEEKLY, { start: "2026-11-24T10:00" }, tz, NOW, thisOne("2026-11-23T08:00")).data;
 	assert.equal(parseEvents(raw(moved), "Home", month, tz)[1]?.occurrence, "2026-11-23T08:00");
 	const again = applyChanges(moved, { start: "2026-11-25T10:00" }, tz, NOW, thisOne("2026-11-23T08:00")).data;
-	assert.deepEqual(occurrences(again), ["2026-11-16T08:00 朝会", "2026-11-25T10:00 朝会", "2026-11-30T08:00 朝会", "2026-12-07T08:00 朝会"]);
+	assert.deepEqual(occurrences(again), [
+		"2026-11-16T08:00 朝会",
+		"2026-11-25T10:00 朝会",
+		"2026-11-30T08:00 朝会",
+		"2026-12-07T08:00 朝会",
+	]);
 });
 
 test("the same change to one occurrence applied twice ends as it did once", () => {
@@ -334,7 +477,11 @@ for (const [what, target, changes] of [
 test("removing one occurrence leaves the rest, and removing it again changes nothing", () => {
 	const removed = removeFrom(WEEKLY, tz, NOW, thisOne("2026-11-23T08:00"));
 	assert.ok(typeof removed === "object");
-	assert.deepEqual(occurrences(removed.data), ["2026-11-16T08:00 朝会", "2026-11-30T08:00 朝会", "2026-12-07T08:00 朝会"]);
+	assert.deepEqual(occurrences(removed.data), [
+		"2026-11-16T08:00 朝会",
+		"2026-11-30T08:00 朝会",
+		"2026-12-07T08:00 朝会",
+	]);
 	assert.equal(removeFrom(removed.data, tz, NOW, thisOne("2026-11-23T08:00")), "unchanged");
 });
 
@@ -349,18 +496,30 @@ function edited(): string {
 
 test("moving every occurrence moves the ones changed on their own only in what they did not change", () => {
 	const moved = applyChanges(edited(), { start: "2026-11-16T09:00" }, tz, NOW, all);
-	assert.deepEqual(occurrences(moved.data), ["2026-11-16T09:00 朝会", "2026-11-24T10:00 朝会", "2026-11-30T09:00 朝会（オンライン）"]);
+	assert.deepEqual(occurrences(moved.data), [
+		"2026-11-16T09:00 朝会",
+		"2026-11-24T10:00 朝会",
+		"2026-11-30T09:00 朝会（オンライン）",
+	]);
 	assert.equal(moved.dropped, 0);
 });
 
 test("renaming every occurrence renames the ones that kept the old name", () => {
 	const renamed = applyChanges(edited(), { summary: "定例" }, tz, NOW, all).data;
-	assert.deepEqual(occurrences(renamed), ["2026-11-16T08:00 定例", "2026-11-24T10:00 定例", "2026-11-30T08:00 朝会（オンライン）"]);
+	assert.deepEqual(occurrences(renamed), [
+		"2026-11-16T08:00 定例",
+		"2026-11-24T10:00 定例",
+		"2026-11-30T08:00 朝会（オンライン）",
+	]);
 });
 
 test("a new rule keeps what was changed or removed in the occurrences it still has, and counts what it drops", () => {
 	const shorter = applyChanges(edited(), { rrule: "FREQ=WEEKLY;BYDAY=MO;UNTIL=20261130" }, tz, NOW, all);
-	assert.deepEqual(occurrences(shorter.data), ["2026-11-16T08:00 朝会", "2026-11-24T10:00 朝会", "2026-11-30T08:00 朝会（オンライン）"]);
+	assert.deepEqual(occurrences(shorter.data), [
+		"2026-11-16T08:00 朝会",
+		"2026-11-24T10:00 朝会",
+		"2026-11-30T08:00 朝会（オンライン）",
+	]);
 	assert.equal(shorter.dropped, 1);
 });
 
@@ -373,12 +532,22 @@ test("ending the repeating leaves the first occurrence as a single event, droppi
 test("a single event given a rule repeats on its weekday, even one written in UTC", () => {
 	const monday = buildEvent("m", { summary: "ジム", start: "2026-11-16T07:00" }, tz, NOW);
 	const weekly = applyChanges(monday, { rrule: "FREQ=WEEKLY;BYDAY=MO" }, tz, NOW).data;
-	assert.deepEqual(occurrences(weekly), ["2026-11-16T07:00 ジム", "2026-11-23T07:00 ジム", "2026-11-30T07:00 ジム", "2026-12-07T07:00 ジム"]);
+	assert.deepEqual(occurrences(weekly), [
+		"2026-11-16T07:00 ジム",
+		"2026-11-23T07:00 ジム",
+		"2026-11-30T07:00 ジム",
+		"2026-12-07T07:00 ジム",
+	]);
 });
 
 test("removing every occurrence removes the whole event", async () => {
 	const { backend, calendars } = store();
-	const id = await calendars.create("Home", "w", { summary: "朝会", start: "2026-11-16T08:00", rrule: "FREQ=WEEKLY;BYDAY=MO" }, NOW);
+	const id = await calendars.create(
+		"Home",
+		"w",
+		{ summary: "朝会", start: "2026-11-16T08:00", rrule: "FREQ=WEEKLY;BYDAY=MO" },
+		NOW,
+	);
 	await calendars.remove(`${id}@2026-11-23T08:00`, NOW, "all");
 	assert.deepEqual(backend.files("Home"), []);
 });
@@ -386,7 +555,9 @@ test("removing every occurrence removes the whole event", async () => {
 const tzArb = fc.constantFrom("Asia/Tokyo", "America/New_York", "UTC");
 const labelArb = fc.stringMatching(/^[A-Za-z0-9_-]{1,16}$/);
 const dateArb = fc.integer({ min: 0, max: 720 }).map((offset) => addDays("2026-01-01", offset));
-const minuteOfDayArb = fc.integer({ min: 0, max: 23 * 60 + 59 }).map((m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`);
+const minuteOfDayArb = fc
+	.integer({ min: 0, max: 23 * 60 + 59 })
+	.map((m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`);
 
 test("property: built single events round-trip across time zones including DST", () => {
 	fc.assert(
@@ -467,7 +638,10 @@ test("property: changing or removing one occurrence leaves all other occurrences
 				const movedStart = localMinute(target.start + shiftHours * 3_600_000, zone);
 				const movedMs = localToEpoch(movedStart, zone);
 				fc.pre(movedMs > target.start);
-				const changed = applyChanges(data, { start: movedStart, summary: newSummary }, zone, NOW, { scope: "this", occurrence: occ }).data;
+				const changed = applyChanges(data, { start: movedStart, summary: newSummary }, zone, NOW, {
+					scope: "this",
+					occurrence: occ,
+				}).data;
 				const afterEdit = parseEvents(raw(changed), "Home", range, zone);
 				assert.deepEqual(others(afterEdit), others(before));
 				const edited = afterEdit.find((item) => item.occurrence === occ);
@@ -479,7 +653,10 @@ test("property: changing or removing one occurrence leaves all other occurrences
 				assert.ok(typeof removed === "object");
 				const afterRemove = parseEvents(raw(removed.data), "Home", range, zone);
 				assert.deepEqual(others(afterRemove), others(before));
-				assert.equal(afterRemove.some((item) => item.occurrence === occ), false);
+				assert.equal(
+					afterRemove.some((item) => item.occurrence === occ),
+					false,
+				);
 				assert.equal(removeFrom(removed.data, zone, NOW, { scope: "this", occurrence: occ }), "unchanged");
 			},
 		),
@@ -495,7 +672,12 @@ type RecOp =
 	| { readonly kind: "stopRepeat" };
 
 const recOpArb: fc.Arbitrary<RecOp> = fc.oneof(
-	fc.record({ kind: fc.constant("editThis" as const), index: fc.integer({ min: 0, max: 5 }), shiftHours: fc.integer({ min: -2, max: 2 }), summary: labelArb }),
+	fc.record({
+		kind: fc.constant("editThis" as const),
+		index: fc.integer({ min: 0, max: 5 }),
+		shiftHours: fc.integer({ min: -2, max: 2 }),
+		summary: labelArb,
+	}),
 	fc.record({ kind: fc.constant("removeThis" as const), index: fc.integer({ min: 0, max: 5 }) }),
 	fc.record({ kind: fc.constant("editAllSummary" as const), summary: labelArb }),
 	fc.record({ kind: fc.constant("editAllShift" as const), shiftHours: fc.integer({ min: -3, max: 3 }) }),
@@ -505,7 +687,12 @@ const recOpArb: fc.Arbitrary<RecOp> = fc.oneof(
 test("property: arbitrary sequences of this/all edits and removals keep a recurring event consistent", () => {
 	fc.assert(
 		fc.property(tzArb, dateArb, fc.array(recOpArb, { minLength: 1, maxLength: 6 }), (zone, date, ops) => {
-			let data = buildEvent("u-seq", { summary: "base", start: `${date}T09:00`, end: `${date}T10:00`, rrule: "FREQ=DAILY;COUNT=8" }, zone, NOW);
+			let data = buildEvent(
+				"u-seq",
+				{ summary: "base", start: `${date}T09:00`, end: `${date}T10:00`, rrule: "FREQ=DAILY;COUNT=8" },
+				zone,
+				NOW,
+			);
 			const baseMs = localToEpoch(`${date}T09:00`, zone);
 			const range = { from: baseMs - 14 * 86_400_000, to: baseMs + 30 * 86_400_000 };
 			let recurring = true;
@@ -518,7 +705,10 @@ test("property: arbitrary sequences of this/all edits and removals keep a recurr
 					if (current.length === 0) continue;
 					const target = current[op.index % current.length]!;
 					const nextStart = localMinute(target.start + op.shiftHours * 3_600_000, zone);
-					data = applyChanges(data, { start: nextStart, summary: op.summary }, zone, NOW, { scope: "this", occurrence: target.occurrence }).data;
+					data = applyChanges(data, { start: nextStart, summary: op.summary }, zone, NOW, {
+						scope: "this",
+						occurrence: target.occurrence,
+					}).data;
 				} else if (op.kind === "removeThis") {
 					if (current.length === 0) continue;
 					const target = current[op.index % current.length]!;
@@ -526,7 +716,10 @@ test("property: arbitrary sequences of this/all edits and removals keep a recurr
 					assert.ok(typeof res === "object");
 					data = res.data;
 					const after = parseEvents(raw(data), "Home", range, zone);
-					assert.equal(after.some((item) => item.occurrence === target.occurrence), false);
+					assert.equal(
+						after.some((item) => item.occurrence === target.occurrence),
+						false,
+					);
 				} else if (op.kind === "editAllSummary") {
 					data = applyChanges(data, { summary: op.summary }, zone, NOW, { scope: "all" }).data;
 				} else if (op.kind === "editAllShift") {

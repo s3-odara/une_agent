@@ -4,7 +4,10 @@ import { modelFor } from "../src/config.ts";
 import { testConfig } from "./env.ts";
 
 test("a removed call transcript opt-out is rejected instead of silently publishing transcripts", () => {
-	assert.throws(() => testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { transcript: false } } }), /voice\.call\.transcript/);
+	assert.throws(
+		() => testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { transcript: false } } }),
+		/voice\.call\.transcript/,
+	);
 });
 
 test("a persona that a room uses but nobody defined is rejected when the config is read", () => {
@@ -12,7 +15,10 @@ test("a persona that a room uses but nobody defined is rejected when the config 
 });
 
 test("a persona name that could not be a file name is rejected", () => {
-	assert.throws(() => testConfig("/nowhere", { personas: { "../escape": "personas/default.md" }, defaultPersona: "../escape" }), /\.\.\/escape/);
+	assert.throws(
+		() => testConfig("/nowhere", { personas: { "../escape": "personas/default.md" }, defaultPersona: "../escape" }),
+		/\.\.\/escape/,
+	);
 });
 
 test("a weather default must select a forecast area, not just a forecast office", () => {
@@ -28,11 +34,17 @@ test("a call's VAD setting accepts partial overrides and rejects out-of-range va
 		testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { vad: { endSilenceMs: 700 } } } }).voice?.call?.vad,
 		{ endSilenceMs: 700 },
 	);
-	assert.throws(() => testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { vad: { threshold: 1.5 } } } }), /threshold/);
+	assert.throws(
+		() => testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { vad: { threshold: 1.5 } } } }),
+		/threshold/,
+	);
 });
 
 test("a model is written as provider/model, and only the first slash splits it", () => {
-	assert.deepEqual(modelFor(testConfig("/nowhere", { model: "openrouter/anthropic/claude-fable-5.2" }), "default"), { provider: "openrouter", modelId: "anthropic/claude-fable-5.2" });
+	assert.deepEqual(modelFor(testConfig("/nowhere", { model: "openrouter/anthropic/claude-fable-5.2" }), "default"), {
+		provider: "openrouter",
+		modelId: "anthropic/claude-fable-5.2",
+	});
 	for (const model of ["claude-fable-5-2", "/x", "anthropic/", { provider: "anthropic", modelId: "x" }]) {
 		assert.throws(() => testConfig("/nowhere", { model }), /provider\/model/, JSON.stringify(model));
 	}

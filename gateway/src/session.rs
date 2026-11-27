@@ -19,7 +19,8 @@ fn session_path(data_dir: &Path) -> PathBuf {
 /// The store holds the E2EE keys, so the bot stays the same device across restarts.
 async fn build_client(config: &Config) -> Result<Client> {
     let data_dir = config.data_dir();
-    std::fs::create_dir_all(&data_dir).with_context(|| format!("creating {}", data_dir.display()))?;
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("creating {}", data_dir.display()))?;
     let client = Client::builder()
         .homeserver_url(&config.matrix.homeserver)
         .sqlite_store(data_dir.join("matrix-store"), None)
@@ -43,11 +44,15 @@ pub async fn restore(config: &Config) -> Result<Client> {
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            bail!("no Matrix session at {}; run `matrix-gateway login` first", path.display())
+            bail!(
+                "no Matrix session at {}; run `matrix-gateway login` first",
+                path.display()
+            )
         }
         Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
     };
-    let session: MatrixSession = serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
+    let session: MatrixSession =
+        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
     ensure!(
         session.meta.user_id == config.matrix.user_id,
         "Matrix session at {} is for {}, but config expects {}",
@@ -56,7 +61,10 @@ pub async fn restore(config: &Config) -> Result<Client> {
         config.matrix.user_id
     );
     let client = build_client(config).await?;
-    client.restore_session(session).await.context("restoring the Matrix session")?;
+    client
+        .restore_session(session)
+        .await
+        .context("restoring the Matrix session")?;
     Ok(client)
 }
 
@@ -77,7 +85,10 @@ pub async fn login(config: &Config, password: &str, recovery_key: Option<&str>) 
         .await
         .context("logging in")?;
 
-    let session = client.matrix_auth().session().context("the login returned no session")?;
+    let session = client
+        .matrix_auth()
+        .session()
+        .context("the login returned no session")?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -86,17 +97,32 @@ pub async fn login(config: &Config, password: &str, recovery_key: Option<&str>) 
         .with_context(|| format!("writing {}", path.display()))?;
     file.write_all(&serde_json::to_vec(&session)?)?;
     file.sync_all()?;
-    eprintln!("logged in as {} (device {})", session.meta.user_id, session.meta.device_id);
+    eprintln!(
+        "logged in as {} (device {})",
+        session.meta.user_id, session.meta.device_id
+    );
 
-    client.encryption().wait_for_e2ee_initialization_tasks().await;
-    client.sync_once(SyncSettings::default()).await.context("first sync")?;
+    client
+        .encryption()
+        .wait_for_e2ee_initialization_tasks()
+        .await;
+    client
+        .sync_once(SyncSettings::default())
+        .await
+        .context("first sync")?;
     verify(&client, recovery_key).await
 }
 
 pub async fn recover(config: &Config, recovery_key: &str) -> Result<()> {
     let client = restore(config).await?;
-    client.encryption().wait_for_e2ee_initialization_tasks().await;
-    client.sync_once(SyncSettings::default()).await.context("sync")?;
+    client
+        .encryption()
+        .wait_for_e2ee_initialization_tasks()
+        .await;
+    client
+        .sync_once(SyncSettings::default())
+        .await
+        .context("sync")?;
     verify(&client, Some(recovery_key)).await
 }
 
@@ -104,12 +130,17 @@ async fn verify(client: &Client, recovery_key: Option<&str>) -> Result<()> {
     let recovery = client.encryption().recovery();
     match (recovery_key, recovery.state()) {
         (Some(key), _) => {
-            recovery.recover(key.trim()).await.context("recovering with the recovery key")?;
+            recovery
+                .recover(key.trim())
+                .await
+                .context("recovering with the recovery key")?;
         }
         // A fresh account: this login created its cross-signing keys, so set up recovery for them too.
         (None, RecoveryState::Disabled) => {
             let key = recovery.enable().await.context("enabling recovery")?;
-            eprintln!("\nRecovery key of this account. Keep it: it is the only way to verify another device.\n\n    {key}\n");
+            eprintln!(
+                "\nRecovery key of this account. Keep it: it is the only way to verify another device.\n\n    {key}\n"
+            );
         }
         (None, RecoveryState::Enabled) => {}
         (None, state) => {
@@ -120,7 +151,11 @@ async fn verify(client: &Client, recovery_key: Option<&str>) -> Result<()> {
         }
     }
 
-    let device = client.encryption().get_own_device().await?.context("own device not found")?;
+    let device = client
+        .encryption()
+        .get_own_device()
+        .await?
+        .context("own device not found")?;
     if device.is_cross_signed_by_owner() {
         eprintln!("this device is verified");
     } else {

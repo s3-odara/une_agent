@@ -6,7 +6,25 @@ import { test } from "node:test";
 import { EgressProxy, isPublicAddress } from "../src/egress.ts";
 import { listen } from "./env.ts";
 
-for (const address of ["8.8.8.8", "1.1.1.1", "133.242.0.1", "9.255.255.255", "11.0.0.0", "100.63.255.255", "100.128.0.0", "172.15.255.255", "172.32.0.0", "192.167.255.255", "192.169.0.0", "2000::1", "2001:200::1", "2001:4860:4860::8888", "2003::1", "2400:cb00::1", "3ffe:ffff::1"]) {
+for (const address of [
+	"8.8.8.8",
+	"1.1.1.1",
+	"133.242.0.1",
+	"9.255.255.255",
+	"11.0.0.0",
+	"100.63.255.255",
+	"100.128.0.0",
+	"172.15.255.255",
+	"172.32.0.0",
+	"192.167.255.255",
+	"192.169.0.0",
+	"2000::1",
+	"2001:200::1",
+	"2001:4860:4860::8888",
+	"2003::1",
+	"2400:cb00::1",
+	"3ffe:ffff::1",
+]) {
 	test(`${address} is public`, () => assert.equal(isPublicAddress(address), true));
 }
 
@@ -64,11 +82,14 @@ async function local(): Promise<{ server: Server; port: number; hits: string[] }
 function viaProxy(proxy: EgressProxy, url: string): Promise<{ status: number; body: string }> {
 	const { port } = new URL(proxy.url);
 	return new Promise((resolve, reject) => {
-		const req = request({ host: "127.0.0.1", port: Number(port), path: url, headers: { host: new URL(url).host } }, (res) => {
-			let body = "";
-			res.on("data", (chunk) => (body += chunk));
-			res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
-		});
+		const req = request(
+			{ host: "127.0.0.1", port: Number(port), path: url, headers: { host: new URL(url).host } },
+			(res) => {
+				let body = "";
+				res.on("data", (chunk) => (body += chunk));
+				res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+			},
+		);
 		req.on("error", reject);
 		req.end();
 	});
@@ -77,7 +98,9 @@ function viaProxy(proxy: EgressProxy, url: string): Promise<{ status: number; bo
 function tunnel(proxy: EgressProxy, target: string): Promise<string> {
 	const { port } = new URL(proxy.url);
 	return new Promise((resolve, reject) => {
-		const socket = connect(Number(port), "127.0.0.1", () => socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`));
+		const socket = connect(Number(port), "127.0.0.1", () =>
+			socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`),
+		);
 		socket.once("data", (data) => {
 			resolve(data.toString().split("\r\n")[0] ?? "");
 			socket.destroy();
@@ -144,7 +167,12 @@ test("closing a streamed response also disconnects the upstream HTTP server", as
 		client.end();
 		await once(client, "response", { signal });
 		client.destroy();
-		await Promise.race([closed.promise, once(signal, "abort").then(() => { throw new Error("upstream was not closed"); })]);
+		await Promise.race([
+			closed.promise,
+			once(signal, "abort").then(() => {
+				throw new Error("upstream was not closed");
+			}),
+		]);
 	} finally {
 		client.destroy();
 		await proxy.close();

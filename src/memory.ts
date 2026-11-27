@@ -49,7 +49,9 @@ export class MemoryStore {
 	#path(scope: MemoryScope, persona: MemoryPersona): string {
 		if (scope === "shared") return join(this.#dir, "shared.md");
 		if (!persona.privateMemory) {
-			throw new MemoryError(`人格「${persona.name}」は private の記憶を持っていません。scope は shared を使ってください。`);
+			throw new MemoryError(
+				`人格「${persona.name}」は private の記憶を持っていません。scope は shared を使ってください。`,
+			);
 		}
 		return join(this.#dir, "persona", `${persona.name}.md`);
 	}
@@ -135,7 +137,10 @@ export class MemoryStore {
 		this.#write(
 			scope,
 			persona,
-			entries.map(oneLine).filter((entry) => entry !== "").map((entry) => (TAG.test(entry) ? entry : `${entry} (${date})`)),
+			entries
+				.map(oneLine)
+				.filter((entry) => entry !== "")
+				.map((entry) => (TAG.test(entry) ? entry : `${entry} (${date})`)),
 		);
 	}
 
@@ -171,7 +176,9 @@ export type MemoryExtensionOptions = {
 	readonly tz: string;
 };
 
-const scope = oneOf(["shared", "private"], { description: "shared: 全人格が読む。private: この人格だけが読む（持たない人格もある）。" });
+const scope = oneOf(["shared", "private"], {
+	description: "shared: 全人格が読む。private: この人格だけが読む（持たない人格もある）。",
+});
 
 export function createMemoryExtension(options: MemoryExtensionOptions) {
 	const { store, personaOf, tz } = options;
@@ -195,7 +202,8 @@ export function createMemoryExtension(options: MemoryExtensionOptions) {
 				description: "長期記憶に1項目追加する。",
 				parameters: obj({ scope, text: str({ description: "記憶する内容。1文。", minLength: 1 }) }),
 				replay: "safe",
-				execute: async (args, api) => textOutput(store.add(args.scope, persona(api.conversationId), args.text, dateOf(api.now(), tz))),
+				execute: async (args, api) =>
+					textOutput(store.add(args.scope, persona(api.conversationId), args.text, dateOf(api.now(), tz))),
 			}),
 			defineTool({
 				name: "memory_replace",
@@ -207,7 +215,9 @@ export function createMemoryExtension(options: MemoryExtensionOptions) {
 				}),
 				replay: "safe",
 				execute: async (args, api) =>
-					textOutput(store.replace(args.scope, persona(api.conversationId), args.match, args.text, dateOf(api.now(), tz))),
+					textOutput(
+						store.replace(args.scope, persona(api.conversationId), args.match, args.text, dateOf(api.now(), tz)),
+					),
 			}),
 			defineTool({
 				name: "memory_remove",

@@ -17,7 +17,8 @@ import { call, everything, lastToolResult, message, type Request } from "./fakes
  * built by `just test`. Skipped outside the dev shell (see `chromium.ts`).
  */
 
-const page = (body: string) => `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>テストサイト</title></head><body>${body}</body></html>`;
+const page = (body: string) =>
+	`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>テストサイト</title></head><body>${body}</body></html>`;
 
 function body(request: IncomingMessage): Promise<string> {
 	return new Promise((resolve) => {
@@ -30,35 +31,57 @@ function body(request: IncomingMessage): Promise<string> {
 function site(beacon: string, fontRequested: () => void): Server {
 	const server = createServer(async (request, response) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
-		const html = (text: string) => response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page(text));
+		const html = (text: string) =>
+			response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page(text));
 		if (url.pathname === "/") {
-			html('<h1>トップ</h1><a href="/article">記事へ</a><form action="/search"><input name="q" aria-label="検索"><button>検索する</button></form>');
+			html(
+				'<h1>トップ</h1><a href="/article">記事へ</a><form action="/search"><input name="q" aria-label="検索"><button>検索する</button></form>',
+			);
 		} else if (url.pathname === "/leak") {
 			html(`<p>表の本文</p><img src="${beacon}/img">`);
 		} else if (url.pathname === "/article") {
 			html("<h1>記事</h1><p>緑茶は発酵させない茶である。</p>");
 		} else if (url.pathname === "/strict") {
 			// A long article on a page whose policy forbids every script: the extraction must still run.
-			response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": "script-src 'none'" });
-			response.end(page(`<nav><a href="/">ホーム</a></nav><article><h1>記事</h1>${"<p>緑茶は発酵させない茶で、蒸し製と釜炒り製がある。日本では蒸し製が主流である。</p>".repeat(8)}</article>`));
+			response.writeHead(200, {
+				"content-type": "text/html; charset=utf-8",
+				"content-security-policy": "script-src 'none'",
+			});
+			response.end(
+				page(
+					`<nav><a href="/">ホーム</a></nav><article><h1>記事</h1>${"<p>緑茶は発酵させない茶で、蒸し製と釜炒り製がある。日本では蒸し製が主流である。</p>".repeat(8)}</article>`,
+				),
+			);
 		} else if (url.pathname === "/search") {
 			html(`<p>「${url.searchParams.get("q")}」の検索結果</p>`);
 		} else if (url.pathname === "/login" && request.method === "POST") {
 			const form = new URLSearchParams(await body(request));
 			const ok = form.get("username") === "me" && form.get("password") === "correct-horse";
 			// Max-Age makes it a persistent cookie; a session cookie would not outlive the browser.
-			response.writeHead(303, { location: "/account", ...(ok ? { "set-cookie": "session=ok; Max-Age=3600; Path=/" } : {}) }).end();
+			response
+				.writeHead(303, { location: "/account", ...(ok ? { "set-cookie": "session=ok; Max-Age=3600; Path=/" } : {}) })
+				.end();
 		} else if (url.pathname === "/login") {
-			html('<form method="post" action="/login"><input name="username" aria-label="ユーザー名"><input type="password" name="password" aria-label="パスワード"><button>ログイン</button></form>');
+			html(
+				'<form method="post" action="/login"><input name="username" aria-label="ユーザー名"><input type="password" name="password" aria-label="パスワード"><button>ログイン</button></form>',
+			);
 		} else if (url.pathname === "/slow-font") {
-			html(`<style>@font-face { font-family: Stalled; src: url('/slow.woff2'); font-display: swap } p { font-family: Stalled, sans-serif }</style><p>画面の本文</p>`);
+			html(
+				`<style>@font-face { font-family: Stalled; src: url('/slow.woff2'); font-display: swap } p { font-family: Stalled, sans-serif }</style><p>画面の本文</p>`,
+			);
 		} else if (url.pathname === "/slow.woff2") {
 			fontRequested();
 		} else if (url.pathname === "/canvas") {
 			// Drawn, not built of elements: nothing in it has a ref.
-			html('<canvas width="1280" height="800" style="position:fixed;left:0;top:0"></canvas><p id="hit">まだ</p><script>document.querySelector("canvas").addEventListener("click", (e) => { document.getElementById("hit").textContent = "押された位置 " + e.clientX + "," + e.clientY; });</script>');
+			html(
+				'<canvas width="1280" height="800" style="position:fixed;left:0;top:0"></canvas><p id="hit">まだ</p><script>document.querySelector("canvas").addEventListener("click", (e) => { document.getElementById("hit").textContent = "押された位置 " + e.clientX + "," + e.clientY; });</script>',
+			);
 		} else if (url.pathname === "/account") {
-			html((request.headers.cookie ?? "").includes("session=ok") ? "<p>ようこそ、me さん</p>" : "<p>ログインしていません</p>");
+			html(
+				(request.headers.cookie ?? "").includes("session=ok")
+					? "<p>ようこそ、me さん</p>"
+					: "<p>ログインしていません</p>",
+			);
 		} else {
 			response.writeHead(404).end();
 		}

@@ -19,28 +19,39 @@ function createPopplerRunner(body: Buffer, signal?: AbortSignal): PopplerRunner 
 	if (!bin) throw new ReadError("PDF の抽出器が設定されていません（AGENT_POPPLER_BIN）。");
 	const timeout = AbortSignal.timeout(TIMEOUT_MS);
 	const stop = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
-	const interrupted = () => new ReadError(signal?.aborted ? "PDF の処理を中止しました。" : "PDF の処理が時間内に終わりませんでした。");
+	const interrupted = () =>
+		new ReadError(signal?.aborted ? "PDF の処理を中止しました。" : "PDF の処理が時間内に終わりませんでした。");
 	return (tool, args) =>
 		new Promise<Buffer>((resolve, reject) => {
 			if (stop.aborted) return reject(interrupted());
-			const child = execFile(SANDBOX_BIN, [...args], {
-				cwd: "/",
-				encoding: "buffer",
-				maxBuffer: MAX_OUTPUT,
-				killSignal: "SIGKILL",
-				signal: stop,
-				env: {
-					AGENT_SANDBOX_EXEC: join(bin, tool),
-					AGENT_SANDBOX_READ: "/nix/store\n/etc/fonts\n/usr/share/fonts\n/var/cache/fontconfig",
-					LC_ALL: "C",
-					FONTCONFIG_FILE: process.env.AGENT_PDF_FONTCONFIG,
+			const child = execFile(
+				SANDBOX_BIN,
+				[...args],
+				{
+					cwd: "/",
+					encoding: "buffer",
+					maxBuffer: MAX_OUTPUT,
+					killSignal: "SIGKILL",
+					signal: stop,
+					env: {
+						AGENT_SANDBOX_EXEC: join(bin, tool),
+						AGENT_SANDBOX_READ: "/nix/store\n/etc/fonts\n/usr/share/fonts\n/var/cache/fontconfig",
+						LC_ALL: "C",
+						FONTCONFIG_FILE: process.env.AGENT_PDF_FONTCONFIG,
+					},
 				},
-			}, (error, stdout) => {
-				if (stop.aborted) return reject(interrupted());
-				if (error === null) return resolve(stdout);
-				if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return reject(new ReadError("PDF の抽出結果が長すぎます。page でページを指定してください。"));
-				return reject(new ReadError("PDF を読めませんでした（ファイルが壊れている、暗号化されている、または抽出器を起動できない可能性があります）。"));
-			});
+				(error, stdout) => {
+					if (stop.aborted) return reject(interrupted());
+					if (error === null) return resolve(stdout);
+					if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")
+						return reject(new ReadError("PDF の抽出結果が長すぎます。page でページを指定してください。"));
+					return reject(
+						new ReadError(
+							"PDF を読めませんでした（ファイルが壊れている、暗号化されている、または抽出器を起動できない可能性があります）。",
+						),
+					);
+				},
+			);
 			child.stdin?.on("error", () => {});
 			child.stdin?.end(body);
 		});
@@ -50,24 +61,40 @@ async function pdfPages(run: PopplerRunner, page: number | undefined): Promise<n
 	const info = await run("pdfinfo", ["-"]);
 	const pages = Number(/^Pages:\s+(\d+)$/m.exec(info.toString("utf8"))?.[1]);
 	if (!Number.isSafeInteger(pages) || pages < 1) throw new ReadError("PDF のページ数が分かりませんでした。");
-	if (page !== undefined && page > pages) throw new ReadError(`この PDF は全 ${pages} ページです。page=${page} はありません。`);
+	if (page !== undefined && page > pages)
+		throw new ReadError(`この PDF は全 ${pages} ページです。page=${page} はありません。`);
 	return pages;
 }
 
-export async function readPdfText(body: Buffer, mode: "text" | "layout" = "text", page?: number, signal?: AbortSignal): Promise<PdfText> {
+export async function readPdfText(
+	body: Buffer,
+	mode: "text" | "layout" = "text",
+	page?: number,
+	signal?: AbortSignal,
+): Promise<PdfText> {
 	const run = createPopplerRunner(body, signal);
 	const pages = await pdfPages(run, page);
 	const first = page ?? 1;
 	const last = page ?? Math.min(pages, MAX_PAGES);
 	const range = ["-f", String(first), "-l", String(last)];
-	const extracted = await run("pdftotext", ["-enc", "UTF-8", ...range, ...(mode === "layout" ? ["-layout"] : []), "-", "-"]);
+	const extracted = await run("pdftotext", [
+		"-enc",
+		"UTF-8",
+		...range,
+		...(mode === "layout" ? ["-layout"] : []),
+		"-",
+		"-",
+	]);
 	const parts = extracted.toString("utf8").split("\f");
 	const sections: string[] = [];
 	for (let n = first; n <= last; n++) {
 		const text = parts[n - first] ?? "";
-		sections.push(`--- PDF ${n} ページ目 / 全 ${pages} ページ ---\n${text.trim() === "" ? "（文字を抽出できませんでした。page を指定して pdfMode=image で確認できます。）" : text}`);
+		sections.push(
+			`--- PDF ${n} ページ目 / 全 ${pages} ページ ---\n${text.trim() === "" ? "（文字を抽出できませんでした。page を指定して pdfMode=image で確認できます。）" : text}`,
+		);
 	}
-	if (page === undefined && last < pages) sections.push(`（最初の ${last} ページのみ抽出しました。以降は page で指定してください。）`);
+	if (page === undefined && last < pages)
+		sections.push(`（最初の ${last} ページのみ抽出しました。以降は page で指定してください。）`);
 	return { markdown: sections.join("\n\n"), pages };
 }
 
@@ -75,9 +102,16 @@ export async function readPdfImage(body: Buffer, page: number, signal?: AbortSig
 	const run = createPopplerRunner(body, signal);
 	await pdfPages(run, page);
 	const range = ["-f", String(page), "-l", String(page)];
-	const sizing = crop === undefined ? ["-scale-to", String(IMAGE_EDGE)] : pdfCrop((await run("pdfinfo", [...range, "-box", "-"])).toString("utf8"), crop);
+	const sizing =
+		crop === undefined
+			? ["-scale-to", String(IMAGE_EDGE)]
+			: pdfCrop((await run("pdfinfo", [...range, "-box", "-"])).toString("utf8"), crop);
 	const rendered = await run("pdftoppm", [...range, "-cropbox", ...sizing, "-singlefile", "-jpeg", "-"]);
-	if (rendered.length < 4 || rendered.readUInt16BE(0) !== 0xffd8 || rendered.readUInt16BE(rendered.length - 2) !== 0xffd9) {
+	if (
+		rendered.length < 4 ||
+		rendered.readUInt16BE(0) !== 0xffd8 ||
+		rendered.readUInt16BE(rendered.length - 2) !== 0xffd9
+	) {
 		throw new ReadError(`PDF の ${page} ページ目を画像にできませんでした。`);
 	}
 	return { data: rendered.toString("base64"), mimeType: "image/jpeg" };
@@ -87,15 +121,26 @@ function pdfCrop(info: string, crop: Crop): string[] {
 	const box = /^Page[ \t]+\d+[ \t]+CropBox:[ \t]+([^\r\n]+)$/m.exec(info)?.[1]?.trim().split(/\s+/).map(Number);
 	const rotation = Number(/^Page[ \t]+\d+[ \t]+rot:[ \t]+(-?\d+)/m.exec(info)?.[1]);
 	const [left, bottom, right, top] = box ?? [];
-	if (left === undefined || bottom === undefined || right === undefined || top === undefined || !Number.isFinite(rotation)) {
+	if (
+		left === undefined ||
+		bottom === undefined ||
+		right === undefined ||
+		top === undefined ||
+		!Number.isFinite(rotation)
+	) {
 		throw new ReadError("PDF のページ寸法を取得できませんでした。");
 	}
 	let [width, height] = [right - left, top - bottom];
 	if (rotation % 180 !== 0) [width, height] = [height, width];
-	if (!(width > 0 && height > 0) || !Number.isFinite(width + height)) throw new ReadError("PDF のページ寸法が不正です。");
-	const dpi = Math.min(MAX_CROP_DPI, MAX_VIRTUAL_EDGE * 72 / Math.max(width, height), IMAGE_EDGE * 72 / Math.max(width * crop.width, height * crop.height));
+	if (!(width > 0 && height > 0) || !Number.isFinite(width + height))
+		throw new ReadError("PDF のページ寸法が不正です。");
+	const dpi = Math.min(
+		MAX_CROP_DPI,
+		(MAX_VIRTUAL_EDGE * 72) / Math.max(width, height),
+		(IMAGE_EDGE * 72) / Math.max(width * crop.width, height * crop.height),
+	);
 	const pixels = (size: number, start: number, length: number): [number, number] => {
-		const end = size * dpi / 72;
+		const end = (size * dpi) / 72;
 		const origin = Math.min(Math.ceil(end) - 1, Math.floor(end * start));
 		return [origin, Math.min(IMAGE_EDGE, Math.max(1, Math.ceil(end * (start + length)) - origin))];
 	};

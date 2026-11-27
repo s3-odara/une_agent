@@ -88,7 +88,13 @@ test("a failed approval prompt does not hijack !approve meant for a later visibl
 		);
 
 		failPost = false;
-		const second = approvals.ask({ id: "a2", roomId: ROOM, runKey: "1:2", tool: "calendar_update", summary: "新しい予定を変更" });
+		const second = approvals.ask({
+			id: "a2",
+			roomId: ROOM,
+			runKey: "1:2",
+			tool: "calendar_update",
+			summary: "新しい予定を変更",
+		});
 		await new Promise((resolve) => setTimeout(resolve, 20));
 
 		const handled = approvals.onMessage({ roomId: ROOM, body: "!approve" });

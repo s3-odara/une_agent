@@ -27,7 +27,9 @@ export function tempDir(): { readonly path: string; [Symbol.dispose](): void } {
 
 /** Listens on a free port of this host, or on the UNIX socket at `path`; resolves to the port (0 for a socket). */
 export async function listen(server: Server, path?: string): Promise<number> {
-	await new Promise<void>((resolve) => (path === undefined ? server.listen(0, "127.0.0.1", resolve) : server.listen(path, resolve)));
+	await new Promise<void>((resolve) =>
+		path === undefined ? server.listen(0, "127.0.0.1", resolve) : server.listen(path, resolve),
+	);
 	const address = server.address();
 	return typeof address === "object" && address !== null ? address.port : 0;
 }
@@ -62,10 +64,13 @@ export type EnvOptions = {
 
 export async function agentEnv(options: EnvOptions = {}) {
 	const dir = tempDir();
-	for (const [name, soul] of Object.entries({ "soul.md": "SOUL", ...options.souls })) writeFileSync(join(dir.path, name), soul);
+	for (const [name, soul] of Object.entries({ "soul.md": "SOUL", ...options.souls }))
+		writeFileSync(join(dir.path, name), soul);
 	const faux = fauxProvider({
 		...(options.api === undefined ? {} : { api: options.api }),
-		...(options.contextWindow === undefined ? {} : { models: [{ id: "faux-1", contextWindow: options.contextWindow }] }),
+		...(options.contextWindow === undefined
+			? {}
+			: { models: [{ id: "faux-1", contextWindow: options.contextWindow }] }),
 	});
 	const model = faux.getModel();
 	const config = testConfig(dir.path, { model: `${model.provider}/${model.id}`, ...options.config });
@@ -88,7 +93,15 @@ export async function agentEnv(options: EnvOptions = {}) {
 			env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? dir.path }),
 			now: options.now,
 			registry,
-			...(options.compactAt === undefined ? {} : { compaction: compactionSettings(models, [{ provider: model.provider, modelId: model.id }], options.compactAt) }),
+			...(options.compactAt === undefined
+				? {}
+				: {
+						compaction: compactionSettings(
+							models,
+							[{ provider: model.provider, modelId: model.id }],
+							options.compactAt,
+						),
+					}),
 		});
 		link = new FakeLink();
 	};

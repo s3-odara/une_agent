@@ -8,7 +8,11 @@ import { tempDir } from "./env.ts";
 function credentialsFile() {
 	const dir = tempDir();
 	const path = join(dir.path, "credentials.json");
-	return { credentials: new Credentials(path), write: (content: unknown) => writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content)), [Symbol.dispose]: () => dir[Symbol.dispose]() };
+	return {
+		credentials: new Credentials(path),
+		write: (content: unknown) => writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content)),
+		[Symbol.dispose]: () => dir[Symbol.dispose](),
+	};
 }
 
 test("without a credentials file, no site has a login and nothing is hidden", () => {
@@ -34,7 +38,10 @@ test("the file is read again at each use, so an edit applies at once", () => {
 
 test("every stored password is hidden, and one inside another leaves no fragment behind", () => {
 	using t = credentialsFile();
-	t.write({ "https://a.example.com": { username: "a", password: "pw-long-one" }, "https://b.example.com": { username: "b", password: "pw-long" } });
+	t.write({
+		"https://a.example.com": { username: "a", password: "pw-long-one" },
+		"https://b.example.com": { username: "b", password: "pw-long" },
+	});
 	const hidden = t.credentials.scrub("x pw-long-one y pw-long z");
 	assert.ok(!hidden.includes("pw-long"), hidden);
 	assert.ok(hidden.startsWith("x ") && hidden.endsWith(" z") && hidden.includes(" y "), hidden);

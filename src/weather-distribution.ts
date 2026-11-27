@@ -1,4 +1,23 @@
-import { clockJst, coordinates, features, frames, gridFor, inBatches, inJst, JMA_5KM_MESH, jmaPolygons, meshCell, missingCoverage, object, polygonLocation, square, validatePoint, type Cell, type Frame, type Point } from "./jma-grid.ts";
+import {
+	clockJst,
+	coordinates,
+	features,
+	frames,
+	gridFor,
+	inBatches,
+	inJst,
+	JMA_5KM_MESH,
+	jmaPolygons,
+	meshCell,
+	missingCoverage,
+	object,
+	polygonLocation,
+	square,
+	validatePoint,
+	type Cell,
+	type Frame,
+	type Point,
+} from "./jma-grid.ts";
 import { markdownTable } from "./text.ts";
 
 const ROOT = "https://www.jma.go.jp/bosai/jmatile/data/wdist";
@@ -6,9 +25,27 @@ const HOUR = 3_600_000;
 const LAYERS = ["weather", "rain", "snow", "temperature", "high", "low"] as const;
 export const WEATHER_GRID_MAX_METERS = 50_000;
 const bands = {
-	weather: [["Clear", "晴"], ["Cloudy", "曇"], ["Rain", "雨"], ["Rain/snow", "雨または雪"], ["Snow", "雪"]],
-	rain: [[null, "0"], ["1<=mm<5", "1〜4"], ["5<=mm<10", "5〜9"], ["10<=mm<15", "10〜14"], ["15<=mm<20", "15〜19"], ["20<=mm", "20以上"]],
-	snow: [[null, "0"], ["1<=cm<3", "1〜2"], ["3<=cm<6", "3〜5"], ["6<=cm", "6以上"]],
+	weather: [
+		["Clear", "晴"],
+		["Cloudy", "曇"],
+		["Rain", "雨"],
+		["Rain/snow", "雨または雪"],
+		["Snow", "雪"],
+	],
+	rain: [
+		[null, "0"],
+		["1<=mm<5", "1〜4"],
+		["5<=mm<10", "5〜9"],
+		["10<=mm<15", "10〜14"],
+		["15<=mm<20", "15〜19"],
+		["20<=mm", "20以上"],
+	],
+	snow: [
+		[null, "0"],
+		["1<=cm<3", "1〜2"],
+		["3<=cm<6", "3〜5"],
+		["6<=cm", "6以上"],
+	],
 } as const;
 const legends = {
 	weather: bands.weather.map(([, label]) => label),
@@ -19,7 +56,12 @@ type Layer = (typeof LAYERS)[number];
 type GridQuery = Point & { sizeMeters: number };
 type LayerResult = { status: "available"; rows: (number | null)[][] } | { status: "unavailable" };
 const elements: Record<Layer, string> = {
-	weather: "wm", rain: "r3", snow: "s3", temperature: "temp_point", high: "max_temp_point", low: "min_temp_point",
+	weather: "wm",
+	rain: "r3",
+	snow: "s3",
+	temperature: "temp_point",
+	high: "max_temp_point",
+	low: "min_temp_point",
 };
 
 const cellKey = (col: number, row: number) => `${col},${row}`;
@@ -34,10 +76,12 @@ function pointValues(value: unknown) {
 		const col = Math.round(JMA_5KM_MESH.x(lon) - 0.5);
 		const row = Math.round(JMA_5KM_MESH.y(lat) - 0.5);
 		// The GeoJSON rounds mesh-center longitudes to three decimal places.
-		if (Math.abs(lon - JMA_5KM_MESH.lon(col + 0.5)) > 0.00051 || Math.abs(lat - JMA_5KM_MESH.lat(row + 0.5)) > 0.00051) throw new Error("Unexpected JMA temperature mesh");
+		if (Math.abs(lon - JMA_5KM_MESH.lon(col + 0.5)) > 0.00051 || Math.abs(lat - JMA_5KM_MESH.lat(row + 0.5)) > 0.00051)
+			throw new Error("Unexpected JMA temperature mesh");
 		const raw = object(properties).value;
 		const celsius = typeof raw === "string" && /^-?\d+$/.test(raw) ? Number(raw) : raw;
-		if (typeof celsius !== "number" || !Number.isSafeInteger(celsius)) throw new Error("Unexpected JMA temperature value");
+		if (typeof celsius !== "number" || !Number.isSafeInteger(celsius))
+			throw new Error("Unexpected JMA temperature value");
 		values.set(cellKey(col, row), celsius);
 	}
 	return (cell: Cell) => values.get(cellKey(cell.col, cell.row)) ?? null;
@@ -51,12 +95,18 @@ function polygonValues(value: unknown, layer: keyof typeof bands) {
 		if (index === -1 && level !== "NoData") throw new Error("Unexpected JMA forecast level");
 		return { index, polygons: jmaPolygons(geometry, level === "NoData") };
 	});
-	const missing = missingCoverage(regions.filter(({ index }) => index === -1).flatMap(({ polygons }) => polygons), layer !== "weather");
+	const missing = missingCoverage(
+		regions.filter(({ index }) => index === -1).flatMap(({ polygons }) => polygons),
+		layer !== "weather",
+	);
 	const covered = regions.filter(({ index }) => index !== -1);
 	return (cell: Cell) => {
 		if (missing(cell)) return null;
 		const point = polygonLocation(cell);
-		return covered.find(({ polygons }) => polygons.some((contains) => contains(point)))?.index ?? (layer === "weather" ? null : 0);
+		return (
+			covered.find(({ polygons }) => polygons.some((contains) => contains(point)))?.index ??
+			(layer === "weather" ? null : 0)
+		);
 	};
 }
 
@@ -69,15 +119,20 @@ function client(fetchForecast: typeof fetch) {
 	const read = async (frame: Frame, layer: Layer, cells: Cell[][]): Promise<LayerResult> => {
 		const element = elements[layer];
 		try {
-			const value = await json(`${frame.basetime}/${frame.member}/${frame.validtime}/surf/${element}/data.geojson?id=${element}`);
-			const at = layer === "weather" || layer === "rain" || layer === "snow" ? polygonValues(value, layer) : pointValues(value);
+			const value = await json(
+				`${frame.basetime}/${frame.member}/${frame.validtime}/surf/${element}/data.geojson?id=${element}`,
+			);
+			const at =
+				layer === "weather" || layer === "rain" || layer === "snow" ? polygonValues(value, layer) : pointValues(value);
 			return { status: "available", rows: cells.map((row) => row.map(at)) };
 		} catch {
 			return { status: "unavailable" };
 		}
 	};
 	return async (cells: Cell[][]) => {
-		const index = frames(await json("targetTimes.json")).filter((frame) => LAYERS.some((layer) => frame.elements.includes(elements[layer])));
+		const index = frames(await json("targetTimes.json")).filter((frame) =>
+			LAYERS.some((layer) => frame.elements.includes(elements[layer])),
+		);
 		const latest = Math.max(...index.map(({ base }) => base));
 		const selected = index.filter(({ base }) => base === latest).sort((a, b) => a.valid - b.valid);
 		return inBatches(selected, async (frame) => {
@@ -86,8 +141,11 @@ function client(fetchForecast: typeof fetch) {
 				if (frame.elements.includes(elements[layer])) pairs.push([layer, await read(frame, layer, cells)]);
 			}
 			return {
-				baseAt: inJst(frame.base), validAt: inJst(frame.valid),
-				...(pairs.some(([layer]) => layer === "weather" || layer === "rain" || layer === "snow") && { startAt: inJst(frame.valid - 3 * HOUR) }),
+				baseAt: inJst(frame.base),
+				validAt: inJst(frame.valid),
+				...(pairs.some(([layer]) => layer === "weather" || layer === "rain" || layer === "snow") && {
+					startAt: inJst(frame.valid - 3 * HOUR),
+				}),
 				layers: Object.fromEntries(pairs) as Partial<Record<Layer, LayerResult>>,
 			};
 		});
@@ -107,7 +165,10 @@ export function jmaWeatherDistributionGrid(fetchForecast = fetch) {
 	return async (query: GridQuery) => {
 		validatePoint(query);
 		const bounds = square(query, WEATHER_GRID_MAX_METERS);
-		const { grid: { longitudeEdges, latitudeEdges }, cells } = gridFor("wdist", bounds, JMA_5KM_MESH, 0);
+		const {
+			grid: { longitudeEdges, latitudeEdges },
+			cells,
+		} = gridFor("wdist", bounds, JMA_5KM_MESH, 0);
 		return { bounds, longitudeEdges, latitudeEdges, legends, frames: await read(cells) };
 	};
 }
@@ -129,7 +190,10 @@ function formatLayerCell(key: Layer, layer: LayerResult | undefined, unit = ""):
 	return key === "weather" || key === "rain" || key === "snow" ? legends[key][value]! : `${value}${unit}`;
 }
 
-export function formatWeatherDistribution(report: Awaited<ReturnType<ReturnType<typeof jmaWeatherDistribution>>>, point: Point) {
+export function formatWeatherDistribution(
+	report: Awaited<ReturnType<ReturnType<typeof jmaWeatherDistribution>>>,
+	point: Point,
+) {
 	const first = report[0];
 	if (first === undefined) return "気象庁の天気分布予報に利用できる時刻が見つかりませんでした。";
 	const daily = new Map<string, string[]>();
@@ -141,7 +205,10 @@ export function formatWeatherDistribution(report: Awaited<ReturnType<ReturnType<
 			entry.layers.temperature = layers.temperature;
 			byTime.set(validAt, entry);
 		}
-		if (startAt !== undefined && (layers.weather !== undefined || layers.rain !== undefined || layers.snow !== undefined)) {
+		if (
+			startAt !== undefined &&
+			(layers.weather !== undefined || layers.rain !== undefined || layers.snow !== undefined)
+		) {
 			const existing = byTime.get(startAt);
 			byTime.set(startAt, {
 				period: `${clockJst(startAt)}〜${clockJst(validAt)}`,
@@ -164,14 +231,22 @@ export function formatWeatherDistribution(report: Awaited<ReturnType<ReturnType<
 	}
 
 	const entries = [...byTime].sort(([a], [b]) => a.localeCompare(b)).map(([, entry]) => entry);
-	const tableLayers = (["weather", "rain", "snow", "temperature"] as const).filter((key) => entries.some(({ layers }) => layers[key] !== undefined));
-	const table = entries.length === 0 ? [] : [
-		"",
-		...markdownTable(
-			["期間", ...tableLayers.map((key) => labels[key])],
-			entries.map(({ period, layers }) => [period, ...tableLayers.map((key) => formatLayerCell(key, layers[key]))]),
-		),
-	];
+	const tableLayers = (["weather", "rain", "snow", "temperature"] as const).filter((key) =>
+		entries.some(({ layers }) => layers[key] !== undefined),
+	);
+	const table =
+		entries.length === 0
+			? []
+			: [
+					"",
+					...markdownTable(
+						["期間", ...tableLayers.map((key) => labels[key])],
+						entries.map(({ period, layers }) => [
+							period,
+							...tableLayers.map((key) => formatLayerCell(key, layers[key])),
+						]),
+					),
+				];
 	const dailyLines = [...daily].map(([day, extremes]) => `- ${day}：${extremes.join("、")}`);
 	return [
 		`気象庁｜天気分布予報（日本時間、約5 km格子）｜緯度 ${point.lat}、経度 ${point.lon}`,

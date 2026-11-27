@@ -104,10 +104,9 @@ test("the answer is spoken whole, in the persona's voice", async () => {
 	t.env.faux.setResponses([fauxAssistantMessage(text)]);
 	await t.say("明日の天気は？");
 
-	assert.deepEqual(
-		t.synthesizer.made,
-		[{ text: toSpeech(text, t.env.config.voice!.call!.maxChars), speaker: 8, sampleRate: 48_000 }],
-	);
+	assert.deepEqual(t.synthesizer.made, [
+		{ text: toSpeech(text, t.env.config.voice!.call!.maxChars), speaker: 8, sampleRate: 48_000 },
+	]);
 	assert.equal(t.link.of("callSpeak").length, 1);
 });
 
@@ -220,10 +219,7 @@ test("once an utterance is recognized, a chime plays in the call before the answ
 
 	const [chime, ...speech] = t.played;
 	assert.equal(readWav(chime!).sampleRate, 48_000);
-	assert.deepEqual(
-		speech.map(String),
-		["RIFF 晴れです。"],
-	);
+	assert.deepEqual(speech.map(String), ["RIFF 晴れです。"]);
 });
 
 test("no chime plays once the user has started speaking again", async () => {
@@ -247,7 +243,10 @@ test("what was heard and the answer are written to the room as notices, in that 
 
 	const sends = t.link.of("send");
 	assert.ok(sends.every((send) => send.notice === true));
-	assert.deepEqual(sends.map((send) => send.body), ["🎤 明日の天気は？", "**明日**は晴れです。"]);
+	assert.deepEqual(
+		sends.map((send) => send.body),
+		["🎤 明日の天気は？", "**明日**は晴れです。"],
+	);
 });
 
 test("an answer overtaken by the user speaking again is still written to the room", async () => {

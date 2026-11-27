@@ -26,7 +26,18 @@ async function setup(answers: { shared: string; private: string }, requests: Req
 	return {
 		store,
 		dir: join(env.dir, "memory"),
-		tidy: () => tidyMemory({ harness: env.harness, store, personas, model: { provider: model.provider, modelId: model.id }, context, log: () => {} }, "2026-11-17"),
+		tidy: () =>
+			tidyMemory(
+				{
+					harness: env.harness,
+					store,
+					personas,
+					model: { provider: model.provider, modelId: model.id },
+					context,
+					log: () => {},
+				},
+				"2026-11-17",
+			),
 		[Symbol.asyncDispose]: () => env[Symbol.asyncDispose](),
 	};
 }
@@ -48,20 +59,32 @@ test("the model tidying memory is told the day, so it can tell what is over", as
 });
 
 test("a list longer than the one it was asked to tidy is not trusted", async () => {
-	await using t = await setup({ shared: "- ユーザーは緑茶を好む", private: `${KEPT_PRIVATE}\n- それに加えて、ユーザーについての長い長い説明をここに書き足します` });
+	await using t = await setup({
+		shared: "- ユーザーは緑茶を好む",
+		private: `${KEPT_PRIVATE}\n- それに加えて、ユーザーについての長い長い説明をここに書き足します`,
+	});
 	await t.tidy();
 	assert.deepEqual(t.store.entries("private", calm), ["calm との合言葉は山 (2026-11-12)"]);
 });
 
 test("a tidy keeps the date of each entry it kept, and dates what it wrote anew with the day of the tidy", async () => {
-	await using t = await setup({ shared: "- ユーザーは緑茶を好む\n- ユーザーはコーヒーより緑茶をよく飲む", private: KEPT_PRIVATE });
+	await using t = await setup({
+		shared: "- ユーザーは緑茶を好む\n- ユーザーはコーヒーより緑茶をよく飲む",
+		private: KEPT_PRIVATE,
+	});
 	await t.tidy();
-	assert.deepEqual(t.store.entries("shared", calm), ["ユーザーは緑茶を好む (2026-11-10)", "ユーザーはコーヒーより緑茶をよく飲む (2026-11-17)"]);
+	assert.deepEqual(t.store.entries("shared", calm), [
+		"ユーザーは緑茶を好む (2026-11-10)",
+		"ユーザーはコーヒーより緑茶をよく飲む (2026-11-17)",
+	]);
 	assert.deepEqual(t.store.entries("private", calm), ["calm との合言葉は山 (2026-11-12)"]);
 });
 
 test("a tidy says what it removed and added, for the lists it changed only", async () => {
-	await using t = await setup({ shared: "- ユーザーは緑茶を好む\n- ユーザーはコーヒーより緑茶をよく飲む", private: KEPT_PRIVATE });
+	await using t = await setup({
+		shared: "- ユーザーは緑茶を好む\n- ユーザーはコーヒーより緑茶をよく飲む",
+		private: KEPT_PRIVATE,
+	});
 	const changes = await t.tidy();
 	assert.deepEqual(
 		changes.map((change) => [change.label, change.removed.length, change.added]),

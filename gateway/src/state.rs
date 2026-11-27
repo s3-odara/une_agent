@@ -34,7 +34,8 @@ pub struct State {
 impl State {
     pub fn load(path: &Path, now_ms: u64) -> Result<Self> {
         let mut stored = match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?,
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .with_context(|| format!("parsing {}", path.display()))?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Stored::default(),
             Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
         };
@@ -42,7 +43,10 @@ impl State {
         if needs_init {
             stored.default_cutoff = now_ms;
         }
-        let state = Self { path: path.to_owned(), stored };
+        let state = Self {
+            path: path.to_owned(),
+            stored,
+        };
         if needs_init {
             state.save()?;
         }
@@ -52,10 +56,12 @@ impl State {
     /// Written to a temporary file and renamed, so a crash leaves the old file or the new one, never half of one.
     fn save(&self) -> Result<()> {
         let tmp = self.path.with_extension("json.tmp");
-        let mut file = std::fs::File::create(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+        let mut file =
+            std::fs::File::create(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
         file.write_all(&serde_json::to_vec(&self.stored)?)?;
         file.sync_all()?;
-        std::fs::rename(&tmp, &self.path).with_context(|| format!("replacing {}", self.path.display()))?;
+        std::fs::rename(&tmp, &self.path)
+            .with_context(|| format!("replacing {}", self.path.display()))?;
         Ok(())
     }
 
@@ -63,11 +69,19 @@ impl State {
         if self.stored.inbox.contains_key(event_id) {
             return true;
         }
-        let cutoff = self.stored.joined_at.get(room_id).copied().unwrap_or(self.stored.default_cutoff);
+        let cutoff = self
+            .stored
+            .joined_at
+            .get(room_id)
+            .copied()
+            .unwrap_or(self.stored.default_cutoff);
         if ts < cutoff {
             return true;
         }
-        self.stored.seen.get(room_id).is_some_and(|ids| ids.iter().any(|id| id == event_id))
+        self.stored
+            .seen
+            .get(room_id)
+            .is_some_and(|ids| ids.iter().any(|id| id == event_id))
     }
 
     pub fn record_seen(&mut self, room_id: &str, event_id: &str) -> Result<()> {
@@ -78,7 +92,11 @@ impl State {
     }
 
     pub fn set_joined_at(&mut self, room_id: &str, ts: u64) -> Result<()> {
-        self.stored.joined_at.entry(room_id.to_owned()).and_modify(|prev| *prev = (*prev).max(ts)).or_insert(ts);
+        self.stored
+            .joined_at
+            .entry(room_id.to_owned())
+            .and_modify(|prev| *prev = (*prev).max(ts))
+            .or_insert(ts);
         self.save()
     }
 
@@ -86,7 +104,9 @@ impl State {
         if self.is_seen_or_old(&message.room_id, &message.event_id, message.ts) {
             return Ok(false);
         }
-        self.stored.inbox.insert(message.event_id.clone(), message.clone());
+        self.stored
+            .inbox
+            .insert(message.event_id.clone(), message.clone());
         self.push_seen(&message.room_id, &message.event_id);
         self.save()?;
         Ok(true)
@@ -123,11 +143,19 @@ mod tests {
     use super::*;
 
     fn message(event_id: &str, ts: u64) -> Message {
-        Message { room_id: "!r:example.org".into(), event_id: event_id.into(), body: "hi".into(), ts, attachment: None, reply_to: None }
+        Message {
+            room_id: "!r:example.org".into(),
+            event_id: event_id.into(),
+            body: "hi".into(),
+            ts,
+            attachment: None,
+            reply_to: None,
+        }
     }
 
     fn temp_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("matrix-gateway-test-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("matrix-gateway-test-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("gateway-state.json")
     }
@@ -193,11 +221,16 @@ mod tests {
 
         let mut state = State::load(&path, 1).unwrap();
         for i in 0..MAX_SEEN_PER_ROOM {
-            state.record_seen("!r:example.org", &format!("$e{i}")).unwrap();
+            state
+                .record_seen("!r:example.org", &format!("$e{i}"))
+                .unwrap();
         }
         let mut reopened = State::load(&path, 999).unwrap();
         for i in 0..MAX_SEEN_PER_ROOM {
-            assert!(reopened.is_seen_or_old("!r:example.org", &format!("$e{i}"), 10), "$e{i} should still be seen");
+            assert!(
+                reopened.is_seen_or_old("!r:example.org", &format!("$e{i}"), 10),
+                "$e{i} should still be seen"
+            );
         }
 
         reopened.record_seen("!r:example.org", "$e128").unwrap();

@@ -6,7 +6,12 @@ import type { Handled, MessageHandler } from "./rooms.ts";
 import { runInputs } from "./run.ts";
 import { errorMessage } from "./errors.ts";
 
-const CHOICES: readonly { readonly decision: Decision; readonly emoji: string; readonly command: string; readonly label: string }[] = [
+const CHOICES: readonly {
+	readonly decision: Decision;
+	readonly emoji: string;
+	readonly command: string;
+	readonly label: string;
+}[] = [
 	{ decision: "approve", emoji: "✅", command: "!approve", label: "今回だけ許可" },
 	{ decision: "approve_session", emoji: "🔁", command: "!approve_session", label: "この依頼の間は許可" },
 	{ decision: "approve_always", emoji: "♾️", command: "!approve_always", label: "今後は確認しない" },
@@ -71,10 +76,13 @@ export class Approvals implements MessageHandler {
 				const left = row.createdAt + this.#timeoutMs - this.#now();
 				let timer: NodeJS.Timeout | undefined;
 				const timeout = new Promise<void>((resolve) => {
-					timer = setTimeout(() => {
-						this.#decide(request.id, "reject", "timeout");
-						resolve();
-					}, Math.max(0, left));
+					timer = setTimeout(
+						() => {
+							this.#decide(request.id, "reject", "timeout");
+							resolve();
+						},
+						Math.max(0, left),
+					);
 				});
 				await Promise.race([decided.promise, timeout]);
 				clearTimeout(timer);
@@ -85,7 +93,12 @@ export class Approvals implements MessageHandler {
 		return outcome(db.approval(request.id));
 	}
 
-	async forCall(tool: string, summary: string, api: Pick<ToolExecutionApi, "conversationId" | "snapshot" | "memo">, context: Context): Promise<string | undefined> {
+	async forCall(
+		tool: string,
+		summary: string,
+		api: Pick<ToolExecutionApi, "conversationId" | "snapshot" | "memo">,
+		context: Context,
+	): Promise<string | undefined> {
 		const conversationId = Number(api.conversationId);
 		const roomId = this.#options.db.roomOf(conversationId);
 		if (roomId === undefined) throw new Error("この会話のルームが分からないため、承認を求められません。");
@@ -147,7 +160,9 @@ export class Approvals implements MessageHandler {
 	}
 
 	readonly help = [
-		...CHOICES.map((choice) => `- ${choice.command}（${choice.emoji} のリアクションでも）… 一番古い承認待ちに「${choice.label}」`),
+		...CHOICES.map(
+			(choice) => `- ${choice.command}（${choice.emoji} のリアクションでも）… 一番古い承認待ちに「${choice.label}」`,
+		),
 		"- !approvals … 確認しないツールと承認待ちの一覧",
 		"- !revoke ツール名 … 確認しないツールを確認するように戻す",
 	];
@@ -178,8 +193,14 @@ export class Approvals implements MessageHandler {
 		}
 		if (command === "!revoke") {
 			const tool = args[0];
-			if (tool === undefined) return { handled: true, reply: "!revoke の後にツール名を書いてください（!approvals で一覧）。" };
-			return { handled: true, reply: db.setAlwaysApproved(tool, false, this.#now()) ? `${tool} は今後また確認します。` : `${tool} は確認しない設定になっていません。` };
+			if (tool === undefined)
+				return { handled: true, reply: "!revoke の後にツール名を書いてください（!approvals で一覧）。" };
+			return {
+				handled: true,
+				reply: db.setAlwaysApproved(tool, false, this.#now())
+					? `${tool} は今後また確認します。`
+					: `${tool} は確認しない設定になっていません。`,
+			};
 		}
 		this.interrupt(roomId);
 		return { handled: false };
@@ -198,7 +219,10 @@ function normalizeEmoji(key: string): string {
 function outcome(row: ReturnType<HostDb["approval"]>): Outcome {
 	const decision = row?.decision;
 	if (decision === undefined || decision === "reject") {
-		return { approved: false, reason: row?.reason === "message" ? "message" : row?.reason === "timeout" ? "timeout" : "rejected" };
+		return {
+			approved: false,
+			reason: row?.reason === "message" ? "message" : row?.reason === "timeout" ? "timeout" : "rejected",
+		};
 	}
 	return { approved: true, by: decision };
 }

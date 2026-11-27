@@ -12,7 +12,11 @@ import { pdfParameters, slicePart, validateCrop } from "./web-tools.ts";
 
 export type AttachOptions = {
 	readonly db: HostDb;
-	readonly send: (roomId: string, txnId: string, file: { readonly path: string; readonly name: string; readonly mimeType: string }) => Promise<string>;
+	readonly send: (
+		roomId: string,
+		txnId: string,
+		file: { readonly path: string; readonly name: string; readonly mimeType: string },
+	) => Promise<string>;
 	/** The largest upload the homeserver accepts, when it says; without it nothing is refused in advance. */
 	readonly uploadLimit: () => number | undefined;
 	readonly maxChars?: number;
@@ -72,7 +76,12 @@ export function createAttachExtension(options: AttachOptions) {
 
 	return defineExtension({
 		name: "attach",
-		sections: [section("attach", () => "ファイルをルームに添付して送るには send_file を使う。ローカルの PDF は read_pdf で読む。")],
+		sections: [
+			section(
+				"attach",
+				() => "ファイルをルームに添付して送るには send_file を使う。ローカルの PDF は read_pdf で読む。",
+			),
+		],
 		tools: [
 			defineTool({
 				name: "send_file",
@@ -87,7 +96,10 @@ export function createAttachExtension(options: AttachOptions) {
 					const info = await stat(path).catch(() => Promise.reject(new Error(`${path} は読めません。`)));
 					if (!info.isFile()) throw new Error(`${path} はファイルではありません。`);
 					const limit = options.uploadLimit();
-					if (limit !== undefined && info.size > limit) throw new Error(`ファイルは ${fileSizeOf(info.size)} で、homeserver の上限（${fileSizeOf(limit)}）を超えています。`);
+					if (limit !== undefined && info.size > limit)
+						throw new Error(
+							`ファイルは ${fileSizeOf(info.size)} で、homeserver の上限（${fileSizeOf(limit)}）を超えています。`,
+						);
 					// Remembered with the call, so a rerun after a crash sends under the same transaction ID and the homeserver sends one event.
 					const txnId = `file:${await api.memo("txn", randomUUID(), context)}`;
 					const eventId = await options.send(roomOf(api), txnId, { path, name, mimeType: mimeTypeOf(name) });
@@ -112,7 +124,8 @@ export function createAttachExtension(options: AttachOptions) {
 					if (crop !== undefined && offset > 0) throw new ReadError("crop に offset は使えません。");
 					if (mode !== "text" && page === undefined) throw new ReadError(`pdfMode=${mode} には page が必要です。`);
 					if (mode === "image" && offset > 0) throw new ReadError("pdfMode=image に offset は使えません。");
-					if (crop !== undefined && mode !== "image") throw new ReadError("PDF の crop には page と pdfMode=image が必要です。");
+					if (crop !== undefined && mode !== "image")
+						throw new ReadError("PDF の crop には page と pdfMode=image が必要です。");
 
 					const path = await absolute(api, args.path, context);
 					const body = await readFile(path);
@@ -122,11 +135,21 @@ export function createAttachExtension(options: AttachOptions) {
 							crop === undefined
 								? `細部が読めなければ、同じ path、page=${page}、pdfMode=image に crop を指定して拡大できます。`
 								: `切り出し範囲: x=${crop.x}, y=${crop.y}, width=${crop.width}, height=${crop.height}（元画像全体に対する割合）`;
-						return { output: [{ type: "text" as const, text: `PDF ${page} ページ目\n${region}` }, { type: "image" as const, ...image }] };
+						return {
+							output: [
+								{ type: "text" as const, text: `PDF ${page} ページ目\n${region}` },
+								{ type: "image" as const, ...image },
+							],
+						};
 					}
 					const { markdown } = await readPdfText(body, mode, page, context.abortSignal);
 					const flags = `${page === undefined ? "" : `、page=${page}`}${mode === "text" ? "" : `、pdfMode=${mode}`}`;
-					const sliced = slicePart(markdown, offset, maxChars, (next) => `read_pdf を同じ path${flags}、offset=${next} で呼ぶ`);
+					const sliced = slicePart(
+						markdown,
+						offset,
+						maxChars,
+						(next) => `read_pdf を同じ path${flags}、offset=${next} で呼ぶ`,
+					);
 					if ("error" in sliced) return textOutput(sliced.error);
 					return textOutput(sliced.foot === undefined ? sliced.body : `${sliced.body}\n\n${sliced.foot}`);
 				},

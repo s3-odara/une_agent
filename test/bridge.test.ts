@@ -12,7 +12,10 @@ import { samplePdf, textPdf } from "./pdf-fixture.ts";
 import { answer, call, everything, inputImages, instructionsOf, lastInput, message, type Request } from "./fakes.ts";
 
 const ROOM = "!a:example.org";
-const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 2, 128, 0, 0, 1, 224])]);
+const PNG = Buffer.concat([
+	Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"),
+	Buffer.from([0, 0, 2, 128, 0, 0, 1, 224]),
+]);
 
 test("a picture goes to the model as an image, and is kept on disk with its path", async () => {
 	await using env = await agentEnv();
@@ -21,7 +24,14 @@ test("a picture goes to the model as an image, and is kept on disk with its path
 	const bridge = env.bridge();
 	const path = join(env.dir, "photo.png");
 	writeFileSync(path, PNG);
-	env.link.emit({ type: "message", roomId: ROOM, eventId: "$p", body: "photo.png", ts: 0, attachment: { path, mimeType: "image/png" } });
+	env.link.emit({
+		type: "message",
+		roomId: ROOM,
+		eventId: "$p",
+		body: "photo.png",
+		ts: 0,
+		attachment: { path, mimeType: "image/png" },
+	});
 	await bridge.idle();
 
 	assert.deepEqual(inputImages(requests[0]!), [{ type: "image", data: PNG.toString("base64"), mimeType: "image/png" }]);
@@ -37,7 +47,14 @@ test("a short text file is carried into the conversation, and kept on disk", asy
 	const bridge = env.bridge();
 	const path = join(env.dir, "notes.txt");
 	writeFileSync(path, "買い物リスト\n牛乳");
-	env.link.emit({ type: "message", roomId: ROOM, eventId: "$t", body: "notes.txt", ts: 0, attachment: { path, mimeType: "text/plain" } });
+	env.link.emit({
+		type: "message",
+		roomId: ROOM,
+		eventId: "$t",
+		body: "notes.txt",
+		ts: 0,
+		attachment: { path, mimeType: "text/plain" },
+	});
 	await bridge.idle();
 
 	const input = lastInput(requests[0]!);
@@ -54,7 +71,14 @@ test("a long text file is announced by path without inlining its body", async ()
 	const bridge = env.bridge();
 	const path = join(env.dir, "huge.txt");
 	writeFileSync(path, "あいうえお\n".repeat(1000));
-	env.link.emit({ type: "message", roomId: ROOM, eventId: "$t2", body: "huge.txt", ts: 0, attachment: { path, mimeType: "text/plain" } });
+	env.link.emit({
+		type: "message",
+		roomId: ROOM,
+		eventId: "$t2",
+		body: "huge.txt",
+		ts: 0,
+		attachment: { path, mimeType: "text/plain" },
+	});
 	await bridge.idle();
 
 	const input = lastInput(requests[0]!);
@@ -71,7 +95,14 @@ test("a file of a kind the conversation cannot carry is only announced, and kept
 	const bridge = env.bridge();
 	const path = join(env.dir, "data.zip");
 	writeFileSync(path, "PK");
-	env.link.emit({ type: "message", roomId: ROOM, eventId: "$f", body: "data.zip", ts: 0, attachment: { path, mimeType: "application/zip" } });
+	env.link.emit({
+		type: "message",
+		roomId: ROOM,
+		eventId: "$f",
+		body: "data.zip",
+		ts: 0,
+		attachment: { path, mimeType: "application/zip" },
+	});
 	await bridge.idle();
 
 	const input = lastInput(requests[0]!);
@@ -83,7 +114,12 @@ test("a file of a kind the conversation cannot carry is only announced, and kept
 test("a failed media download tells the room why as a notice", async () => {
 	await using env = await agentEnv();
 	const bridge = env.bridge();
-	env.link.emit({ type: "mediaFailed", roomId: ROOM, eventId: "$big", reason: "the attachment is 25000000 bytes, more than 20971520" });
+	env.link.emit({
+		type: "mediaFailed",
+		roomId: ROOM,
+		eventId: "$big",
+		reason: "the attachment is 25000000 bytes, more than 20971520",
+	});
 	await bridge.idle();
 
 	const [notice] = env.link.of("send");
@@ -101,7 +137,14 @@ withPoppler("a short PDF is carried into the conversation as its text, and kept 
 	const bridge = env.bridge();
 	const path = join(env.dir, "doc.pdf");
 	writeFileSync(path, samplePdf());
-	env.link.emit({ type: "message", roomId: ROOM, eventId: "$d", body: "doc.pdf", ts: 0, attachment: { path, mimeType: "application/pdf" } });
+	env.link.emit({
+		type: "message",
+		roomId: ROOM,
+		eventId: "$d",
+		body: "doc.pdf",
+		ts: 0,
+		attachment: { path, mimeType: "application/pdf" },
+	});
 	await bridge.idle();
 
 	const input = lastInput(requests[0]!);
@@ -118,7 +161,14 @@ withPoppler("a long PDF is announced by path without inlining its text", async (
 	const bridge = env.bridge();
 	const path = join(env.dir, "long.pdf");
 	writeFileSync(path, textPdf(Array.from({ length: 140 }, (_, i) => `LongText line ${i} ${"x".repeat(30)}`)));
-	env.link.emit({ type: "message", roomId: ROOM, eventId: "$d2", body: "long.pdf", ts: 0, attachment: { path, mimeType: "application/pdf" } });
+	env.link.emit({
+		type: "message",
+		roomId: ROOM,
+		eventId: "$d2",
+		body: "long.pdf",
+		ts: 0,
+		attachment: { path, mimeType: "application/pdf" },
+	});
 	await bridge.idle();
 
 	const input = lastInput(requests[0]!);
@@ -136,10 +186,23 @@ withPoppler("a PDF that cannot be read is answered with why, and kept", async ()
 	const bridge = env.bridge();
 	const path = join(env.dir, "doc.pdf");
 	writeFileSync(path, "not a pdf");
-	env.link.emit({ type: "message", roomId: ROOM, eventId: "$d", body: "doc.pdf", ts: 0, attachment: { path, mimeType: "application/pdf" } });
+	env.link.emit({
+		type: "message",
+		roomId: ROOM,
+		eventId: "$d",
+		body: "doc.pdf",
+		ts: 0,
+		attachment: { path, mimeType: "application/pdf" },
+	});
 	await bridge.idle();
 
-	assert.match(env.link.of("send").map((send) => send.body).find((body) => body !== "") ?? "", /ファイルを処理できませんでした/);
+	assert.match(
+		env.link
+			.of("send")
+			.map((send) => send.body)
+			.find((body) => body !== "") ?? "",
+		/ファイルを処理できませんでした/,
+	);
 	assert.equal(existsSync(path), true);
 });
 
@@ -212,7 +275,11 @@ test("an answer that could not be sent is sent by the next process, as the same 
 test("each room speaks as its own persona", async () => {
 	await using env = await agentEnv({
 		souls: { "calm.md": "SOUL-CALM", "blunt.md": "SOUL-BLUNT" },
-		config: { personas: { calm: "calm.md", blunt: "blunt.md" }, defaultPersona: "calm", rooms: { "!blunt:example.org": "blunt" } },
+		config: {
+			personas: { calm: "calm.md", blunt: "blunt.md" },
+			defaultPersona: "calm",
+			rooms: { "!blunt:example.org": "blunt" },
+		},
 	});
 	const requests: Request[] = [];
 	env.faux.setResponses([answer("calm", requests), answer("blunt", requests)]);
@@ -278,7 +345,10 @@ test("after !new the model no longer sees what was said before, and !new itself 
 	assert.doesNotMatch(everything(requests[1]!), /before-reset|!new/);
 	assert.match(lastInput(requests[1]!), /after-reset/);
 	assert.ok(env.link.of("send").some((send) => send.notice && send.txnId === "cmd:$2"));
-	assert.deepEqual(env.link.of("ack").map((ack) => ack.eventId), ["$1", "$2", "$3"]);
+	assert.deepEqual(
+		env.link.of("ack").map((ack) => ack.eventId),
+		["$1", "$2", "$3"],
+	);
 });
 
 test("!new in a room that has not talked yet starts it fresh all the same", async () => {
@@ -316,7 +386,9 @@ test("!new while an answer is being written stops it, and nothing is sent for th
 });
 
 test("!help lists the commands of every handler with this room's persona and model, and does not reach the model", async () => {
-	await using env = await agentEnv({ config: { personas: { talker: { soul: "soul.md", model: "faux/own" } }, defaultPersona: "talker" } });
+	await using env = await agentEnv({
+		config: { personas: { talker: { soul: "soul.md", model: "faux/own" } }, defaultPersona: "talker" },
+	});
 	const handler: MessageHandler = { help: ["- !frob … frobnicate"], onMessage: () => ({ handled: false }) };
 	const bridge = env.bridge({ handlers: [handler] });
 
@@ -329,7 +401,10 @@ test("!help lists the commands of every handler with this room's persona and mod
 	assert.match(reply?.body ?? "", /talker/);
 	assert.match(reply?.body ?? "", /faux\/own/);
 	assert.equal(env.faux.state.callCount, 0);
-	assert.deepEqual(env.link.of("ack").map((ack) => ack.eventId), ["$1"]);
+	assert.deepEqual(
+		env.link.of("ack").map((ack) => ack.eventId),
+		["$1"],
+	);
 });
 
 test("!help while a code is awaited leaves the request open for the code", async () => {
@@ -351,7 +426,11 @@ for (const { name, config, room, level } of [
 	{ name: "the default", config: { thinking: "high" }, room: ROOM, level: "high" },
 	{
 		name: "a persona's own over the default",
-		config: { thinking: "high", personas: { default: "soul.md", deep: { soul: "soul.md", thinking: "low" } }, rooms: { "!deep:example.org": "deep" } },
+		config: {
+			thinking: "high",
+			personas: { default: "soul.md", deep: { soul: "soul.md", thinking: "low" } },
+			rooms: { "!deep:example.org": "deep" },
+		},
 		room: "!deep:example.org",
 		level: "low",
 	},
@@ -412,7 +491,10 @@ test("a message sent while the agent works joins that work: the model sees it be
 
 	assert.match(lastInput(requests[0]!), /second$/);
 	assert.deepEqual(
-		env.link.of("send").filter((send) => !send.notice).map((send) => send.body),
+		env.link
+			.of("send")
+			.filter((send) => !send.notice)
+			.map((send) => send.body),
 		["両方に答えます"],
 	);
 	assert.equal(env.faux.state.callCount, 2);
