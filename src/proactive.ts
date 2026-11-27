@@ -6,7 +6,6 @@ import { TOOL_SEARCH_TOOL_NAME } from "@earendil-works/pi-durable/tool-search";
 import { obj, str } from "@earendil-works/pi-schema";
 import { answerOf } from "./answer.ts";
 import { errorMessage } from "./errors.ts";
-import { isPermanentGatewayError } from "./gateway.ts";
 import type { Aside, HostDb, Wake } from "./hostdb.ts";
 import { textOutput } from "./text.ts";
 import { formatStamp, localToEpoch } from "./time.ts";
@@ -14,7 +13,7 @@ import { formatStamp, localToEpoch } from "./time.ts";
 export interface Rooms {
 	startAside(roomId: string): Promise<Aside | undefined>;
 	adopt(roomId: string, aside: Aside): Promise<boolean>;
-	say(roomId: string, txnId: string, body: string): Promise<string>;
+	say(roomId: string, txnId: string, body: string): Promise<string | undefined>;
 }
 
 export type ProactiveOptions = {
@@ -111,17 +110,8 @@ export class Proactive {
 			this.#again = true;
 			return;
 		}
-		try {
-			await rooms.say(wake.roomId, `reply:wake:${wake.key}`, answer.text);
-		} catch (error) {
-			if (isPermanentGatewayError(error)) {
-				this.#log(`giving up ${wake.key}: ${errorMessage(error)}`);
-				db.endWake(wake.key, "expired");
-				return;
-			}
-			throw error;
-		}
-		db.endWake(wake.key, "sent");
+		const sent = await rooms.say(wake.roomId, `reply:wake:${wake.key}`, answer.text);
+		db.endWake(wake.key, sent !== undefined ? "sent" : "expired");
 	}
 }
 

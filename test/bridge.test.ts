@@ -596,7 +596,7 @@ test("when even the markdown attachment is too large, a short notice is sent and
 test("a permanent send error is not retried and does not replay on restart", async () => {
 	await using env = await agentEnv();
 	env.faux.setResponses([fauxAssistantMessage("hello back")]);
-	env.link.failSend = () => ({ message: "not in room", code: "notInRoom" });
+	env.link.failSend = () => ({ message: "not in room", code: "permanent" });
 	const bridge = env.bridge({ sendRetryDelaysMs: [60_000] });
 
 	env.link.emit(message(ROOM, "$1", "hello"));
@@ -607,4 +607,37 @@ test("a permanent send error is not retried and does not replay on restart", asy
 	const second = env.bridge();
 	await second.idle();
 	assert.equal(env.link.of("send").length, 0);
+});
+
+test("receiving a file while a run is working does not clear typing early", async () => {
+	const gate = gated();
+	await using env = await agentEnv({ extensions: () => [gate.extension] });
+	env.faux.setResponses([call("gate", {}), answer("確認しました")]);
+	const bridge = env.bridge();
+	const path = join(env.dir, "note.txt");
+	writeFileSync(path, "hello");
+
+	env.link.emit(message(ROOM, "$1", "first"));
+	await gate.running;
+	env.link.emit({
+		type: "message",
+		roomId: ROOM,
+		eventId: "$2",
+		body: "note.txt",
+		ts: 0,
+		attachment: { path, mimeType: "text/plain" },
+	});
+	await env.link.waitFor("ack", (ack) => ack.eventId === "$2");
+
+	assert.deepEqual(
+		env.link.of("typing").map((typing) => typing.on),
+		[true],
+	);
+
+	gate.release();
+	await bridge.idle();
+	assert.deepEqual(
+		env.link.of("typing").map((typing) => typing.on),
+		[true, false],
+	);
 });

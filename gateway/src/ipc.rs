@@ -8,9 +8,7 @@ use tokio::sync::mpsc;
 #[serde(rename_all = "camelCase")]
 pub enum ErrorCode {
     TooLarge,
-    Forbidden,
-    NotInRoom,
-    InvalidRequest,
+    Permanent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

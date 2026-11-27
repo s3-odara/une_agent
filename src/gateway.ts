@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
-export type GatewayErrorCode = "tooLarge" | "forbidden" | "notInRoom" | "invalidRequest";
+export type GatewayErrorCode = "tooLarge" | "permanent";
 
 export class GatewayError extends Error {
 	readonly code: GatewayErrorCode | undefined;
@@ -14,7 +14,7 @@ export class GatewayError extends Error {
 }
 
 export function isPermanentGatewayError(error: unknown): boolean {
-	return error instanceof GatewayError && error.code !== undefined;
+	return error instanceof GatewayError && (error.code === "tooLarge" || error.code === "permanent");
 }
 
 /** Keep in step with `gateway/src/ipc.rs`. */

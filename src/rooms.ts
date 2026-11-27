@@ -85,7 +85,7 @@ export class Bridge {
 	#uploadLimit: number | undefined;
 	/** Per room, the tail of its admissions, so two messages never race to create the room's conversation. */
 	readonly #admissions = new Map<string, Promise<void>>();
-	readonly #inFlight = new Map<string, string>();
+	readonly #inFlight = new Set<string>();
 	readonly #typing = new Map<string, number>();
 	readonly #sends = new Map<string, { resolve: (eventId: string) => void; reject: (error: Error) => void }>();
 	readonly #work = new Set<Promise<void>>();
@@ -213,31 +213,27 @@ export class Bridge {
 
 	/** When it cannot be transcribed, the message is acked all the same: a recording that failed once would fail again at every start. */
 	async #admitAudio(message: MessageEvent, path: string, time: string | undefined): Promise<void> {
-		const { link } = this.#options;
 		const voice = this.#options.voice;
 		const tell = (body: string) => this.#send(message.roomId, `stt:${message.eventId}`, body, true);
 		if (voice === undefined)
 			return void (await tell("音声メッセージには対応していません（設定に voice がありません）。"));
 
-		link.send({ type: "typing", roomId: message.roomId, on: true });
-		let text: string;
-		try {
-			text = (await voice.transcriber.transcribe(path)).trim();
-		} catch (error) {
-			link.send({ type: "typing", roomId: message.roomId, on: false });
-			this.#log(`transcribing ${message.eventId} failed: ${errorMessage(error)}`);
-			return void (await tell(`音声を文字にできませんでした（${errorMessage(error)}）。`));
-		}
-		if (text === "") {
-			link.send({ type: "typing", roomId: message.roomId, on: false });
-			return void (await tell("音声を聞き取れませんでした。"));
-		}
-		this.#track(
-			this.notice(message.roomId, `heard:${message.eventId}`, `🎤 ${text}`).catch((error) => {
-				this.#log(`posting the transcript of ${message.eventId} failed: ${errorMessage(error)}`);
-			}),
-		);
-		await this.#submit(message.roomId, message.eventId, `[${time === undefined ? "" : `${time} `}音声] ${text}`, true);
+		await this.#withTyping(message.roomId, async () => {
+			let text: string;
+			try {
+				text = (await voice.transcriber.transcribe(path)).trim();
+			} catch (error) {
+				this.#log(`transcribing ${message.eventId} failed: ${errorMessage(error)}`);
+				return void (await tell(`音声を文字にできませんでした（${errorMessage(error)}）。`));
+			}
+			if (text === "") return void (await tell("音声を聞き取れませんでした。"));
+			this.#track(
+				this.notice(message.roomId, `heard:${message.eventId}`, `🎤 ${text}`).catch((error) => {
+					this.#log(`posting the transcript of ${message.eventId} failed: ${errorMessage(error)}`);
+				}),
+			);
+			await this.#submit(message.roomId, message.eventId, `[${time === undefined ? "" : `${time} `}音声] ${text}`, true);
+		});
 	}
 
 	/**
@@ -245,7 +241,6 @@ export class Bridge {
 	 * the original file later even when it was inlined or omitted.
 	 */
 	async #admitFile(message: MessageEvent, attachment: Attachment, time: string | undefined): Promise<void> {
-		const { link } = this.#options;
 		const tell = (body: string) => this.#send(message.roomId, `file:${message.eventId}`, body, true);
 		const name = message.body.trim() === "" ? "添付ファイル" : message.body.trim();
 		const bytes = await stat(attachment.path).then(
@@ -256,42 +251,41 @@ export class Bridge {
 		const stamp = time === undefined ? "" : `${time} `;
 		const kept = `（保存先: ${attachment.path}）`;
 
-		link.send({ type: "typing", roomId: message.roomId, on: true });
-		try {
-			if (IMAGE_TYPES.has(attachment.mimeType) && bytes <= MAX_IMAGE_BYTES) {
-				const content: UserInput = [
-					{ type: "text", text: `[${stamp}画像添付] ${kind} ${kept}` },
-					{ type: "image", data: (await readFile(attachment.path)).toString("base64"), mimeType: attachment.mimeType },
-				];
-				await this.#submit(message.roomId, message.eventId, content);
-				return;
+		await this.#withTyping(message.roomId, async () => {
+			try {
+				if (IMAGE_TYPES.has(attachment.mimeType) && bytes <= MAX_IMAGE_BYTES) {
+					const content: UserInput = [
+						{ type: "text", text: `[${stamp}画像添付] ${kind} ${kept}` },
+						{ type: "image", data: (await readFile(attachment.path)).toString("base64"), mimeType: attachment.mimeType },
+					];
+					await this.#submit(message.roomId, message.eventId, content);
+					return;
+				}
+				if (attachment.mimeType === "application/pdf") {
+					const { markdown, pages } = await readPdfText(await readFile(attachment.path));
+					const body =
+						markdown.length <= FILE_TEXT_MAX
+							? `\n${markdown}`
+							: `\n全 ${pages} ページ・${markdown.length} 字のため本文を省略しました。read_pdf で確認してください。`;
+					await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${kept}${body}`);
+					return;
+				}
+				if (attachment.mimeType.startsWith("text/") || attachment.mimeType === "application/json") {
+					const text = (await readFile(attachment.path, "utf8")).trim();
+					const body =
+						text.length <= FILE_TEXT_MAX
+							? `\n${text}`
+							: `\n${text.split("\n").length} 行・${text.length} 字のため本文を省略しました。必要に応じて read や bash で確認してください。`;
+					await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${kept}${body}`);
+					return;
+				}
+				const note = IMAGE_TYPES.has(attachment.mimeType) ? `大きすぎるため会話に載せられません。` : "";
+				await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${kept}${note}`);
+			} catch (error) {
+				this.#log(`reading ${message.eventId} failed: ${errorMessage(error)}`);
+				await tell(`ファイルを処理できませんでした（${errorMessage(error)}）。`);
 			}
-			if (attachment.mimeType === "application/pdf") {
-				const { markdown, pages } = await readPdfText(await readFile(attachment.path));
-				const body =
-					markdown.length <= FILE_TEXT_MAX
-						? `\n${markdown}`
-						: `\n全 ${pages} ページ・${markdown.length} 字のため本文を省略しました。read_pdf で確認してください。`;
-				await this.#submit(message.roomId, message.eventId, `[${stamp}PDF添付] ${kind} ${kept}${body}`);
-				return;
-			}
-			if (attachment.mimeType.startsWith("text/") || attachment.mimeType === "application/json") {
-				const text = (await readFile(attachment.path, "utf8")).trim();
-				const body =
-					text.length <= FILE_TEXT_MAX
-						? `\n${text}`
-						: `\n${text.split("\n").length} 行・${text.length} 字のため本文を省略しました。必要に応じて read や bash で確認してください。`;
-				await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${kept}${body}`);
-				return;
-			}
-			const note = IMAGE_TYPES.has(attachment.mimeType) ? `大きすぎるため会話に載せられません。` : "";
-			await this.#submit(message.roomId, message.eventId, `[${stamp}ファイル添付] ${kind} ${kept}${note}`);
-		} catch (error) {
-			this.#log(`reading ${message.eventId} failed: ${errorMessage(error)}`);
-			await tell(`ファイルを処理できませんでした（${errorMessage(error)}）。`);
-		} finally {
-			link.send({ type: "typing", roomId: message.roomId, on: false });
-		}
+		});
 	}
 
 	async #submitToRoom(roomId: string, key: string, content: string | UserInput, noteActivity = true) {
@@ -401,7 +395,7 @@ export class Bridge {
 		return { busy, latest };
 	}
 
-	say(roomId: string, txnId: string, body: string): Promise<string> {
+	say(roomId: string, txnId: string, body: string): Promise<string | undefined> {
 		return this.#deliverText(roomId, txnId, body, false, `the message ${txnId}`);
 	}
 
@@ -547,19 +541,27 @@ export class Bridge {
 		return harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
 	}
 
-	#typingCount(roomId: string, delta: 1 | -1): void {
+	async #withTyping<T>(roomId: string, work: () => Promise<T>): Promise<T> {
 		const before = this.#typing.get(roomId) ?? 0;
-		const after = Math.max(0, before + delta);
-		if (after === 0) this.#typing.delete(roomId);
-		else this.#typing.set(roomId, after);
-		if (before === 0 && after > 0) this.#options.link.send({ type: "typing", roomId, on: true });
-		else if (before > 0 && after === 0) this.#options.link.send({ type: "typing", roomId, on: false });
+		this.#typing.set(roomId, before + 1);
+		if (before === 0) this.#options.link.send({ type: "typing", roomId, on: true });
+		try {
+			return await work();
+		} finally {
+			const after = (this.#typing.get(roomId) ?? 1) - 1;
+			if (after <= 0) {
+				this.#typing.delete(roomId);
+				this.#options.link.send({ type: "typing", roomId, on: false });
+			} else {
+				this.#typing.set(roomId, after);
+			}
+		}
 	}
 
 	#startDelivery(delivery: Delivery): void {
 		// A resent message can reach here after the delivery the start picked up has already finished.
 		if (this.#inFlight.has(delivery.eventId) || this.#options.db.isDelivered(delivery.eventId)) return;
-		this.#inFlight.set(delivery.eventId, delivery.roomId);
+		this.#inFlight.add(delivery.eventId);
 		this.#track(
 			this.#deliver(delivery)
 				.catch((error) => this.#log(`delivering the answer to ${delivery.eventId} failed: ${errorMessage(error)}`))
@@ -571,31 +573,16 @@ export class Bridge {
 
 	async #deliver(delivery: Delivery): Promise<void> {
 		const { db } = this.#options;
-		let answer: { body: string; notice: boolean } | undefined;
-		this.#typingCount(delivery.roomId, 1);
-		try {
-			answer = await this.#answerOf(delivery);
-		} finally {
-			this.#typingCount(delivery.roomId, -1);
-		}
+		const answer = await this.#withTyping(delivery.roomId, () => this.#answerOf(delivery));
 		if (answer === undefined) return void db.markDelivered(delivery.eventId);
-		let replyEventId: string;
-		try {
-			replyEventId = await this.#deliverText(
-				delivery.roomId,
-				`reply:${delivery.eventId}`,
-				answer.body,
-				answer.notice,
-				`the answer to ${delivery.eventId}`,
-			);
-		} catch (error) {
-			if (isPermanentGatewayError(error)) {
-				this.#log(`giving up delivering the answer to ${delivery.eventId}: ${errorMessage(error)}`);
-				db.markDelivered(delivery.eventId);
-				return;
-			}
-			throw error;
-		}
+		const replyEventId = await this.#deliverText(
+			delivery.roomId,
+			`reply:${delivery.eventId}`,
+			answer.body,
+			answer.notice,
+			`the answer to ${delivery.eventId}`,
+		);
+		if (replyEventId === undefined) return void db.markDelivered(delivery.eventId);
 		// The text goes first: it is there at once, while speech takes a while to make.
 		if (delivery.voice === true && !answer.notice) {
 			try {
@@ -613,41 +600,66 @@ export class Bridge {
 		db.markDelivered(delivery.eventId, replyEventId);
 	}
 
+	/** Returns `undefined` when a permanent error rules out ever sending this message. */
 	async #deliverText(
 		roomId: string,
 		txnId: string,
 		body: string,
 		notice: boolean,
 		what: string,
-	): Promise<string> {
+	): Promise<string | undefined> {
 		try {
-			return await this.#retrying(what, () => this.#send(roomId, txnId, body, notice));
+			try {
+				return await this.#retrying(what, () => this.#send(roomId, txnId, body, notice));
+			} catch (error) {
+				if (!(error instanceof GatewayError && error.code === "tooLarge")) throw error;
+				return await this.#sendAsMarkdown(roomId, txnId, body, what);
+			}
 		} catch (error) {
-			if (!(error instanceof GatewayError && error.code === "tooLarge")) throw error;
-			return this.#sendAsMarkdown(roomId, txnId, body, what);
+			if (isPermanentGatewayError(error)) {
+				this.#log(`giving up delivering ${what}: ${errorMessage(error)}`);
+				return undefined;
+			}
+			throw error;
+		}
+	}
+
+	async #withTempFile<T>(
+		dir: string,
+		name: string,
+		content: string | Uint8Array,
+		use: (path: string) => Promise<T>,
+	): Promise<T> {
+		await mkdir(dir, { recursive: true });
+		const path = join(dir, name);
+		await writeFile(path, content);
+		try {
+			return await use(path);
+		} finally {
+			await rm(path, { force: true });
 		}
 	}
 
 	async #sendAsMarkdown(roomId: string, txnId: string, body: string, what: string): Promise<string> {
 		const dir = join(this.#options.config.dataDir, "replies");
-		await mkdir(dir, { recursive: true });
-		const path = join(dir, `${txnId.replace(/[^A-Za-z0-9_-]/g, "_")}.md`);
-		await writeFile(path, body, "utf8");
+		const fileName = `${txnId.replace(/[^A-Za-z0-9_-]/g, "_")}.md`;
 		try {
-			return await this.#retrying(`${what} as markdown`, () =>
-				this.sendAttachment(roomId, `file:${txnId}`, {
-					path,
-					name: "reply.md",
-					mimeType: "text/markdown",
-				}),
+			return await this.#withTempFile(dir, fileName, body, (path) =>
+				this.#retrying(`${what} as markdown`, () =>
+					this.sendAttachment(roomId, `file:${txnId}`, {
+						path,
+						name: "reply.md",
+						mimeType: "text/markdown",
+					}),
+				),
 			);
 		} catch (error) {
 			if (error instanceof GatewayError && error.code === "tooLarge") {
-				return await this.#send(roomId, `toolarge:${txnId}`, "応答が長すぎて送信できませんでした。", true);
+				return await this.#retrying(`${what} too-large notice`, () =>
+					this.#send(roomId, `toolarge:${txnId}`, "応答が長すぎて送信できませんでした。", true),
+				);
 			}
 			throw error;
-		} finally {
-			await rm(path, { force: true });
 		}
 	}
 
@@ -676,19 +688,15 @@ export class Bridge {
 		const speech = await synthesizer.synthesize(text, speaker);
 
 		const dir = (this.#options.voice as VoiceOptions).outDir;
-		await mkdir(dir, { recursive: true });
-		const path = join(dir, `${delivery.eventId.replace(/[^A-Za-z0-9_-]/g, "_")}.ogg`);
-		await writeFile(path, speech.ogg);
-		try {
-			await this.sendAttachment(delivery.roomId, `voice:${delivery.eventId}`, {
+		const fileName = `${delivery.eventId.replace(/[^A-Za-z0-9_-]/g, "_")}.ogg`;
+		await this.#withTempFile(dir, fileName, speech.ogg, (path) =>
+			this.sendAttachment(delivery.roomId, `voice:${delivery.eventId}`, {
 				path,
 				name: "voice-message.ogg",
 				mimeType: "audio/ogg",
 				voice: { durationMs: speech.durationMs, waveform: speech.waveform },
-			});
-		} finally {
-			await rm(path, { force: true });
-		}
+			}),
+		);
 	}
 
 	/** Undefined when nothing is to be sent: the run was stopped by `!new`, or another message of the same run answers. */

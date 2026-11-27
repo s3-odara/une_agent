@@ -662,23 +662,29 @@ fn coded(code: ErrorCode, message: impl Into<String>) -> anyhow::Error {
     })
 }
 
-fn error_code(error: &anyhow::Error) -> Option<ErrorCode> {
-    if let Some(coded) = error.downcast_ref::<CodedError>() {
-        return Some(coded.code);
-    }
-    let kind = error
-        .downcast_ref::<matrix_sdk::Error>()?
-        .client_api_error_kind()?;
+fn client_api_error_code(kind: &ErrorKind) -> Option<ErrorCode> {
     match kind {
         ErrorKind::TooLarge => Some(ErrorCode::TooLarge),
-        ErrorKind::Forbidden { .. } => Some(ErrorCode::Forbidden),
-        ErrorKind::NotFound => Some(ErrorCode::NotInRoom),
-        ErrorKind::BadJson
+        ErrorKind::Forbidden
+        | ErrorKind::NotFound
+        | ErrorKind::BadJson
         | ErrorKind::NotJson
         | ErrorKind::InvalidParam
-        | ErrorKind::MissingParam => Some(ErrorCode::InvalidRequest),
+        | ErrorKind::MissingParam => Some(ErrorCode::Permanent),
         _ => None,
     }
+}
+
+fn error_code(error: &anyhow::Error) -> Option<ErrorCode> {
+    error.chain().find_map(|cause| {
+        if let Some(coded) = cause.downcast_ref::<CodedError>() {
+            return Some(coded.code);
+        }
+        cause
+            .downcast_ref::<matrix_sdk::Error>()
+            .and_then(|err| err.client_api_error_kind())
+            .and_then(client_api_error_code)
+    })
 }
 
 /// Spawned, so a slow send does not hold back acks or other rooms.
@@ -709,7 +715,7 @@ fn parse_event_id(id: &str) -> Result<OwnedEventId> {
         .map(ToOwned::to_owned)
         .map_err(|error| {
             coded(
-                ErrorCode::InvalidRequest,
+                ErrorCode::Permanent,
                 format!("{id} is not an event ID: {error}"),
             )
         })
@@ -718,16 +724,16 @@ fn parse_event_id(id: &str) -> Result<OwnedEventId> {
 fn joined_room(client: &Client, room_id: &str) -> Result<Room> {
     let id = <&RoomId>::try_from(room_id).map_err(|error| {
         coded(
-            ErrorCode::InvalidRequest,
+            ErrorCode::Permanent,
             format!("{room_id} is not a room ID: {error}"),
         )
     })?;
     let room = client
         .get_room(id)
-        .ok_or_else(|| coded(ErrorCode::NotInRoom, format!("not in room {room_id}")))?;
+        .ok_or_else(|| coded(ErrorCode::Permanent, format!("not in room {room_id}")))?;
     if room.state() != RoomState::Joined {
         return Err(coded(
-            ErrorCode::NotInRoom,
+            ErrorCode::Permanent,
             format!("not joined to room {room_id}"),
         ));
     }
@@ -785,10 +791,12 @@ async fn send_attachment(
     let data = tokio::fs::read(&file.path)
         .await
         .with_context(|| format!("reading {}", file.path))?;
-    let mime: mime::Mime = file
-        .mime_type
-        .parse()
-        .context("a MIME type the client gave is not one")?;
+    let mime: mime::Mime = file.mime_type.parse().map_err(|error| {
+        coded(
+            ErrorCode::Permanent,
+            format!("a MIME type the client gave is not one: {error}"),
+        )
+    })?;
     let size = UInt::new(data.len() as u64);
     let info = if let Some(voice) = &file.voice {
         AttachmentInfo::Voice(BaseAudioInfo {
@@ -863,7 +871,12 @@ fn set_typing(client: &Client, shared: &Shared, room_id: String, on: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ErrorCode, coded, error_code, parse_event_id, parse_mime, without_reply_fallback};
+    use matrix_sdk::ruma::api::error::{ErrorKind, LimitExceededErrorData};
+
+    use super::{
+        ErrorCode, client_api_error_code, error_code, parse_event_id, parse_mime,
+        without_reply_fallback,
+    };
 
     #[test]
     fn a_reply_loses_the_quote_it_starts_with() {
@@ -886,15 +899,30 @@ mod tests {
     }
 
     #[test]
-    fn permanent_gateway_errors_carry_their_code() {
+    fn permanent_gateway_errors_are_classified_from_matrix_error_kinds() {
+        assert_eq!(
+            client_api_error_code(&ErrorKind::TooLarge),
+            Some(ErrorCode::TooLarge)
+        );
+        assert_eq!(
+            client_api_error_code(&ErrorKind::Forbidden),
+            Some(ErrorCode::Permanent)
+        );
+        assert_eq!(
+            client_api_error_code(&ErrorKind::NotFound),
+            Some(ErrorCode::Permanent)
+        );
+        assert_eq!(
+            client_api_error_code(&ErrorKind::InvalidParam),
+            Some(ErrorCode::Permanent)
+        );
+        assert_eq!(
+            client_api_error_code(&ErrorKind::LimitExceeded(LimitExceededErrorData::new())),
+            None
+        );
         assert_eq!(
             error_code(&parse_event_id("not-an-event-id").unwrap_err()),
-            Some(ErrorCode::InvalidRequest)
+            Some(ErrorCode::Permanent)
         );
-        assert_eq!(
-            error_code(&coded(ErrorCode::NotInRoom, "not in room")),
-            Some(ErrorCode::NotInRoom)
-        );
-        assert_eq!(error_code(&anyhow::anyhow!("transient")), None);
     }
 }

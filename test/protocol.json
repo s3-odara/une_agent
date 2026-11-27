@@ -78,6 +78,12 @@
 		},
 		{
 			"type": "error",
+			"requestId": "q",
+			"message": "not in room",
+			"code": "permanent"
+		},
+		{
+			"type": "error",
 			"message": "boom"
 		},
 		{

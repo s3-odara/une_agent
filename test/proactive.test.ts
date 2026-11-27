@@ -322,7 +322,7 @@ test("a matter told in another room is followed up at a check in that room, by t
 test("a wake whose send fails permanently is closed instead of retrying on later runs", async () => {
 	await using t = await setup();
 	t.env.faux.setResponses([answer("おはようございます")]);
-	t.env.link.failSend = () => ({ message: "not in room", code: "notInRoom" });
+	t.env.link.failSend = () => ({ message: "not in room", code: "permanent" });
 
 	await t.check("brief:1");
 	assert.equal(t.env.link.of("send").length, 1);
