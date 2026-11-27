@@ -186,7 +186,7 @@ export function createCompactionExtension(options: CompactionOptions) {
 				beforeCompact: async (compaction, api, context) => {
 					// A rerun after a crash places what the first run made, rather than asking the model again.
 					const made = await api.memo<string>("summary", context);
-					if (made !== undefined) return { summary: made };
+					if (made !== undefined) return { kind: "summary", summary: made };
 					const ref = (await api.snapshot(AgentDoc, api.conversationId, context))?.model;
 					const model = ref === undefined ? undefined : api.models.getModel(ref.provider, ref.modelId);
 					if (model === undefined) return undefined;
@@ -205,7 +205,7 @@ export function createCompactionExtension(options: CompactionOptions) {
 					]);
 					if (summary === undefined) return undefined;
 					if (native !== undefined) db.addNativeCompaction(hashOf(summary), modelKey(model), native);
-					return { summary: await api.memo("summary", summary, context) };
+					return { kind: "summary", summary: await api.memo("summary", summary, context) };
 				},
 			}),
 			hook(GenerationTask, {
