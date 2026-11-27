@@ -463,14 +463,19 @@ export class Bridge {
 		readonly body: string;
 		readonly replyTo?: string;
 	}): Promise<Extract<Handled, { handled: true }> | undefined> {
+		const text = message.body.trim();
 		// Before the handlers, so asking for help does not give up a pending approval or code request.
-		if (message.body.trim() === "!help") return { handled: true, reply: this.#help(message.roomId) };
+		if (text === "!help") return { handled: true, reply: this.#help(message.roomId) };
 		for (const handler of this.#options.handlers ?? []) {
 			const result = handler.onMessage(message);
 			if (result.handled) return result;
 		}
 		// Not a handler but after them: they take it as any other message, so a pending approval or code request is given up.
-		if (message.body.trim() !== "!new") return undefined;
+		if (text === "!stop") {
+			await (await this.#existingConversation(message.roomId))?.abort(this.#options.context);
+			return { handled: true, reply: "今の処理を止めました。" };
+		}
+		if (text !== "!new") return undefined;
 		await this.#startOver(message.roomId);
 		return { handled: true, reply: "新しい会話を始めました。これまでの会話は引き継ぎません（記憶はそのままです）。" };
 	}
@@ -482,6 +487,7 @@ export class Bridge {
 		return [
 			"コマンド:",
 			"- !help … この一覧",
+			"- !stop … 今の処理を止める（会話はそのまま）",
 			"- !new … このルームの会話を最初からやり直す（記憶とカレンダーはそのまま）",
 			...(this.#options.handlers ?? []).flatMap((handler) => handler.help ?? []),
 			"",
@@ -699,7 +705,7 @@ export class Bridge {
 		);
 	}
 
-	/** Undefined when nothing is to be sent: the run was stopped by `!new`, or another message of the same run answers. */
+	/** Undefined when nothing is to be sent: the run was stopped by `!stop` or `!new`, or another message of the same run answers. */
 	async #answerOf(delivery: Delivery): Promise<{ body: string; notice: boolean } | undefined> {
 		const { harness, context } = this.#options;
 		const submission = await harness.submission(idFromNumber<SubmissionId>(delivery.submissionId), context);

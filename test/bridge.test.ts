@@ -387,6 +387,54 @@ test("!new while an answer is being written stops it, and nothing is sent for th
 	);
 });
 
+test("!stop stops the current run while keeping the conversation, and nothing is sent for the stopped answer", async () => {
+	await using env = await agentEnv();
+	const requests: Request[] = [];
+	const { promise: writing, resolve: started } = Promise.withResolvers<void>();
+	env.faux.setResponses([
+		answer("first", requests),
+		(_context, options) =>
+			new Promise((_resolve, reject) => {
+				started();
+				options?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+			}),
+		answer("after-stop", requests),
+	]);
+	const bridge = env.bridge();
+
+	env.link.emit(message(ROOM, "$1", "remember-this"));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$2", "a long question"));
+	await writing;
+	env.link.emit(message(ROOM, "$3", "!stop"));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$4", "continue"));
+	await bridge.idle();
+
+	assert.equal(requests.length, 2);
+	assert.match(everything(requests[1]!), /remember-this/);
+	assert.doesNotMatch(everything(requests[1]!), /!stop/);
+	assert.deepEqual(
+		env.link.of("send").map((send) => [send.body, send.notice]),
+		[
+			["first", false],
+			["今の処理を止めました。", true],
+			["after-stop", false],
+		],
+	);
+});
+
+test("!stop when nothing is running replies without calling the model", async () => {
+	await using env = await agentEnv();
+	const bridge = env.bridge();
+
+	env.link.emit(message(ROOM, "$1", "!stop"));
+	await bridge.idle();
+
+	assert.equal(env.faux.state.callCount, 0);
+	assert.equal(env.link.of("send").filter((send) => send.notice).length, 1);
+});
+
 test("!help lists the commands of every handler with this room's persona and model, and does not reach the model", async () => {
 	await using env = await agentEnv({
 		config: { personas: { talker: { soul: "soul.md", model: "faux/own" } }, defaultPersona: "talker" },
