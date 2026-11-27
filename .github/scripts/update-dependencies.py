@@ -6,7 +6,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from pinned_dependencies import check_models, download, stable_tag
+from pinned_dependencies import check_models, gh, stable_tag
 
 
 def run(*args):
@@ -79,17 +79,17 @@ def update_whisper():
     installed = re.search(r'rev = "([0-9a-f]{40})";', recipe)[1]
     repo = "ggml-org/whisper.cpp"
     latest = stable_tag(repo)
-    api = f"https://api.github.com/repos/{repo}"
-    release = json.loads(download(f"{api}/commits/{latest}"))
+    api = f"repos/{repo}"
+    release = gh("api", f"{api}/commits/{latest}")
     rev = release["sha"]
     if not re.fullmatch(r"[0-9a-f]{40}", rev):
         raise ValueError(f"Unexpected whisper.cpp revision: {rev!r}")
     if rev == installed:
         return
 
-    status = json.loads(download(f"{api}/compare/{installed}...{rev}?per_page=1"))["status"]
+    status = gh("api", f"{api}/compare/{installed}...{rev}?per_page=1")["status"]
     if status == "diverged":
-        current = json.loads(download(f"{api}/commits/{installed}"))
+        current = gh("api", f"{api}/commits/{installed}")
         if release["commit"]["committer"]["date"] <= current["commit"]["committer"]["date"]:
             return
     elif status != "ahead":

@@ -33,6 +33,8 @@ jobs:
           extra_nix_config: access-tokens = github.com=${{ github.token }}
       - run: nix flake update
       - name: Update npm, Cargo, and speech recognition dependencies
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           nix shell --inputs-from . nixpkgs#nodejs_26 nixpkgs#cargo nixpkgs#rustc nixpkgs#prefetch-npm-deps \
             -c python3 .github/scripts/update-dependencies.py
