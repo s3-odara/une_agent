@@ -1,8 +1,4 @@
-//! The call is Element Call's, in its room-state membership format (`org.matrix.msc3401.call.member`): matrix-rust-rtc
-//! can write no other format Element Call reads, and it is the only one that arrives over the plain `/sync` the gateway
-//! runs (the current format needs sticky events over sliding sync).
-
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,12 +8,8 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use matrix_rtc_call::{CallEnd, CallStatus};
 use matrix_rtc_call_sdk::{CallEvent, LiveKitCall, LiveKitCallOptions};
-use matrix_rtc_core::compat::MembershipFormat;
 use matrix_rtc_transport::{AudioFrame, LocalTrackHandle, MediaStreamKind, PublishOptions, RemoteTrackHandle};
-use matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState;
-use matrix_sdk::ruma::events::{AnySyncStateEvent, StateEventType};
-use matrix_sdk::ruma::serde::Raw;
-use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId};
+use matrix_sdk::ruma::OwnedUserId;
 use matrix_sdk::{Client, Room, RoomState};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
@@ -27,9 +19,9 @@ use tracing::{info, warn};
 use crate::audio::{Cut, Cutter, SAMPLE_RATE, VAD_RATE, VadConfig, read_wav, write_wav};
 use crate::ipc::{Event, Outbox};
 
-const MEMBER_EVENT_TYPE: &str = "org.matrix.msc3401.call.member";
-/// What Element Call assumes when a membership states no lifetime.
-const DEFAULT_EXPIRES_MS: u64 = 4 * 60 * 60 * 1000;
+const RTC_MEMBER_TYPES: [&str; 2] = ["m.rtc.member", "org.matrix.msc4143.rtc.member"];
+const ROOM_CALL_SLOT_ID: &str = "m.call#room";
+const CALL_APPLICATION: &str = "m.call";
 /// Playback is pushed in 10 ms frames, paced by a timer, so the listeners are deaf for as long as it is actually heard
 /// instead of until the source has queued it.
 const PLAY_FRAME: usize = (SAMPLE_RATE / 100) as usize;
@@ -146,6 +138,7 @@ impl<C> CallMachine<C> {
 #[derive(Clone)]
 pub struct Calls {
     rooms: Arc<Mutex<HashMap<String, CallMachine<mpsc::UnboundedSender<Control>>>>>,
+    watchers: Arc<Mutex<HashMap<String, AbortOnDrop>>>,
     out: Outbox,
     allowed: Arc<Vec<OwnedUserId>>,
     dir: Arc<PathBuf>,
@@ -154,7 +147,26 @@ pub struct Calls {
 
 impl Calls {
     pub fn new(out: Outbox, allowed: Arc<Vec<OwnedUserId>>, dir: PathBuf, vad: VadConfig) -> Self {
-        Self { rooms: Arc::default(), out, allowed, dir: Arc::new(dir), vad }
+        Self { rooms: Arc::default(), watchers: Arc::default(), out, allowed, dir: Arc::new(dir), vad }
+    }
+
+    pub fn sync_rooms(&self, client: &Client, joined: Vec<Room>) {
+        let joined_ids: HashSet<String> = joined.iter().map(|room| room.room_id().to_string()).collect();
+        let left: Vec<String> = {
+            let mut watchers = self.watchers.lock().unwrap();
+            let removed: Vec<String> = watchers.keys().filter(|id| !joined_ids.contains(*id)).cloned().collect();
+            for id in &removed {
+                watchers.remove(id);
+            }
+            for room in joined {
+                let id = room.room_id().to_string();
+                watchers.entry(id).or_insert_with(|| spawn_room_watcher(client.clone(), room, self.clone()));
+            }
+            removed
+        };
+        for id in left {
+            self.leave_room(&id);
+        }
     }
 
     fn emit(&self, event: Event) {
@@ -196,10 +208,6 @@ impl Calls {
         }
     }
 
-    fn tracked_rooms(&self) -> Vec<String> {
-        self.rooms.lock().unwrap().keys().cloned().collect()
-    }
-
     pub fn speak(&self, room_id: &str, id: String, path: String) -> Result<()> {
         let rooms = self.rooms.lock().unwrap();
         let tx = rooms.get(room_id).and_then(CallMachine::control).with_context(|| format!("not in a call in {room_id}"))?;
@@ -239,8 +247,7 @@ impl Calls {
 
     async fn run_once(&self, room: &Room, room_id: &str) -> Result<()> {
         tokio::fs::create_dir_all(&*self.dir).await.with_context(|| format!("creating {}", self.dir.display()))?;
-        let options = LiveKitCallOptions { format: MembershipFormat::RoomState, ..LiveKitCallOptions::default() };
-        let call = LiveKitCall::join(room, options).await.context("joining the call")?;
+        let call = LiveKitCall::join(room, LiveKitCallOptions::default()).await.context("joining the call")?;
         info!("joined the call in {room_id} as {}", call.local_identity());
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -468,84 +475,61 @@ fn spoken(room_id: &str, id: String) -> Event {
     Event::CallSpoken { room_id: room_id.to_owned(), id }
 }
 
-/// Memberships carry a deadline, so the rooms are also looked at again every half minute.
-pub fn watch_memberships(client: &Client, calls: Calls) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<OwnedRoomId>();
-    client.add_event_handler(move |event: Raw<AnySyncStateEvent>, room: Room| {
-        let tx = tx.clone();
-        async move {
-            if event.get_field::<String>("type").ok().flatten().as_deref() == Some(MEMBER_EVENT_TYPE) {
-                let _ = tx.send(room.room_id().to_owned());
-            }
-        }
-    });
-    let client = client.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(30));
+fn spawn_room_watcher(client: Client, room: Room, calls: Calls) -> AbortOnDrop {
+    AbortOnDrop(tokio::spawn(async move {
+        let mut updates = room.sticky_events().subscribe();
         loop {
-            let rooms: Vec<Room> = tokio::select! {
-                Some(room_id) = rx.recv() => client.get_room(&room_id).into_iter().collect(),
-                _ = tick.tick() => {
-                    let joined = client.joined_rooms();
-                    for id in calls.tracked_rooms() {
-                        if !joined.iter().any(|room| room.room_id().as_str() == id) {
-                            calls.leave_room(&id);
-                        }
-                    }
-                    joined
-                }
-            };
-            for room in rooms {
-                if room.state() != RoomState::Joined {
-                    calls.leave_room(room.room_id().as_str());
-                    continue;
-                }
-                if let Ok(latest_ts) = latest_member_ts(&client, &room, &calls.allowed).await {
-                    calls.set_membership(room, latest_ts);
-                }
+            if room.state() != RoomState::Joined {
+                calls.leave_room(room.room_id().as_str());
+                break;
+            }
+            calls.set_membership(room.clone(), latest_member_ts(&client, &room, &calls.allowed));
+            match updates.recv().await {
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+    }))
 }
 
-async fn latest_member_ts(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> Result<Option<u64>> {
-    let events = match room.get_state_events(StateEventType::from(MEMBER_EVENT_TYPE)).await {
-        Ok(events) => events,
-        Err(error) => {
-            warn!("reading the call memberships of {} failed: {error}", room.room_id());
-            return Err(error.into());
-        }
-    };
+fn latest_member_ts(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> Option<u64> {
     let own = client.user_id().map(|user| user.as_str());
-    let now = now_ms();
     let mut latest: Option<u64> = None;
-    for event in events {
-        let RawAnySyncOrStrippedState::Sync(raw) = event else { continue };
-        let Ok(value) = serde_json::from_str::<Value>(raw.json().get()) else { continue };
-        let Some(sender) = value.get("sender").and_then(Value::as_str) else { continue };
+    for entry in room.sticky_events().live() {
+        if entry.encryption_info().is_none() {
+            continue;
+        }
+        let event_type = entry.key.event_type.to_string();
+        if !RTC_MEMBER_TYPES.contains(&event_type.as_str()) {
+            continue;
+        }
+        let sender = entry.key.sender.as_str();
         if Some(sender) == own || !allowed.iter().any(|user| user.as_str() == sender) {
             continue;
         }
-        let ts = value.get("origin_server_ts").and_then(Value::as_u64).unwrap_or(0);
-        if value.get("content").is_some_and(|content| is_live_room_call(content, ts, now)) {
-            latest = Some(latest.map_or(ts, |prev| prev.max(ts)));
+        let Ok(Some(content)) = entry.raw().get_field::<Value>("content") else { continue };
+        if !is_live_room_call(&content) {
+            continue;
         }
+        let ts = entry.raw().get_field::<u64>("origin_server_ts").ok().flatten().unwrap_or(0);
+        latest = Some(latest.map_or(ts, |prev| prev.max(ts)));
     }
-    Ok(latest)
+    latest
 }
 
-/// `{}` is how a member leaves.
-fn is_live_room_call(content: &Value, origin_server_ts: u64, now: u64) -> bool {
-    let Some(object) = content.as_object() else { return false };
-    if object.is_empty() || object.get("application").and_then(Value::as_str) != Some("m.call") {
+fn is_live_room_call(content: &Value) -> bool {
+    if content.get("leave_reason").is_some() {
         return false;
     }
-    if !object.get("call_id").and_then(Value::as_str).unwrap_or("").is_empty() {
+    if content.get("slot_id").and_then(Value::as_str) != Some(ROOM_CALL_SLOT_ID) {
         return false;
     }
-    let joined_at = object.get("created_ts").and_then(Value::as_u64).map_or(origin_server_ts, |created| created.min(origin_server_ts));
-    let expires = object.get("expires").and_then(Value::as_u64).unwrap_or(DEFAULT_EXPIRES_MS);
-    joined_at.saturating_add(expires) > now
+    if content.get("application").and_then(|app| app.get("type")).and_then(Value::as_str) != Some(CALL_APPLICATION) {
+        return false;
+    }
+    let Some(member) = content.get("member") else { return false };
+    member.get("membership").and_then(Value::as_str) == Some("join")
+        && member.get("id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())
 }
 
 #[cfg(test)]
@@ -554,19 +538,45 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_membership_is_live_until_its_deadline() {
-        let content = json!({ "application": "m.call", "call_id": "", "scope": "m.room", "device_id": "D", "expires": 1000, "created_ts": 5000 });
-        assert!(is_live_room_call(&content, 6000, 5999));
-        assert!(!is_live_room_call(&content, 6000, 6000));
-        // Without `created_ts`, the deadline counts from the event; without `expires`, four hours.
-        assert!(is_live_room_call(&json!({ "application": "m.call", "call_id": "" }), 10, 10 + DEFAULT_EXPIRES_MS - 1));
+    fn a_room_call_join_membership_is_live() {
+        let content = json!({
+            "slot_id": "m.call#room",
+            "application": { "type": "m.call" },
+            "member": { "id": "m1", "membership": "join" },
+            "sticky_key": "m1",
+        });
+        assert!(is_live_room_call(&content));
     }
 
     #[test]
-    fn a_left_or_other_membership_is_not() {
-        assert!(!is_live_room_call(&json!({}), 0, 0));
-        assert!(!is_live_room_call(&json!({ "application": "m.call", "call_id": "breakout" }), 0, 0));
-        assert!(!is_live_room_call(&json!({ "application": "io.element.spreadsheet", "call_id": "" }), 0, 0));
+    fn a_left_or_other_slot_membership_is_not() {
+        assert!(!is_live_room_call(&json!({})));
+        assert!(!is_live_room_call(&json!({
+            "slot_id": "m.call#room",
+            "application": { "type": "m.call" },
+            "member": { "id": "m1", "membership": "leave" },
+        })));
+        assert!(!is_live_room_call(&json!({
+            "slot_id": "m.call#room",
+            "application": { "type": "m.call" },
+            "member": { "id": "m1", "membership": "join" },
+            "leave_reason": { "code": "leave" },
+        })));
+        assert!(!is_live_room_call(&json!({
+            "slot_id": "m.call#breakout",
+            "application": { "type": "m.call" },
+            "member": { "id": "m1", "membership": "join" },
+        })));
+        assert!(!is_live_room_call(&json!({
+            "slot_id": "m.call#room",
+            "application": { "type": "io.element.spreadsheet" },
+            "member": { "id": "m1", "membership": "join" },
+        })));
+        assert!(!is_live_room_call(&json!({
+            "slot_id": "m.call#room",
+            "application": { "type": "m.call" },
+            "member": { "id": "", "membership": "join" },
+        })));
     }
 
     #[test]

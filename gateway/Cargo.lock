@@ -2452,7 +2452,6 @@ dependencies = [
  "futures-util",
  "matrix-rtc-call",
  "matrix-rtc-call-sdk",
- "matrix-rtc-core",
  "matrix-rtc-transport",
  "matrix-sdk",
  "matrix-sdk-crypto",
