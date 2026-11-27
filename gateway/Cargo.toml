@@ -30,6 +30,9 @@ futures-util = "0.3"
 # Pure Rust: the WebRTC VAD crate bundles C that libwebrtc also contains, and the link fails on duplicate symbols.
 earshot = "1.2"
 
+[dev-dependencies]
+proptest = "1"
+
 # matrix-rust-sdk carries this in its own [patch] table, which cargo does not
 # propagate to a consuming workspace. Copied from matrix-rust-sdk@56bc591. Its
 # other patch, async-compat, is not in this crate graph.

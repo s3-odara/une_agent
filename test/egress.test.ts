@@ -6,29 +6,46 @@ import { test } from "node:test";
 import { EgressProxy, isPublicAddress } from "../src/egress.ts";
 import { listen } from "./env.ts";
 
-for (const address of ["8.8.8.8", "1.1.1.1", "133.242.0.1", "2001:4860:4860::8888", "2400:cb00::1"]) {
+for (const address of ["8.8.8.8", "1.1.1.1", "133.242.0.1", "9.255.255.255", "11.0.0.0", "100.63.255.255", "100.128.0.0", "172.15.255.255", "172.32.0.0", "192.167.255.255", "192.169.0.0", "2000::1", "2001:200::1", "2001:4860:4860::8888", "2003::1", "2400:cb00::1", "3ffe:ffff::1"]) {
 	test(`${address} is public`, () => assert.equal(isPublicAddress(address), true));
 }
 
 for (const address of [
 	"127.0.0.1",
+	"127.255.255.255",
+	"10.0.0.0",
 	"10.1.2.3",
+	"10.255.255.255",
+	"172.16.0.0",
 	"172.16.0.1",
+	"172.31.255.255",
+	"192.168.0.0",
 	"192.168.1.1",
+	"192.168.255.255",
+	"169.254.0.0",
 	"169.254.169.254",
+	"169.254.255.255",
+	"100.64.0.0",
 	"100.64.0.1",
+	"100.127.255.255",
 	"0.0.0.0",
+	"0.255.255.255",
 	"224.0.0.1",
 	"255.255.255.255",
 	"::1",
 	"::",
+	"1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 	"fe80::1",
 	"fc00::1",
 	"::ffff:127.0.0.1",
 	"64:ff9b::7f00:1",
-	"2002:7f00:1::1",
 	"2001::1",
+	"2001:1ff::ffff",
 	"2001:db8::1",
+	"2002:7f00:1::1",
+	"2002:ffff::1",
+	"3fff::1",
+	"4000::1",
 	"localhost",
 ]) {
 	test(`${address} is not public`, () => assert.equal(isPublicAddress(address), false));
@@ -140,6 +157,17 @@ test("asking about a refused host gives a reason", async () => {
 	const proxy = await EgressProxy.start();
 	try {
 		await assert.rejects(proxy.resolve("localhost", 80), (error: Error) => error.message.includes("localhost"));
+	} finally {
+		await proxy.close();
+	}
+});
+
+test("malformed CONNECT authorities are rejected with 400", async () => {
+	const proxy = await EgressProxy.start({ allow: () => true });
+	try {
+		for (const target of ["example.com", "example.com:0", "example.com:65536", "[::1:80", "example.com:abc", ":443"]) {
+			assert.match(await tunnel(proxy, target), /^HTTP\/1\.1 400/, target);
+		}
 	} finally {
 		await proxy.close();
 	}

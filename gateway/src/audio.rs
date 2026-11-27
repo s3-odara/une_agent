@@ -322,4 +322,147 @@ mod tests {
         assert_eq!((samples, rate), (vec![0, 1, -1, i16::MAX, i16::MIN], 48_000));
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    mod property_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        #[derive(Debug, Clone, Copy)]
+        enum Step {
+            Speech,
+            Silence,
+            Deafen,
+        }
+
+        fn step_strategy() -> impl Strategy<Value = Step> {
+            prop_oneof![
+                4 => Just(Step::Speech),
+                4 => Just(Step::Silence),
+                1 => Just(Step::Deafen),
+            ]
+        }
+
+        fn vad_config_strategy() -> impl Strategy<Value = VadConfig> {
+            (1u32..=12, 1u32..=20, 10u32..=80, 0u32..=10).prop_map(|(start, end, max, pre)| VadConfig {
+                threshold: 0.5,
+                start_ms: start * FRAME_MS,
+                end_silence_ms: end * FRAME_MS,
+                max_ms: max * FRAME_MS,
+                pre_roll_ms: pre * FRAME_MS,
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn decimator_and_cutter_are_independent_of_chunk_boundaries(
+                samples in prop::collection::vec(any::<i16>(), 0..4_800),
+                chunk_sizes in prop::collection::vec(1usize..=600, 1..40),
+            ) {
+                let mut whole_dec = Decimator::new();
+                let expected_dec = whole_dec.push(&samples);
+
+                let mut chunked_dec = Decimator::new();
+                let mut actual_dec = Vec::new();
+                let mut pos = 0;
+                let mut idx = 0;
+                while pos < samples.len() {
+                    let size = chunk_sizes[idx % chunk_sizes.len()];
+                    let end = (pos + size).min(samples.len());
+                    actual_dec.extend(chunked_dec.push(&samples[pos..end]));
+                    pos = end;
+                    idx += 1;
+                }
+                prop_assert_eq!(actual_dec, expected_dec);
+
+                let detector = |frame: &[i16]| frame.iter().any(|s| s.unsigned_abs() > 10_000);
+                let mut whole_cut = Cutter::new(config(), detector);
+                let expected_cuts = whole_cut.push(&samples, false);
+
+                let mut chunked_cut = Cutter::new(config(), detector);
+                let mut actual_cuts = Vec::new();
+                pos = 0;
+                idx = 0;
+                while pos < samples.len() {
+                    let size = chunk_sizes[idx % chunk_sizes.len()];
+                    let end = (pos + size).min(samples.len());
+                    actual_cuts.extend(chunked_cut.push(&samples[pos..end], false));
+                    pos = end;
+                    idx += 1;
+                }
+                prop_assert_eq!(actual_cuts, expected_cuts);
+            }
+
+            #[test]
+            fn segmenter_preserves_state_machine_and_length_invariants(
+                cfg in vad_config_strategy(),
+                steps in prop::collection::vec(step_strategy(), 1..200),
+            ) {
+                let mut segmenter = Segmenter::new(cfg);
+                let mut open = false;
+                let mut last_deafen: Option<usize> = None;
+                let pre_and_start = ((cfg.pre_roll_ms + cfg.start_ms) / FRAME_MS).max(1) as usize;
+                let max_frames = (cfg.max_ms as usize).div_ceil(FRAME_MS as usize).max(pre_and_start + 1);
+
+                for (i, step) in steps.into_iter().enumerate() {
+                    match step {
+                        Step::Deafen => {
+                            segmenter.deafen();
+                            open = false;
+                            last_deafen = Some(i);
+                        }
+                        Step::Speech | Step::Silence => {
+                            let frame = vec![i as i16; FRAME_SAMPLES];
+                            if let Some(cut) = segmenter.push(&frame, matches!(step, Step::Speech)) {
+                                match cut {
+                                    Cut::SpeechStarted => {
+                                        prop_assert!(!open);
+                                        open = true;
+                                    }
+                                    Cut::Utterance(samples) => {
+                                        prop_assert!(open);
+                                        open = false;
+                                        prop_assert!(!samples.is_empty());
+                                        prop_assert_eq!(samples.len() % FRAME_SAMPLES, 0);
+                                        let frames = samples.len() / FRAME_SAMPLES;
+                                        prop_assert!(frames <= max_frames, "frames={frames} > max_frames={max_frames}");
+                                        if let Some(d) = last_deafen {
+                                            for chunk in samples.chunks(FRAME_SAMPLES) {
+                                                prop_assert!((chunk[0] as usize) > d);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn cutter_emits_nothing_while_deaf(
+                chunks in prop::collection::vec((prop::collection::vec(any::<i16>(), 0..600), any::<bool>()), 1..40),
+            ) {
+                let mut cutter = Cutter::new(config(), |frame: &[i16]| frame.iter().any(|s| s.unsigned_abs() > 5_000));
+                for (chunk, deaf) in chunks {
+                    let cuts = cutter.push(&chunk, deaf);
+                    if deaf {
+                        prop_assert!(cuts.is_empty());
+                    }
+                }
+            }
+
+            #[test]
+            fn wav_round_trips_any_samples(
+                samples in prop::collection::vec(any::<i16>(), 0..512),
+                rate in prop_oneof![Just(16_000u32), Just(48_000u32)],
+            ) {
+                let path = std::env::temp_dir().join(format!("gateway-wav-prop-{}.wav", std::process::id()));
+                write_wav(&path, &samples, rate).unwrap();
+                let bytes = std::fs::read(&path).unwrap();
+                let _ = std::fs::remove_file(&path);
+                let (decoded, decoded_rate) = read_wav(&bytes).unwrap();
+                prop_assert_eq!((decoded, decoded_rate), (samples, rate));
+            }
+        }
+    }
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import fc from "fast-check";
 import {
 	applyChanges,
 	buildEvent,
@@ -14,7 +15,7 @@ import {
 	type RawObject,
 	removeFrom,
 } from "../src/calendar.ts";
-import { localMinute, localToEpoch } from "../src/time.ts";
+import { addDays, localMinute, localToEpoch, startOfDay } from "../src/time.ts";
 import { ics, MemoryCalDav } from "./fakes.ts";
 
 const tz = "Asia/Tokyo";
@@ -380,4 +381,175 @@ test("removing every occurrence removes the whole event", async () => {
 	const id = await calendars.create("Home", "w", { summary: "朝会", start: "2026-11-16T08:00", rrule: "FREQ=WEEKLY;BYDAY=MO" }, NOW);
 	await calendars.remove(`${id}@2026-11-23T08:00`, NOW, "all");
 	assert.deepEqual(backend.files("Home"), []);
+});
+
+const tzArb = fc.constantFrom("Asia/Tokyo", "America/New_York", "UTC");
+const labelArb = fc.stringMatching(/^[A-Za-z0-9_-]{1,16}$/);
+const dateArb = fc.integer({ min: 0, max: 720 }).map((offset) => addDays("2026-01-01", offset));
+const minuteOfDayArb = fc.integer({ min: 0, max: 23 * 60 + 59 }).map((m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`);
+
+test("property: built single events round-trip across time zones including DST", () => {
+	fc.assert(
+		fc.property(
+			tzArb,
+			fc.boolean(),
+			dateArb,
+			minuteOfDayArb,
+			fc.integer({ min: 0, max: 5 }),
+			fc.integer({ min: 15, max: 180 }),
+			labelArb,
+			fc.option(labelArb, { nil: undefined }),
+			fc.option(labelArb, { nil: undefined }),
+			(zone, allDay, date, clock, extraDays, durationMin, summary, location, description) => {
+				if (allDay) {
+					const endDate = addDays(date, extraDays);
+					const data = buildEvent("u-allday", { summary, start: date, end: endDate, location, description }, zone, NOW);
+					const from = startOfDay(addDays(date, -1), zone);
+					const to = startOfDay(addDays(endDate, 2), zone);
+					const items = parseEvents(raw(data), "Home", { from, to }, zone);
+					assert.equal(items.length, 1);
+					const item = items[0]!;
+					assert.equal(item.allDay, true);
+					assert.equal(item.summary, summary);
+					assert.equal(item.location, location);
+					assert.equal(item.description, description);
+					assert.equal(item.start, startOfDay(date, zone));
+					assert.equal(item.end, startOfDay(addDays(endDate, 1), zone));
+					return;
+				}
+				const startStr = `${date}T${clock}`;
+				const startMs = localToEpoch(startStr, zone);
+				const endStr = localMinute(startMs + durationMin * 60_000, zone);
+				const endMs = localToEpoch(endStr, zone);
+				fc.pre(endMs > startMs);
+				const data = buildEvent("u-timed", { summary, start: startStr, end: endStr, location, description }, zone, NOW);
+				const items = parseEvents(raw(data), "Home", { from: startMs - 86_400_000, to: endMs + 86_400_000 }, zone);
+				assert.equal(items.length, 1);
+				const item = items[0]!;
+				assert.equal(item.allDay, false);
+				assert.equal(item.summary, summary);
+				assert.equal(item.location, location);
+				assert.equal(item.description, description);
+				assert.equal(item.start, startMs);
+				assert.equal(item.end, endMs);
+			},
+		),
+		{ numRuns: 100 },
+	);
+});
+
+test("property: changing or removing one occurrence leaves all other occurrences intact", () => {
+	fc.assert(
+		fc.property(
+			tzArb,
+			fc.constantFrom("FREQ=DAILY", "FREQ=WEEKLY"),
+			dateArb,
+			fc.integer({ min: 1, max: 20 }).map((h) => `${String(h).padStart(2, "0")}:00`),
+			fc.integer({ min: 0, max: 4 }),
+			fc.integer({ min: 1, max: 3 }),
+			labelArb,
+			labelArb,
+			(zone, rrule, date, clock, pick, shiftHours, baseSummary, newSummary) => {
+				const startStr = `${date}T${clock}`;
+				const startMs = localToEpoch(startStr, zone);
+				const data = buildEvent("u-rec", { summary: baseSummary, start: startStr, rrule }, zone, NOW);
+				const stepDays = rrule === "FREQ=DAILY" ? 1 : 7;
+				const range = { from: startMs - 86_400_000, to: startMs + stepDays * 6 * 86_400_000 };
+				const before = parseEvents(raw(data), "Home", range, zone);
+				fc.pre(before.length >= 5);
+				const target = before[pick]!;
+				const occ = target.occurrence!;
+				const others = (items: EventItem[]) =>
+					items
+						.filter((item) => item.occurrence !== occ)
+						.map((item) => [item.occurrence, item.start, item.end, item.summary]);
+
+				const movedStart = localMinute(target.start + shiftHours * 3_600_000, zone);
+				const movedMs = localToEpoch(movedStart, zone);
+				fc.pre(movedMs > target.start);
+				const changed = applyChanges(data, { start: movedStart, summary: newSummary }, zone, NOW, { scope: "this", occurrence: occ }).data;
+				const afterEdit = parseEvents(raw(changed), "Home", range, zone);
+				assert.deepEqual(others(afterEdit), others(before));
+				const edited = afterEdit.find((item) => item.occurrence === occ);
+				assert.ok(edited !== undefined);
+				assert.equal(edited.summary, newSummary);
+				assert.equal(edited.start, movedMs);
+
+				const removed = removeFrom(changed, zone, NOW, { scope: "this", occurrence: occ });
+				assert.ok(typeof removed === "object");
+				const afterRemove = parseEvents(raw(removed.data), "Home", range, zone);
+				assert.deepEqual(others(afterRemove), others(before));
+				assert.equal(afterRemove.some((item) => item.occurrence === occ), false);
+				assert.equal(removeFrom(removed.data, zone, NOW, { scope: "this", occurrence: occ }), "unchanged");
+			},
+		),
+		{ numRuns: 60 },
+	);
+});
+
+type RecOp =
+	| { readonly kind: "editThis"; readonly index: number; readonly shiftHours: number; readonly summary: string }
+	| { readonly kind: "removeThis"; readonly index: number }
+	| { readonly kind: "editAllSummary"; readonly summary: string }
+	| { readonly kind: "editAllShift"; readonly shiftHours: number }
+	| { readonly kind: "stopRepeat" };
+
+const recOpArb: fc.Arbitrary<RecOp> = fc.oneof(
+	fc.record({ kind: fc.constant("editThis" as const), index: fc.integer({ min: 0, max: 5 }), shiftHours: fc.integer({ min: -2, max: 2 }), summary: labelArb }),
+	fc.record({ kind: fc.constant("removeThis" as const), index: fc.integer({ min: 0, max: 5 }) }),
+	fc.record({ kind: fc.constant("editAllSummary" as const), summary: labelArb }),
+	fc.record({ kind: fc.constant("editAllShift" as const), shiftHours: fc.integer({ min: -3, max: 3 }) }),
+	fc.record({ kind: fc.constant("stopRepeat" as const) }),
+);
+
+test("property: arbitrary sequences of this/all edits and removals keep a recurring event consistent", () => {
+	fc.assert(
+		fc.property(tzArb, dateArb, fc.array(recOpArb, { minLength: 1, maxLength: 6 }), (zone, date, ops) => {
+			let data = buildEvent("u-seq", { summary: "base", start: `${date}T09:00`, end: `${date}T10:00`, rrule: "FREQ=DAILY;COUNT=8" }, zone, NOW);
+			const baseMs = localToEpoch(`${date}T09:00`, zone);
+			const range = { from: baseMs - 14 * 86_400_000, to: baseMs + 30 * 86_400_000 };
+			let recurring = true;
+
+			for (const op of ops) {
+				const current = parseEvents(raw(data), "Home", range, zone);
+				if (!recurring) break;
+
+				if (op.kind === "editThis") {
+					if (current.length === 0) continue;
+					const target = current[op.index % current.length]!;
+					const nextStart = localMinute(target.start + op.shiftHours * 3_600_000, zone);
+					data = applyChanges(data, { start: nextStart, summary: op.summary }, zone, NOW, { scope: "this", occurrence: target.occurrence }).data;
+				} else if (op.kind === "removeThis") {
+					if (current.length === 0) continue;
+					const target = current[op.index % current.length]!;
+					const res = removeFrom(data, zone, NOW, { scope: "this", occurrence: target.occurrence });
+					assert.ok(typeof res === "object");
+					data = res.data;
+					const after = parseEvents(raw(data), "Home", range, zone);
+					assert.equal(after.some((item) => item.occurrence === target.occurrence), false);
+				} else if (op.kind === "editAllSummary") {
+					data = applyChanges(data, { summary: op.summary }, zone, NOW, { scope: "all" }).data;
+				} else if (op.kind === "editAllShift") {
+					const first = current[0];
+					if (first === undefined) continue;
+					const nextStart = localMinute(first.start + op.shiftHours * 3_600_000, zone);
+					data = applyChanges(data, { start: nextStart }, zone, NOW, { scope: "all" }).data;
+				} else if (op.kind === "stopRepeat") {
+					data = applyChanges(data, { rrule: "" }, zone, NOW, { scope: "all" }).data;
+					recurring = false;
+				}
+
+				const after = parseEvents(raw(data), "Home", range, zone);
+				for (const item of after) assert.ok(item.start <= item.end);
+				if (recurring) {
+					const keys = after.map((item) => item.occurrence);
+					assert.equal(new Set(keys).size, keys.length);
+				} else {
+					assert.ok(after.length <= 1);
+					assert.equal(after[0]?.rule, undefined);
+				}
+			}
+		}),
+		{ numRuns: 60 },
+	);
 });

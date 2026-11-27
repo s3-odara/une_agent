@@ -185,4 +185,26 @@ mod tests {
         assert!(!reopened.is_seen_or_old("!r:example.org", "$other", 50));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
+
+    #[test]
+    fn seen_history_keeps_the_latest_128_events_and_evicts_the_oldest() {
+        let path = temp_path("seen-limit");
+        let _ = std::fs::remove_file(&path);
+
+        let mut state = State::load(&path, 1).unwrap();
+        for i in 0..MAX_SEEN_PER_ROOM {
+            state.record_seen("!r:example.org", &format!("$e{i}")).unwrap();
+        }
+        let mut reopened = State::load(&path, 999).unwrap();
+        for i in 0..MAX_SEEN_PER_ROOM {
+            assert!(reopened.is_seen_or_old("!r:example.org", &format!("$e{i}"), 10), "$e{i} should still be seen");
+        }
+
+        reopened.record_seen("!r:example.org", "$e128").unwrap();
+        let reopened = State::load(&path, 999).unwrap();
+        assert!(!reopened.is_seen_or_old("!r:example.org", "$e0", 10));
+        assert!(reopened.is_seen_or_old("!r:example.org", "$e1", 10));
+        assert!(reopened.is_seen_or_old("!r:example.org", "$e128", 10));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 }

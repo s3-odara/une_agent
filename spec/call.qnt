@@ -15,6 +15,7 @@ module call_protocol {
   var gwMembers: Set[int]       // CallMachine.members
   var gwCallState: str          // "none" | "joining" | "inCall" | "leaving"
   var gwRejoin: bool            // Phase::Leaving { rejoin }
+  var gwAbnormalIdle: bool      // true after an abnormal exit while no newer member.id has arrived
   var gwPlayQueue: Set[int]     // Clip IDs queued in Player
 
   // --- IPC channels ---
@@ -49,6 +50,7 @@ module call_protocol {
     gwMembers' = Set(),
     gwCallState' = "none",
     gwRejoin' = false,
+    gwAbnormalIdle' = false,
     gwPlayQueue' = Set(),
     evCallLeft' = 0,
     evCallSpoken' = Set(),
@@ -70,6 +72,7 @@ module call_protocol {
     gwMembers' = gwMembers,
     gwCallState' = gwCallState,
     gwRejoin' = gwRejoin,
+    gwAbnormalIdle' = gwAbnormalIdle,
     gwPlayQueue' = gwPlayQueue,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
@@ -91,6 +94,7 @@ module call_protocol {
     gwMembers' = gwMembers,
     gwCallState' = gwCallState,
     gwRejoin' = gwRejoin,
+    gwAbnormalIdle' = gwAbnormalIdle,
     gwPlayQueue' = gwPlayQueue,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
@@ -114,22 +118,32 @@ module call_protocol {
       if (gwCallState == "none" and hasNew) all {
         gwCallState' = "joining",
         gwRejoin' = false,
+        gwAbnormalIdle' = false,
+        gwPlayQueue' = gwPlayQueue,
+      } else if (gwCallState == "none" and not(hasAny)) all {
+        gwCallState' = "none",
+        gwRejoin' = false,
+        gwAbnormalIdle' = false,
         gwPlayQueue' = gwPlayQueue,
       } else if (gwCallState == "inCall" and not(hasAny)) all {
         gwCallState' = "leaving",
         gwRejoin' = false,
+        gwAbnormalIdle' = false,
         gwPlayQueue' = Set(),
       } else if (gwCallState == "leaving" and not(hasAny)) all {
         gwCallState' = "leaving",
         gwRejoin' = false,
+        gwAbnormalIdle' = false,
         gwPlayQueue' = gwPlayQueue,
       } else if (gwCallState == "leaving" and hasNew) all {
         gwCallState' = "leaving",
         gwRejoin' = true,
+        gwAbnormalIdle' = false,
         gwPlayQueue' = gwPlayQueue,
       } else all {
         gwCallState' = gwCallState,
         gwRejoin' = gwRejoin,
+        gwAbnormalIdle' = gwAbnormalIdle,
         gwPlayQueue' = gwPlayQueue,
       },
     },
@@ -152,6 +166,7 @@ module call_protocol {
     gwCallState == "joining",
     gwCallState' = if (gwMembers.size() > 0) "inCall" else "leaving",
     gwRejoin' = false,
+    gwAbnormalIdle' = gwAbnormalIdle,
     userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembers' = gwMembers,
@@ -174,6 +189,7 @@ module call_protocol {
     userCallGens.size() == 0,
     gwCallState' = "leaving",
     gwRejoin' = false,
+    gwAbnormalIdle' = gwAbnormalIdle,
     gwPlayQueue' = Set(),
     userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
@@ -195,11 +211,34 @@ module call_protocol {
     gwCallState == "leaving",
     gwCallState' = if (gwRejoin) "joining" else "none",
     gwRejoin' = false,
+    gwAbnormalIdle' = false,
     evCallLeft' = evCallLeft + 1,
     userCallGens' = userCallGens,
     nextUserGen' = nextUserGen,
     gwMembers' = gwMembers,
     gwPlayQueue' = gwPlayQueue,
+    evCallSpoken' = evCallSpoken,
+    cmdCallSpeak' = cmdCallSpeak,
+    agRoomId' = agRoomId,
+    nextAgRoomId' = nextAgRoomId,
+    agSpokenWaiters' = agSpokenWaiters,
+    playState' = playState,
+    playRoomGen' = playRoomGen,
+    playClipId' = playClipId,
+    nextClipId' = nextClipId,
+  }
+
+  // 5b. Gateway run_once fails abnormally (join error, SFU disconnect, or leave error): emits CallLeft and stays idle until a newer member.id arrives.
+  action gwAbnormalExit: bool = all {
+    gwCallState == "joining" or gwCallState == "inCall" or gwCallState == "leaving",
+    gwCallState' = "none",
+    gwRejoin' = false,
+    gwAbnormalIdle' = (gwMembers.size() > 0),
+    gwPlayQueue' = Set(),
+    evCallLeft' = evCallLeft + 1,
+    userCallGens' = userCallGens,
+    nextUserGen' = nextUserGen,
+    gwMembers' = gwMembers,
     evCallSpoken' = evCallSpoken,
     cmdCallSpeak' = cmdCallSpeak,
     agRoomId' = agRoomId,
@@ -228,6 +267,7 @@ module call_protocol {
     gwMembers' = gwMembers,
     gwCallState' = gwCallState,
     gwRejoin' = gwRejoin,
+    gwAbnormalIdle' = gwAbnormalIdle,
     gwPlayQueue' = gwPlayQueue,
     evCallSpoken' = evCallSpoken,
     cmdCallSpeak' = cmdCallSpeak,
@@ -253,6 +293,7 @@ module call_protocol {
     gwMembers' = gwMembers,
     gwCallState' = gwCallState,
     gwRejoin' = gwRejoin,
+    gwAbnormalIdle' = gwAbnormalIdle,
     gwPlayQueue' = gwPlayQueue,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
@@ -281,6 +322,7 @@ module call_protocol {
     gwMembers' = gwMembers,
     gwCallState' = gwCallState,
     gwRejoin' = gwRejoin,
+    gwAbnormalIdle' = gwAbnormalIdle,
     gwPlayQueue' = gwPlayQueue,
     evCallLeft' = evCallLeft,
     evCallSpoken' = evCallSpoken,
@@ -305,6 +347,7 @@ module call_protocol {
     gwMembers' = gwMembers,
     gwCallState' = gwCallState,
     gwRejoin' = gwRejoin,
+    gwAbnormalIdle' = gwAbnormalIdle,
     evCallLeft' = evCallLeft,
     agRoomId' = agRoomId,
     nextAgRoomId' = nextAgRoomId,
@@ -325,6 +368,7 @@ module call_protocol {
     gwMembers' = gwMembers,
     gwCallState' = gwCallState,
     gwRejoin' = gwRejoin,
+    gwAbnormalIdle' = gwAbnormalIdle,
     evCallLeft' = evCallLeft,
     cmdCallSpeak' = cmdCallSpeak,
     agRoomId' = agRoomId,
@@ -352,6 +396,7 @@ module call_protocol {
     gwMembers' = gwMembers,
     gwCallState' = gwCallState,
     gwRejoin' = gwRejoin,
+    gwAbnormalIdle' = gwAbnormalIdle,
     gwPlayQueue' = gwPlayQueue,
     evCallLeft' = evCallLeft,
     cmdCallSpeak' = cmdCallSpeak,
@@ -368,6 +413,7 @@ module call_protocol {
     gwFinishJoin,
     gwSpontaneousLeave,
     gwFinishLeave,
+    gwAbnormalExit,
     agRecvLeft,
     agPlayStartWrite,
     agPlaySendSpeak,
@@ -392,11 +438,17 @@ module call_protocol {
       gwCallState, playState, userCallGens, gwMembers
     ) implies agSpokenWaiters.size() == 0)
 
+  val invNoSpuriousRejoin: bool =
+    gwAbnormalIdle implies (gwCallState == "none" and gwMembers.size() > 0)
+
   val invMembershipConverges: bool =
     isQuiescent(
       evCallLeft, evCallSpoken, cmdCallSpeak,
       gwCallState, playState, userCallGens, gwMembers
-    ) implies ((gwCallState == "inCall") == (userCallGens.size() > 0))
+    ) implies (
+      if (gwAbnormalIdle) gwCallState == "none"
+      else ((gwCallState == "inCall") == (userCallGens.size() > 0))
+    )
 
-  val allInvariants: bool = invPlayNeverHangs and invMembershipConverges
+  val allInvariants: bool = invPlayNeverHangs and invNoSpuriousRejoin and invMembershipConverges
 }
