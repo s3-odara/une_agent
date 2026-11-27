@@ -162,6 +162,8 @@ test("while a tool runs the notice shows it running, and that same notice is edi
 
 	const { notice, shown, sends } = progress(env.link);
 	assert.equal(notice, first);
+	assert.equal(first.detailsSummary, undefined);
+	assert.equal(sends.at(-1)?.detailsSummary, "ツール 1件");
 	assert.ok(shown.includes(TOOL_DONE));
 	assert.ok(!shown.includes(TOOL_RUNNING));
 	assert.equal(env.link.of("send").filter((send) => send.notice === true).length, sends.length);
@@ -179,12 +181,14 @@ test("the calls a script made are shown under it, with their arguments and how t
 	env.link.emit(message(ROOM, "$1", "天気は?"));
 	await bridge.idle();
 
-	const lines = progress(env.link).shown.split("\n");
+	const { shown, sends } = progress(env.link);
+	const lines = shown.split("\n");
 	const at = lines.findIndex((line) => line.includes("codemode"));
 	assert.ok(lines[at + 1]?.startsWith("  ") && lines[at + 1]?.includes(TOOL_DONE) && lines[at + 1]?.includes("Kyoto"));
 	assert.ok(
 		lines[at + 2]?.startsWith("  ") && lines[at + 2]?.includes(TOOL_FAILED) && lines[at + 2]?.includes("no such city"),
 	);
+	assert.equal(sends.at(-1)?.detailsSummary, "ツール 2件（失敗 1件）");
 });
 
 test("while a script's call runs, the notice shows it running under the script", async () => {
@@ -214,4 +218,49 @@ test("an answer with nothing to show before it comes without a notice", async ()
 		env.link.of("send").map((send) => [send.body, send.notice]),
 		[["こんにちは", false]],
 	);
+});
+
+test("settled progress notices summarize thinking and failed tools", async () => {
+	await using env = await progressEnv(async () => {
+		throw new Error("boom");
+	});
+	env.faux.setResponses([
+		fauxAssistantMessage([fauxThinking("確認しよう"), fauxToolCall("lookup", { city: "Kyoto" })], {
+			stopReason: "toolUse",
+		}),
+		fauxAssistantMessage("失敗しました"),
+	]);
+	const bridge = env.bridge({ progressIntervalMs: 0 });
+
+	env.link.emit(message(ROOM, "$1", "天気は?"));
+	await bridge.idle();
+
+	assert.equal(progress(env.link).sends.at(-1)?.detailsSummary, "💭 思考・ツール 1件（失敗 1件）");
+});
+
+test("a thinking-only run collapses its notice when finished", async () => {
+	await using env = await progressEnv();
+	env.faux.setResponses([fauxAssistantMessage([fauxThinking("少し考える"), fauxText("こんにちは")])]);
+	const bridge = env.bridge({ progressIntervalMs: 0 });
+
+	env.link.emit(message(ROOM, "$1", "やあ"));
+	await bridge.idle();
+
+	assert.equal(progress(env.link).sends.at(-1)?.detailsSummary, "💭 思考");
+});
+
+test("a run stopped by !new still collapses its progress notice", async () => {
+	const { promise: stuck, resolve: release } = Promise.withResolvers<string>();
+	await using env = await progressEnv(() => stuck);
+	env.faux.setResponses([call("lookup", { city: "Kyoto" }), fauxAssistantMessage("晴れです")]);
+	const bridge = env.bridge({ progressIntervalMs: 0 });
+
+	env.link.emit(message(ROOM, "$1", "天気は?"));
+	const running = await env.link.waitFor("send", (send) => send.notice === true && send.body.includes(TOOL_RUNNING));
+	env.link.emit(message(ROOM, "$2", "!new"));
+	release("sunny");
+	await bridge.idle();
+
+	assert.equal(running.detailsSummary, undefined);
+	assert.equal(progress(env.link).sends.at(-1)?.detailsSummary, "ツール 1件（失敗 1件）");
 });

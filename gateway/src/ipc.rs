@@ -147,6 +147,8 @@ pub enum Command {
         /// Sent as an edit of this event.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replaces: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details_summary: Option<String>,
     },
     SendAttachment {
         request_id: String,

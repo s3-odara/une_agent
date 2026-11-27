@@ -29,6 +29,22 @@ const MAX_THINKING_CHARS = 200;
 type Nested = { readonly name: string; readonly args: string; readonly status: string; readonly error?: string };
 type Result = { readonly isError: boolean; readonly text: string; readonly nested: readonly Nested[] };
 type Results = ReadonlyMap<string, Result>;
+type SummaryCounts = {
+	hasThinking: boolean;
+	tools: number;
+	failed: number;
+	stopped: number;
+};
+
+export type ProgressSendOptions = {
+	readonly replaces?: string;
+	readonly detailsSummary?: string;
+};
+
+type Rendered = {
+	readonly body: string;
+	readonly detailsSummary?: string;
+};
 
 function resultsOf(entries: readonly EntryRecord[]): Results {
 	const results = new Map<string, Result>();
@@ -81,12 +97,23 @@ function liveNested(callId: string, live: LiveState | undefined): Nested[] {
 		});
 }
 
-function toolLine(call: ToolCall, results: Results, live: LiveState | undefined): string {
+function toolLine(
+	call: ToolCall,
+	results: Results,
+	live: LiveState | undefined,
+	counts: SummaryCounts,
+): string {
 	const running = live?.run !== undefined;
 	const result = results.get(call.id);
 	const status =
 		result === undefined ? (running ? TOOL_RUNNING : TOOL_STOPPED) : result.isError ? TOOL_FAILED : TOOL_DONE;
 	const nested = result?.nested ?? liveNested(call.id, live);
+	const statuses = nested.length > 0 ? nested.map((inner) => inner.status) : [status];
+	const failed = statuses.filter((s) => s === TOOL_FAILED).length;
+	const stopped = statuses.filter((s) => s === TOOL_STOPPED).length;
+	counts.tools += statuses.length;
+	counts.failed += failed > 0 ? failed : stopped === 0 && status === TOOL_FAILED ? 1 : 0;
+	counts.stopped += stopped;
 	return [
 		line("", status, call.name, JSON.stringify(call.arguments), result?.isError === true ? result.text : undefined),
 		...nested.map((inner) => line("  ", inner.status, inner.name, inner.args, inner.error)),
@@ -98,23 +125,43 @@ function settledPart(text: string): string {
 	return text.match(/^[\s\S]*(?:[\n。．！？]|[.!?] )/)?.[0] ?? "";
 }
 
-/**
- * The steps of one run so far: thinking, what the model said before calling tools, and each tool call with how it
- * went. The final answer's text is left out, since it is sent as a message of its own.
- */
-export function renderProgress(entries: readonly EntryRecord[], live: LiveState | undefined): string {
+function formatSummary(counts: SummaryCounts): string | undefined {
+	const parts: string[] = [];
+	if (counts.hasThinking) parts.push("💭 思考");
+	if (counts.tools > 0) {
+		const notes: string[] = [];
+		if (counts.failed > 0) notes.push(`失敗 ${counts.failed}件`);
+		if (counts.stopped > 0) notes.push(`中断 ${counts.stopped}件`);
+		parts.push(`ツール ${counts.tools}件${notes.length > 0 ? `（${notes.join("・")}）` : ""}`);
+	}
+	return parts.length > 0 ? parts.join("・") : undefined;
+}
+
+function buildProgress(
+	entries: readonly EntryRecord[],
+	live: LiveState | undefined,
+	collapse: boolean,
+): Rendered | undefined {
 	const results = resultsOf(entries);
 	const blocks: string[] = [];
+	const counts: SummaryCounts = { hasThinking: false, tools: 0, failed: 0, stopped: 0 };
 
 	for (const entry of entries) {
 		const message = AssistantEntry.is(entry) ? (entry.model?.[0] as AssistantMessage | undefined) : undefined;
 		if (message === undefined) continue;
 		const calls = message.content.filter((block) => block.type === "toolCall");
 		for (const block of message.content) {
-			if (block.type === "thinking") blocks.push(thinkingBlock(block.thinking, block.redacted === true));
-			else if (block.type === "text" && calls.length > 0) blocks.push(block.text.trim());
+			if (block.type === "thinking") {
+				const rendered = thinkingBlock(block.thinking, block.redacted === true);
+				if (rendered !== "") {
+					counts.hasThinking = true;
+					blocks.push(rendered);
+				}
+			} else if (block.type === "text" && calls.length > 0) {
+				blocks.push(block.text.trim());
+			}
 		}
-		blocks.push(calls.map((call) => toolLine(call, results, live)).join("\n"));
+		blocks.push(calls.map((call) => toolLine(call, results, live, counts)).join("\n"));
 	}
 	// Until a tool call is recorded, its preceding text is indistinguishable from the final reply.
 	for (const block of live?.generation?.message?.content ?? []) {
@@ -125,17 +172,32 @@ export function renderProgress(entries: readonly EntryRecord[], live: LiveState 
 		blocks.push(`⚠️ モデルの呼び出しに失敗しました。再試行します（${clipped(retry.error, MAX_ERROR_CHARS)}）`);
 	if ((live?.compactions ?? []).length > 0) blocks.push("🗜 これまでの会話を要約しています");
 
-	const body = blocks.filter((block) => block !== "").join("\n\n");
-	if (body.length <= MAX_CHARS) return body;
-	const tail = body.slice(onCharacter(body, body.length - MAX_CHARS));
-	const cut = tail.indexOf("\n\n");
-	return `…\n\n${cut < 0 ? tail : tail.slice(cut + 2)}`;
+	const full = blocks.filter((block) => block !== "").join("\n\n");
+	if (full === "") return undefined;
+	const body =
+		full.length <= MAX_CHARS
+			? full
+			: (() => {
+					const tail = full.slice(onCharacter(full, full.length - MAX_CHARS));
+					const cut = tail.indexOf("\n\n");
+					return `…\n\n${cut < 0 ? tail : tail.slice(cut + 2)}`;
+				})();
+	const detailsSummary = collapse ? formatSummary(counts) : undefined;
+	return detailsSummary === undefined ? { body } : { body, detailsSummary };
+}
+
+/**
+ * The steps of one run so far: thinking, what the model said before calling tools, and each tool call with how it
+ * went. The final answer's text is left out, since it is sent as a message of its own.
+ */
+export function renderProgress(entries: readonly EntryRecord[], live: LiveState | undefined): string {
+	return buildProgress(entries, live, false)?.body ?? "";
 }
 
 export type ProgressOptions = {
 	readonly conversation: Conversation;
 	readonly submission: Submission;
-	readonly send: (body: string, replaces: string | undefined) => Promise<string>;
+	readonly send: (body: string, options: ProgressSendOptions) => Promise<string>;
 	readonly intervalMs: number;
 	readonly context: Context;
 	readonly log: (message: string) => void;
@@ -155,7 +217,7 @@ export class ProgressReport {
 	/** Another input's run took ours in; that input's report shows it. */
 	#shared = false;
 	#eventId: string | undefined;
-	#shown = "";
+	#shown: Rendered | undefined;
 	#lastSentAt = Number.NEGATIVE_INFINITY;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#flight: Promise<void> | undefined;
@@ -220,12 +282,12 @@ export class ProgressReport {
 		}
 	}
 
-	async #render(live: LiveState | undefined, settled: Settled | undefined): Promise<string> {
-		if (this.#shared) return "";
+	async #render(live: LiveState | undefined, settled: Settled | undefined): Promise<Rendered | undefined> {
+		if (this.#shared) return undefined;
 		const { conversation, submission, context } = this.#options;
 		if (this.#entry === undefined) {
 			const record = settled ?? (await submission.status(context));
-			if (record.type !== "input" || record.entry === undefined) return "";
+			if (record.type !== "input" || record.entry === undefined) return undefined;
 			this.#entry = record.entry;
 		}
 		const from = this.#entries.at(-1)?.id ?? this.#entry;
@@ -239,14 +301,18 @@ export class ProgressReport {
 			const next = entries.findIndex((entry) => UserEntry.is(entry));
 			if (next >= 0) entries = entries.slice(0, next);
 		}
-		return renderProgress(entries, live);
+		return buildProgress(entries, live, settled !== undefined);
 	}
 
-	async #show(body: string): Promise<void> {
-		if (body === "" || body === this.#shown) return;
-		const eventId = await this.#options.send(body, this.#eventId);
+	async #show(rendered: Rendered | undefined): Promise<void> {
+		if (rendered === undefined) return;
+		if (rendered.body === this.#shown?.body && rendered.detailsSummary === this.#shown?.detailsSummary) return;
+		const eventId = await this.#options.send(rendered.body, {
+			replaces: this.#eventId,
+			detailsSummary: rendered.detailsSummary,
+		});
 		this.#eventId ??= eventId;
-		this.#shown = body;
+		this.#shown = rendered;
 		this.#lastSentAt = Date.now();
 	}
 }

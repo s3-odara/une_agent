@@ -54,7 +54,16 @@ export const commands: Examples<GatewayCommand> = {
 	ack: [{ type: "ack", eventId: "$e" }],
 	send: [
 		{ type: "send", requestId: "q", roomId: room, txnId: "t", body: "hello", notice: true },
-		{ type: "send", requestId: "q", roomId: room, txnId: "t", body: "hello again", notice: true, replaces: "$p" },
+		{
+			type: "send",
+			requestId: "q",
+			roomId: room,
+			txnId: "t",
+			body: "hello again",
+			notice: true,
+			replaces: "$p",
+			detailsSummary: "details",
+		},
 	],
 	sendAttachment: [
 		{

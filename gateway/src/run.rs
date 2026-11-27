@@ -18,7 +18,7 @@ use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
 use matrix_sdk::ruma::events::room::message::{
-    MessageType, OriginalSyncRoomMessageEvent, Relation, ReplacementMetadata,
+    FormattedBody, MessageType, OriginalSyncRoomMessageEvent, Relation, ReplacementMetadata,
     RoomMessageEventContent,
 };
 use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedTransactionId, OwnedUserId, RoomId, UInt};
@@ -596,10 +596,20 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 body,
                 notice,
                 replaces,
+                details_summary,
             } => {
                 let client = client.clone();
                 respond(&shared, request_id, async move {
-                    send(&client, &room_id, txn_id, body, notice, replaces).await
+                    send(
+                        &client,
+                        &room_id,
+                        txn_id,
+                        body,
+                        notice,
+                        replaces,
+                        details_summary,
+                    )
+                    .await
                 });
             }
             Command::SendAttachment {
@@ -740,6 +750,49 @@ fn joined_room(client: &Client, room_id: &str) -> Result<Room> {
     Ok(room)
 }
 
+fn escape_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn build_message(
+    body: String,
+    notice: bool,
+    details_summary: Option<&str>,
+) -> RoomMessageEventContent {
+    let mut content = if notice {
+        RoomMessageEventContent::notice_markdown(body)
+    } else {
+        RoomMessageEventContent::text_markdown(body)
+    };
+    if let Some(summary) = details_summary.filter(|summary| !summary.is_empty()) {
+        let (plain, formatted) = match &mut content.msgtype {
+            MessageType::Notice(notice) => (&notice.body, &mut notice.formatted),
+            MessageType::Text(text) => (&text.body, &mut text.formatted),
+            _ => return content,
+        };
+        let inner = formatted
+            .take()
+            .map(|body| body.body)
+            .unwrap_or_else(|| escape_html(plain).replace('\n', "<br>"));
+        *formatted = Some(FormattedBody::html(format!(
+            "<details><summary>{}</summary>{inner}</details>",
+            escape_html(summary)
+        )));
+    }
+    content
+}
+
 async fn send(
     client: &Client,
     room_id: &str,
@@ -747,13 +800,10 @@ async fn send(
     body: String,
     notice: bool,
     replaces: Option<String>,
+    details_summary: Option<String>,
 ) -> Result<String> {
     let room = joined_room(client, room_id)?;
-    let mut content = if notice {
-        RoomMessageEventContent::notice_markdown(body)
-    } else {
-        RoomMessageEventContent::text_markdown(body)
-    };
+    let mut content = build_message(body, notice, details_summary.as_deref());
     if let Some(event_id) = replaces {
         content =
             content.make_replacement(ReplacementMetadata::new(parse_event_id(&event_id)?, None));
@@ -872,9 +922,10 @@ fn set_typing(client: &Client, shared: &Shared, room_id: String, on: bool) {
 #[cfg(test)]
 mod tests {
     use matrix_sdk::ruma::api::error::{ErrorKind, LimitExceededErrorData};
+    use matrix_sdk::ruma::events::room::message::MessageType;
 
     use super::{
-        ErrorCode, client_api_error_code, error_code, parse_event_id, parse_mime,
+        ErrorCode, build_message, client_api_error_code, error_code, parse_event_id, parse_mime,
         without_reply_fallback,
     };
 
@@ -924,5 +975,56 @@ mod tests {
             error_code(&parse_event_id("not-an-event-id").unwrap_err()),
             Some(ErrorCode::Permanent)
         );
+    }
+
+    #[test]
+    fn details_summary_wraps_rendered_html_without_polluting_plain_body() {
+        let markdown = "> 💭 考える\n\n- ✅ lookup `{\"city\":\"Kyoto\"}`";
+        let MessageType::Notice(plain_notice) =
+            build_message(markdown.to_owned(), true, None).msgtype
+        else {
+            panic!("expected a notice");
+        };
+        let MessageType::Notice(collapsed) =
+            build_message(markdown.to_owned(), true, Some("💭 思考 & <ツール>")).msgtype
+        else {
+            panic!("expected a notice");
+        };
+        assert_eq!(collapsed.body, markdown);
+        assert_eq!(
+            collapsed.formatted.expect("expected formatted HTML").body,
+            format!(
+                "<details><summary>💭 思考 &amp; &lt;ツール&gt;</summary>{}</details>",
+                plain_notice
+                    .formatted
+                    .expect("expected rendered markdown")
+                    .body
+            )
+        );
+    }
+
+    #[test]
+    fn details_summary_also_wraps_plain_text_without_markdown_syntax() {
+        let MessageType::Notice(notice) =
+            build_message("a < b\nc".to_owned(), true, Some("途中経過")).msgtype
+        else {
+            panic!("expected a notice");
+        };
+        assert_eq!(notice.body, "a < b\nc");
+        assert_eq!(
+            notice.formatted.expect("expected formatted HTML").body,
+            "<details><summary>途中経過</summary>a &lt; b<br>c</details>"
+        );
+    }
+
+    #[test]
+    fn empty_details_summary_leaves_the_message_uncollapsed() {
+        let MessageType::Notice(notice) =
+            build_message("plain text".to_owned(), true, Some("")).msgtype
+        else {
+            panic!("expected a notice");
+        };
+        assert_eq!(notice.body, "plain text");
+        assert!(notice.formatted.is_none());
     }
 }

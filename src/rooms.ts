@@ -741,13 +741,13 @@ export class Bridge {
 				submission,
 				// The first send is keyed to the message, so after a restart the run goes on in the same notice. Edits need no
 				// such key: an edit sent twice shows the same thing.
-				send: (body, replaces) =>
+				send: (body, options) =>
 					this.#send(
 						roomId,
-						replaces === undefined ? `progress:${key}` : `progress:${key}:${randomUUID()}`,
+						options.replaces === undefined ? `progress:${key}` : `progress:${key}:${randomUUID()}`,
 						body,
 						true,
-						replaces,
+						options,
 					),
 				intervalMs: this.#options.progressIntervalMs ?? 2_000,
 				context: this.#options.context,
@@ -760,7 +760,13 @@ export class Bridge {
 		}
 	}
 
-	#send(roomId: string, txnId: string, body: string, notice: boolean, replaces?: string): Promise<string> {
+	#send(
+		roomId: string,
+		txnId: string,
+		body: string,
+		notice: boolean,
+		options?: { readonly replaces?: string; readonly detailsSummary?: string },
+	): Promise<string> {
 		// The transaction ID doubles as the request ID: one send per ID is in flight at a time.
 		return this.#request({
 			type: "send",
@@ -769,7 +775,8 @@ export class Bridge {
 			txnId,
 			body,
 			notice,
-			...(replaces === undefined ? {} : { replaces }),
+			...(options?.replaces === undefined ? {} : { replaces: options.replaces }),
+			...(options?.detailsSummary === undefined ? {} : { detailsSummary: options.detailsSummary }),
 		});
 	}
 

@@ -134,7 +134,8 @@
 			"txnId": "t",
 			"body": "hello again",
 			"notice": true,
-			"replaces": "$p"
+			"replaces": "$p",
+			"detailsSummary": "details"
 		},
 		{
 			"type": "sendAttachment",

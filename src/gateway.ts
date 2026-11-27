@@ -80,6 +80,7 @@ export type GatewayCommand =
 			readonly notice?: boolean;
 			/** Sent as an edit of this event. */
 			readonly replaces?: string;
+			readonly detailsSummary?: string;
 	  }
 	| {
 			/** Any kind of file; what the receiver's client makes of it follows the MIME type. */
