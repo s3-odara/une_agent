@@ -8,6 +8,7 @@ use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::encryption::recovery::RecoveryState;
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
+use matrix_sdk_crypto::{CollectStrategy, DecryptionSettings, TrustRequirement};
 
 use crate::config::Config;
 
@@ -27,6 +28,10 @@ async fn build_client(config: &Config) -> Result<Client> {
             backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
             auto_enable_backups: true,
         })
+        .with_decryption_settings(DecryptionSettings {
+            sender_device_trust_requirement: TrustRequirement::CrossSigned,
+        })
+        .with_room_key_recipient_strategy(CollectStrategy::IdentityBasedStrategy)
         .build()
         .await
         .context("building the Matrix client")?;
@@ -76,7 +81,6 @@ pub async fn login(config: &Config, password: &str, recovery_key: Option<&str>) 
     file.sync_all()?;
     eprintln!("logged in as {} (device {})", session.meta.user_id, session.meta.device_id);
 
-    // One sync stores the sync position: what was said before now is history, not a request to the bot.
     client.encryption().wait_for_e2ee_initialization_tasks().await;
     client.sync_once(SyncSettings::default()).await.context("first sync")?;
     verify(&client, recovery_key).await

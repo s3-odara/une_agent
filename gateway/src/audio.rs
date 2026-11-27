@@ -11,10 +11,8 @@ pub const VAD_RATE: u32 = 16_000;
 pub const FRAME_MS: u32 = 16;
 pub const FRAME_SAMPLES: usize = (VAD_RATE / 1000 * FRAME_MS) as usize;
 
-/// The agent sends it with the join, from `config.json`.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
-#[cfg_attr(test, derive(serde::Serialize))]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct VadConfig {
     pub threshold: f32,
     /// So a cough or a click does not start an utterance.
@@ -25,6 +23,12 @@ pub struct VadConfig {
     pub max_ms: u32,
     /// So the first syllable is not lost.
     pub pre_roll_ms: u32,
+}
+
+impl Default for VadConfig {
+    fn default() -> Self {
+        Self { threshold: 0.5, start_ms: 208, end_silence_ms: 1400, max_ms: 30_000, pre_roll_ms: 300 }
+    }
 }
 
 #[derive(Debug, PartialEq)]

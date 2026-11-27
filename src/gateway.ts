@@ -21,10 +21,7 @@ export type GatewayEvent =
 	| { readonly type: "error"; readonly requestId?: string; readonly message: string }
 	/** Not stored by the gateway: one missed while it was down is not offered again. */
 	| { readonly type: "reaction"; readonly roomId: string; readonly eventId: string; readonly relatesTo: string; readonly key: string }
-	/** The allowed users (not the bot) now in the room's call; empty once they have all left. */
-	| { readonly type: "callMembers"; readonly roomId: string; readonly userIds: readonly string[] }
-	| { readonly type: "callJoined"; readonly roomId: string }
-	/** Out of the call: `reason` is empty when it left as asked or because everyone else did. */
+	/** Out of the call: `reason` is empty when it left normally. */
 	| { readonly type: "callLeft"; readonly roomId: string; readonly reason: string }
 	/** Somebody started speaking. Never while the bot talks: the gateway does not listen then. */
 	| { readonly type: "callSpeech"; readonly roomId: string }
@@ -32,18 +29,6 @@ export type GatewayEvent =
 	| { readonly type: "callUtterance"; readonly roomId: string; readonly path: string; readonly startedAt: number }
 	/** Played to the end, or not played at all because it could not be. */
 	| { readonly type: "callSpoken"; readonly roomId: string; readonly id: string };
-
-/** Keep in step with `VadConfig` in `gateway/src/audio.rs`. */
-export type CallVad = {
-	/** The VAD's score (0 to 1) from which a 16 ms frame counts as speech. */
-	readonly threshold: number;
-	/** Speech must last this long to start an utterance. */
-	readonly startMs: number;
-	readonly endSilenceMs: number;
-	/** Longer utterances are passed on in parts. */
-	readonly maxMs: number;
-	readonly preRollMs: number;
-};
 
 /** Keep in step with `gateway/src/ipc.rs`. */
 export type GatewayCommand =
@@ -78,8 +63,6 @@ export type GatewayCommand =
 	| { readonly type: "typing"; readonly roomId: string; readonly on: boolean }
 	/** Answered with `sent` or `error` under `requestId`. */
 	| { readonly type: "react"; readonly requestId: string; readonly roomId: string; readonly txnId: string; readonly eventId: string; readonly key: string }
-	| { readonly type: "joinCall"; readonly roomId: string; readonly vad: CallVad }
-	| { readonly type: "leaveCall"; readonly roomId: string }
 	/** Plays a 48 kHz mono 16-bit WAV file in the call after what is queued; the gateway reads it at once. */
 	| { readonly type: "callSpeak"; readonly roomId: string; readonly id: string; readonly path: string };
 

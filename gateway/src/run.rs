@@ -4,25 +4,27 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use futures_util::{StreamExt, pin_mut};
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
-use matrix_sdk::config::SyncSettings;
+use matrix_sdk::deserialized_responses::EncryptionInfo;
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::ruma::api::error::ErrorKind;
-use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
+use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::events::reaction::{OriginalSyncReactionEvent, ReactionEventContent};
 use matrix_sdk::ruma::events::relation::Annotation;
+use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
 use matrix_sdk::ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent, Relation, ReplacementMetadata, RoomMessageEventContent};
 use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedTransactionId, OwnedUserId, RoomId, UInt};
-use matrix_sdk::{Client, LoopCtrl, Room, RoomState};
 use matrix_sdk::media::MediaEventContent;
+use matrix_sdk::{Client, Room, RoomState, SlidingSync, SlidingSyncList, SlidingSyncMode};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::call::{Calls, Control, now_ms, watch_memberships};
+use crate::call::{Calls, now_ms};
 use crate::config::Config;
-use crate::ipc::{Command, Event, File, Message, Media, Outbox, spawn_writer};
+use crate::ipc::{Command, Event, File, Media, Message, Outbox, spawn_writer};
 use crate::session;
 use crate::state::State;
 
@@ -33,7 +35,7 @@ struct Shared {
     allowed: Arc<Vec<OwnedUserId>>,
     media_dir: Arc<PathBuf>,
     typing: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
-    calls: Calls,
+    calls: Option<Calls>,
 }
 
 impl Shared {
@@ -46,21 +48,73 @@ impl Shared {
         self.allowed.contains(user)
     }
 
-    fn accepts(&self, room: &Room, client: &Client, sender: &OwnedUserId, ts: u64) -> bool {
+    fn accepts(&self, room: &Room, client: &Client, sender: &OwnedUserId, event_id: &str, ts: u64) -> bool {
         room.state() == RoomState::Joined
             && Some(&**sender) != client.user_id()
             && self.is_allowed(sender)
-            && !self.state.lock().unwrap().predates_join(room.room_id().as_str(), ts)
+            && !self.state.lock().unwrap().is_seen_or_old(room.room_id().as_str(), event_id, ts)
+    }
+}
+
+async fn build_sliding_sync(client: &Client) -> Result<SlidingSync> {
+    let list = SlidingSyncList::builder("all")
+        .sync_mode(SlidingSyncMode::new_growing(100))
+        .timeline_limit(50)
+        .required_state(vec![
+            (StateEventType::RoomEncryption, String::new()),
+            (StateEventType::RoomMember, "$LAZY".to_owned()),
+            (StateEventType::RoomMember, "$ME".to_owned()),
+            (StateEventType::RoomCreate, String::new()),
+            (StateEventType::RoomPowerLevels, String::new()),
+            (StateEventType::RoomJoinRules, String::new()),
+            (StateEventType::RoomTombstone, String::new()),
+        ]);
+
+    client
+        .sliding_sync("gateway")?
+        .with_all_extensions()
+        .without_typing_extension()
+        .without_receipt_extension()
+        .share_pos()
+        .add_list(list)
+        .build()
+        .await
+        .context("building sliding sync")
+}
+
+async fn run_sliding_sync(sliding_sync: SlidingSync) -> Result<()> {
+    loop {
+        let stream = sliding_sync.sync();
+        pin_mut!(stream);
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(_) => {}
+                // A rejected access token does not get better by retrying.
+                Err(error) if matches!(error.client_api_error_kind(), Some(ErrorKind::UnknownToken { .. })) => {
+                    return Err(error.into());
+                }
+                Err(error) if matches!(error.client_api_error_kind(), Some(ErrorKind::UnknownPos)) => {
+                    warn!("sync session expired, reconnecting: {error}");
+                    break;
+                }
+                Err(error) => {
+                    warn!("sync failed, retrying: {error}");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    break;
+                }
+            }
+        }
     }
 }
 
 pub async fn run(config: &Config) -> Result<()> {
     let client = session::restore(config).await?;
-    let state = State::load(&config.data_dir().join("gateway-state.json"))?;
+    let state = State::load(&config.data_dir().join("gateway-state.json"), now_ms())?;
     let out = spawn_writer();
     let allowed = Arc::new(config.matrix.allowed_users.clone());
+    let calls = config.call_vad().map(|vad| Calls::new(out.clone(), allowed.clone(), config.data_dir().join("voice").join("call"), vad));
     let shared = Shared {
-        calls: Calls::new(out.clone(), allowed.clone(), config.data_dir().join("voice").join("call")),
+        calls,
         out,
         state: Arc::new(Mutex::new(state)),
         allowed,
@@ -83,21 +137,13 @@ pub async fn run(config: &Config) -> Result<()> {
     client.add_event_handler(on_undecryptable);
     client.add_event_handler(on_invite);
     client.add_event_handler(on_reaction);
-    watch_memberships(&client, shared.out.clone(), shared.allowed.clone());
+    if let Some(calls) = &shared.calls {
+        calls.watch(&client);
+    }
 
+    let sliding_sync = build_sliding_sync(&client).await?;
     let commands = tokio::spawn(read_commands(client.clone(), shared.clone()));
-    let sync = client.sync_with_result_callback(SyncSettings::default(), |result| async move {
-        match result {
-            Ok(_) => Ok(LoopCtrl::Continue),
-            // A rejected access token does not get better by retrying.
-            Err(error) if matches!(error.client_api_error_kind(), Some(ErrorKind::UnknownToken { .. })) => Err(error),
-            Err(error) => {
-                warn!("sync failed, retrying: {error}");
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                Ok(LoopCtrl::Continue)
-            }
-        }
-    });
+    let sync = run_sliding_sync(sliding_sync);
 
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
@@ -127,16 +173,16 @@ fn without_reply_fallback(body: &str) -> &str {
 const MAX_MEDIA_BYTES: u64 = 20 * 1024 * 1024;
 
 /// A voice or media message is downloaded and decrypted first, so what the inbox holds is complete without the homeserver.
-async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
+async fn on_message(event: OriginalSyncRoomMessageEvent, room: Room, client: Client, encryption_info: Option<EncryptionInfo>, Ctx(shared): Ctx<Shared>) {
     let ts: u64 = event.origin_server_ts.0.into();
+    let event_id = event.event_id.to_string();
     // An edit is not a new request.
-    if !shared.accepts(&room, &client, &event.sender, ts) || matches!(event.content.relates_to, Some(Relation::Replacement(_))) {
+    if !shared.accepts(&room, &client, &event.sender, &event_id, ts) || matches!(event.content.relates_to, Some(Relation::Replacement(_))) {
         return;
     }
     let room_id = room.room_id().to_string();
-    let event_id = event.event_id.to_string();
-    // Already passed on: a sync can repeat.
-    if shared.state.lock().unwrap().has(&event_id) {
+    if encryption_info.is_none() {
+        warn!("ignoring unencrypted message {event_id} in {room_id}");
         return;
     }
     let reply_to = match &event.content.relates_to {
@@ -199,6 +245,9 @@ async fn receive_media(
     match download_media(client, &shared.media_dir, event_id, content, mimetype, voice).await {
         Ok(media) => Some((body.to_owned(), Some(media))),
         Err(error) => {
+            if let Err(record_error) = shared.state.lock().unwrap().record_seen(room_id, event_id) {
+                warn!("recording {event_id} failed: {record_error:#}");
+            }
             warn!("downloading the media of {event_id} failed: {error:#}");
             shared.emit(Event::MediaFailed { room_id: room_id.to_owned(), event_id: event_id.to_owned(), reason: format!("{error:#}") });
             None
@@ -238,23 +287,37 @@ fn file_stem(event_id: &str) -> String {
 
 /// An `m.room.encrypted` event reaches a handler only when it could not be decrypted.
 async fn on_undecryptable(event: OriginalSyncRoomEncryptedEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
-    if !shared.accepts(&room, &client, &event.sender, event.origin_server_ts.0.into()) {
+    let ts: u64 = event.origin_server_ts.0.into();
+    let event_id = event.event_id.to_string();
+    if !shared.accepts(&room, &client, &event.sender, &event_id, ts) {
         return;
     }
     let room_id = room.room_id().to_string();
-    warn!("could not decrypt {} in {room_id}", event.event_id);
-    shared.emit(Event::Undecryptable { room_id, event_id: event.event_id.to_string() });
+    if let Err(error) = shared.state.lock().unwrap().record_seen(&room_id, &event_id) {
+        warn!("recording {event_id} failed: {error:#}");
+    }
+    warn!("could not decrypt {event_id} in {room_id}");
+    shared.emit(Event::Undecryptable { room_id, event_id });
 }
 
 /// The agent answers approval requests with them.
-async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Client, Ctx(shared): Ctx<Shared>) {
-    if !shared.accepts(&room, &client, &event.sender, event.origin_server_ts.0.into()) {
+async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: Client, encryption_info: Option<EncryptionInfo>, Ctx(shared): Ctx<Shared>) {
+    let ts: u64 = event.origin_server_ts.0.into();
+    let event_id = event.event_id.to_string();
+    if !shared.accepts(&room, &client, &event.sender, &event_id, ts) {
+        return;
+    }
+    if encryption_info.is_none() {
+        warn!("ignoring unencrypted reaction {event_id} in {}", room.room_id());
         return;
     }
     let room_id = room.room_id().to_string();
+    if let Err(error) = shared.state.lock().unwrap().record_seen(&room_id, &event_id) {
+        warn!("recording {event_id} failed: {error:#}");
+    }
     shared.emit(Event::Reaction {
         room_id,
-        event_id: event.event_id.to_string(),
+        event_id,
         relates_to: event.content.relates_to.event_id.to_string(),
         key: event.content.relates_to.key,
     });
@@ -318,16 +381,12 @@ async fn read_commands(client: Client, shared: Shared) -> Result<()> {
                 let client = client.clone();
                 respond(&shared, request_id, async move { react(&client, &room_id, txn_id, &event_id, key).await });
             }
-            Command::JoinCall { room_id, vad } => match joined_room(&client, &room_id) {
-                Ok(room) => shared.calls.join(room, vad),
-                Err(error) => shared.emit(Event::CallLeft { room_id, reason: format!("{error:#}") }),
-            },
-            Command::LeaveCall { room_id } => {
-                // Not in a call there: nothing to leave.
-                let _ = shared.calls.control(&room_id, Control::Leave);
-            }
             Command::CallSpeak { room_id, id, path } => {
-                if let Err(error) = shared.calls.control(&room_id, Control::Speak { id: id.clone(), path }) {
+                let result = match &shared.calls {
+                    Some(calls) => calls.speak(&room_id, id.clone(), path),
+                    None => Err(anyhow::anyhow!("calls are not enabled")),
+                };
+                if let Err(error) = result {
                     shared.emit(Event::CallSpoken { room_id, id });
                     warn!("{error:#}");
                 }

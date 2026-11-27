@@ -7,7 +7,8 @@ publish = false
 [dependencies]
 # Pinned to the rev matrix-rust-rtc v0.5.0 builds against, so adding calls later
 # does not mean moving to another matrix-sdk. Bump both together.
-matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", features = ["bundled-sqlite", "markdown"] }
+matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", features = ["bundled-sqlite", "markdown", "unstable-msc4354"] }
+matrix-sdk-crypto = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -21,7 +22,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # AGPL-3.0 (or Element's commercial licence); pulls a prebuilt libwebrtc at build time.
 matrix-rtc-call-sdk = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0", features = ["matrix-sdk"] }
 matrix-rtc-call = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
-matrix-rtc-core = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
 matrix-rtc-transport = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
 # livekit and reqwest bring rustls with `ring`, matrix-sdk with `aws-lc-rs`; with both, rustls cannot pick a provider
 # by itself, so `main` installs this one.

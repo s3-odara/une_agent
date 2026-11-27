@@ -8,9 +8,6 @@ import type { GatewayCommand, GatewayEvent } from "../src/gateway.ts";
 type Examples<T extends { type: string }> = { readonly [K in T["type"]]: readonly Extract<T, { type: K }>[] };
 
 const room = "!r:example.org";
-const me = "@me:example.org";
-// Values a 32-bit float holds exactly, so the gateway writes them back as they were.
-const vad = { threshold: 0.5, startMs: 200, endSilenceMs: 700, maxMs: 20_000, preRollMs: 250 };
 
 export const events: Examples<GatewayEvent> = {
 	ready: [
@@ -31,8 +28,6 @@ export const events: Examples<GatewayEvent> = {
 		{ type: "error", message: "boom" },
 	],
 	reaction: [{ type: "reaction", roomId: room, eventId: "$x", relatesTo: "$p", key: "✅" }],
-	callMembers: [{ type: "callMembers", roomId: room, userIds: [me] }],
-	callJoined: [{ type: "callJoined", roomId: room }],
 	callLeft: [{ type: "callLeft", roomId: room, reason: "no LiveKit focus" }],
 	callSpeech: [{ type: "callSpeech", roomId: room }],
 	callUtterance: [{ type: "callUtterance", roomId: room, path: "/d/u.wav", startedAt: 5 }],
@@ -52,8 +47,6 @@ export const commands: Examples<GatewayCommand> = {
 	],
 	typing: [{ type: "typing", roomId: room, on: true }],
 	react: [{ type: "react", requestId: "q", roomId: room, txnId: "t", eventId: "$p", key: "❌" }],
-	joinCall: [{ type: "joinCall", roomId: room, vad }],
-	leaveCall: [{ type: "leaveCall", roomId: room }],
 	callSpeak: [{ type: "callSpeak", roomId: room, id: "s1", path: "/d/s1.wav" }],
 };
 

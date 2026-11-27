@@ -1,13 +1,13 @@
 # 自作パーソナルエージェント 引き継ぎメモ
 
 コードやテスト、コミットからは読み取れないこと（決めたことと理由、制約、確かめていないこと）だけを書く。
-モデル向けの手順書は `skills/`、プロトコルは `src/gateway.ts` と `gateway/src/ipc.rs`。
+モデル向けの手順書は `skills/`、IPC プロトコルは `src/gateway.ts` と `gateway/src/ipc.rs`、状態遷移の形式検証モデルは `spec/`。
 
 ## 目的と基本方針
 
 常駐パーソナルエージェント（Hermes Agent / OpenAI dots / Meta Muse 相当）の自作。
 
-- **基盤**: `@earendil-works/pi-durable`（`1.6.0` 固定。実験的で API が変わりやすい）。Matrix は `matrix-rust-sdk` + `matrix-rust-rtc`（v0.5.0、最初から E2EE 対応、**AGPL-3.0**）。
+- **基盤**: `@earendil-works/pi-durable`（実験的で API が変わりやすい）＋ Matrix（最初から E2EE 対応、**AGPL-3.0**）。
 - **人格と会話**: bot アカウントは1つ、ルームごとに人格（SOUL・専用メモ・モデルを分離）。
 - **記憶と予定**: 全人格共有メモ＋任意で専用メモ。毎日整理（変化日のみ）。予定とタスクの正は CalDAV（`Work` / `Home` / `ToDo`）で、日時の決まった予定・タスクは記憶に書かせない。
 - **自分から話しかける**: 起こす時刻・頻度はコードが決め、話しかけるかと文面はモデルがルームの会話を fork した会話（aside）で判断する。黙った確認は会話に残さず、話しかけた確認だけを採用する（黙った履歴が並ぶとモデルがますます黙る方向に引っ張られるため）。
@@ -19,18 +19,20 @@
 ## 構成と依存の制約
 
 - `gateway/`（Rust）: E2EE デバイスを持つ Matrix クライアント。Node バインディングが無いため子プロセスで動かし、stdin/stdout の JSON Lines で通信する。
-- `src/`（Node）: pi-durable のエージェント本体。
+- `src/`（Node）: `pi-durable` のエージェント本体。
 - `sandbox/`（Rust、依存は `libc` のみ）: Chromium を囲う `agent-sandbox`。
-- 依存の固定:
-  - `matrix-sdk` は git rev `56bc5911`（`matrix-rust-rtc` v0.5.0 と揃える）。`livekit` 系も `Cargo.lock` 固定。
+- **依存の固定**:
+  - `@earendil-works/pi-durable` は `1.6.0` 固定。
+  - `matrix-rust-rtc` は v0.5.0、`matrix-sdk` は git rev `56bc5911`（`matrix-rust-rtc` と揃える）。`livekit` 系も `Cargo.lock` 固定。
   - `libwebrtc` は `nix/libwebrtc.nix` で `WEBRTC_TAG` と揃えて渡す（clang 21+ 必須）。
   - `playwright-core` は npm に入れず、nixpkgs の `playwright-driver` を `node_modules/playwright-core` にリンクする（`npm install` で消えるので開発シェルに入り直す）。
-- 落ちても1回だけ答える: ゲートウェイは受信を `gateway-state.json` に永続化して ack で消す。エージェントはイベント ID を `requestId` にして submit し、返信・音声・途中経過はイベント ID 由来のトランザクション ID で送る（通話の返答は台帳に載せない）。
 
 ## 部品ごとの判断と制約
 
-### 会話・途中経過・システムプロンプト
+### Matrix・配信・会話・途中経過
 
+- **E2EE とデバイス検証**: 非暗号化のメッセージ・リアクションは拒否し、クロス署名済みデバイスのみと通信する（通話のメディア鍵交換 MSC4153 も同様）。クライアント側のデバイス検証が必須。
+- **落ちても1回だけ答える**: ゲートウェイは受信を `gateway-state.json` に永続化して ack で消す。エージェントはイベント ID を `requestId` にして submit し、返信・音声・途中経過はイベント ID 由来のトランザクション ID で送る（通話の返答は台帳に載せない）。
 - **プロンプトキャッシュ維持**:
   - 現在時刻はシステムプロンプトに入れず、各発言の先頭に付ける。
   - `memory` セクションは SOUL の直前に置く（会話途中で変わるのは記憶だけのため）。
@@ -45,17 +47,17 @@
 - 繰り返し予定は `TZID` + VTIMEZONE で書き、読むときは IANA 名として解決する（`src/zones.ts` で ical.js の `TimezoneService` を補完）。変更・削除は取り違え防止のため `scope`（`this` / `all`）を必須とし、「この回以降」は未実装（2件書き込み途中のクラッシュ対処が要るため）。繰り返しタスクは最初の回のみ対応。
 - 承認はツール呼び出しの中で待機（24時間で拒否）。リアクションはゲートウェイが永続化しないため、停止中に押された分は届かない。
 
-### 天気・雨・ジオコーディング
+### 気象・ジオコーディング
 
 - **プライバシー配慮**: 気象庁 API に現在地を知らせないよう、区域の3時間予報は発表地域内の全区域を取得してローカル選択、天気分布予報・15h 雨は GeoJSON をローカル照合する。1h 雨と今後の雪のみ `z=10` PNG のタイル番号が伝わる。
-- 範囲系（`weather_forecast_grid` / `weather_rain_grid`）は出力量が大きいため `codemode` から絞って使う前提。
-- 区域予報・雨はすべて日本時間で表示する。
-- `geocode` は事前生成した `geocode.sqlite` をローカル参照する（[manual/geocode.md](file:///home/user/git/agent/manual/geocode.md)）。
+- 範囲系（`weather_forecast_grid` / `weather_rain_grid` / `weather_snow_grid`）は出力量が大きいため `codemode` から絞って使う前提。
+- 気象系（天気・雨・雪）の時刻はすべて日本時間で表示する。
+- `geocode` は事前生成した `geocode.sqlite` をローカル参照する（手順は `manual/geocode.md`）。
 
 ### 自分から話しかける（Proactive / Timer）
 
-- aside 中は読み取り系ツールのみ `beforeTool` フックで許可する（ホワイトリスト方式。あとから足したツールや MCP を既定で拒むため）。`browser_screenshot` の `share` も weighing 中は拒否する。
-- `timer_add` は aside を使わず通常実行（`Bridge.runTimer`）として動かす（aside 内で書き込みを許すと、ユーザー発言との競合で aside が破棄・再実行されたときに副作用が二重になるため）。
+- aside 中は読み取り系ツールのみ `beforeTool` フックで許可する（ホワイトリスト方式。あとから足したツールや MCP を既定で拒むため）。`browser_screenshot` の `share` もチャット送信の副作用を避けるため aside 中は拒否する。
+- `timer_add` は aside を使わず通常実行として動かす（aside 内で書き込みを許すと、ユーザー発言との競合で aside が破棄・再実行されたときに副作用が二重になるため）。
 - **採らなかった案**:
   - `followup_add`: 会話中にモデルが気づかないと登録されないため、定時確認で会話を読み返す形にした。
   - systemd-timer: 常駐エージェントに外から起こしてもらう利点が無い。
@@ -66,9 +68,8 @@
 - **STT**: whisper.cpp（`large-v3-turbo q8_0`、Vulkan、VAD 余白 0）。VAD が無いと 30 秒区切りで文が落ち、余白があると末尾無音に「はい」が出る。
 - **通話の制約**:
   - **Element Call 側も Developer 設定で互換形式を `state events` にしておく**（通常の `/sync` で届くのがこれだけ）。
-  - **クロス署名済みデバイスとのみメディア鍵を交換する**（MSC4153）。クライアントのデバイス検証が必須。
   - 交互に話す設計（bot の再生中＋500ms は相手の音声を捨てる）。エコーや言い終わる前の間での誤中断を防ぐため。返答は全文合成してから流す（ストリーミング未実装）。
-  - `webrtc-vad` は libwebrtc と C シンボルが衝突するため、純 Rust の `earshot` を使用。
+  - `webrtc-vad` は `libwebrtc` と C シンボルが衝突するため、純 Rust の `earshot` を使用。
 
 ### Web・MCP・codemode
 
@@ -97,23 +98,13 @@
 
 ## 動かし方とテスト
 
-- **テスト**: `just check`（型・Node・gateway）、`just test-caldav`、`just test-stt`。Chromium を2つ開くテストはプロセス数上限に当たることがあるため、必要に応じて `systemd-run --user --scope -p TasksMax=400` で回す。
+- **テスト・検証**: `just check`（型・Node・gateway）、`just spec` / `just verify`（Quint モデルのシミュレーション・有界モデル検査）、`just test-caldav`、`just test-stt`。Chromium を2つ開くテストはプロセス数上限に当たることがあるため、必要に応じて `systemd-run --user --scope -p TasksMax=400` で回す。
+- **テストの方針**（`AGENTS.md` に加えて）:
+  - 外から見える結果（送られたメッセージ、モデルへの入力、ファイル/カレンダー状態）で検証し、内部 DB や iCalendar 生文字列は見ない。
+  - 時間は偽時計/偽タイマーで進める。
+  - `test/protocol.ts` を変えたら `just protocol` で `test/protocol.json` を再生成する。
 - **初回セットアップ（Ubuntu VM）**:
   1. ユーザーを `nix-users` グループに追加して再ログイン
   2. `just setup` → `~/.config/agent/config.json` と `env` を編集
   3. `just vulkan` で GPU 確認 → `just install`（未コミット変更があると止まる）
   4. `just login`（OAuth は `just model-login`）→ `systemctl --user restart agent.service`
-- **テストの方針**（`AGENTS.md` に加えて）:
-  - 外から見える結果（送られたメッセージ、モデルへの入力、ファイル/カレンダー状態）で検証し、内部 DB や iCalendar 生文字列は見ない。
-  - 時間は偽時計/偽タイマーで進める。
-  - `test/protocol.ts` を変えたら `just protocol` で `test/protocol.json` を再生成する。
-
-## 未検証
-
-- **実 homeserver（tuwunel）+ Element / Sable での一連**: E2EE、デバイス検証、`kill -9` 後の1回だけ返信、ボイスメッセージ、notice 編集と無通知、レート制限。
-- **`!cred add` の発言が `data/matrix-store/` に残るか**: matrix-sdk の SQLite キャッシュにパスワードが残らないか、削除後に消えるか。
-- **実 CalDAV サーバーとスマホアプリ**: Radicale 以外での ETag/探索、繰り返し予定（`RECURRENCE-ID` / `EXDATE` / VTIMEZONE）の表示。
-- **Proactive の実運用**: フォローアップの質、fork が連なったときの読み込み速度、写したセッション ID で Codex のプロンプトキャッシュが効くか。
-- **通話の実機確認**: Sable / Element Call との双方向通話、交互発話の 500ms 待機が足りるか、遅延（VAD 1.4s + STT + 全文合成）。
-- **本番環境（Ubuntu 26.10 VM / RX570）**: `just setup`〜`just install`、Ubuntu 制限下での Chromium サンドボックス、RX570（RADV / virtio native context）での whisper-server 速度。
-- **画像認証の精度**: 座標クリック（`browser_click_at`）が実在の画像認証でどこまで通るか。

@@ -23,9 +23,12 @@ test("calls cannot be set up without speech synthesis", () => {
 	assert.throws(() => testConfig("/nowhere", { voice: { stt: {}, call: {} } }), /voice\.tts/);
 });
 
-test("a call's VAD setting that is given replaces only that setting", () => {
-	const vadOf = (vad: Record<string, unknown>) => testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { vad } } }).voice?.call?.vad;
-	assert.deepEqual(vadOf({ endSilenceMs: 700 }), { ...vadOf({}), endSilenceMs: 700 });
+test("a call's VAD setting accepts partial overrides and rejects out-of-range values", () => {
+	assert.deepEqual(
+		testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { vad: { endSilenceMs: 700 } } } }).voice?.call?.vad,
+		{ endSilenceMs: 700 },
+	);
+	assert.throws(() => testConfig("/nowhere", { voice: { stt: {}, tts: {}, call: { vad: { threshold: 1.5 } } } }), /threshold/);
 });
 
 test("a model is written as provider/model, and only the first slash splits it", () => {
