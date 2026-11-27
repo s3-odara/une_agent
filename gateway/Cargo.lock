@@ -2496,11 +2496,14 @@ name = "matrix-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "earshot",
  "futures-util",
  "matrix-rtc-call",
  "matrix-rtc-call-sdk",
+ "matrix-rtc-core",
+ "matrix-rtc-livekit",
  "matrix-rtc-transport",
  "matrix-sdk",
  "matrix-sdk-crypto",

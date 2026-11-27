@@ -23,7 +23,7 @@
 - `sandbox/`（Rust、依存は `libc` のみ）: Chromium を囲う `agent-sandbox`。
 - **依存の固定**:
   - `@earendil-works/pi-durable` 系は `package.json` で厳密バージョン指定し、週次の自動更新 PR で `@earendil-works/*` を揃えて上げる（マージ前に保存形式の変更を確認する）。
-  - `matrix-rust-rtc` は v0.5.0、`matrix-sdk` は git rev `56bc5911`（`matrix-rust-rtc` と揃える）。`livekit` 系も含め自動更新せず手動で揃える（将来的に `matrix-rust-rtc` が crates.io 版 `matrix-sdk` に依存するようになれば git rev 固定は外せる。また次に `matrix-sdk` を上げる際、上流から消えていれば `[patch.crates-io] const_panic` も削除できる）。
+  - `matrix-rust-rtc` は v0.5.0、`matrix-sdk` は git rev `56bc5911`（`matrix-rust-rtc` と揃える）。`livekit` 系も含め自動更新せず手動で揃える（将来的に `matrix-rust-rtc` が crates.io 版 `matrix-sdk` に依存するようになれば git rev 固定は外せる。また次に `matrix-sdk` を上げる際、上流から消えていれば `[patch.crates-io] const_panic` も削除できる。`matrix-rust-rtc` が送信時に stable 識別子 `m.rtc.member`・`sticky_key`・`m.rtc.encryption_key` を出すようになったら、`gateway/src/call.rs` の `StableWireBackend` / `JoinedCall` と追加依存を外して `LiveKitCall::join` に戻す）。
   - `libwebrtc` は `nix/libwebrtc.nix` で `WEBRTC_TAG` と揃えて渡す（clang 21+ 必須）。
   - `playwright-core` は npm に入れず、nixpkgs の `playwright-driver` を `node_modules/playwright-core` にリンクする（`npm install` で消えるので開発シェルに入り直す）。
 

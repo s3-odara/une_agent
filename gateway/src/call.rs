@@ -5,16 +5,31 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use futures_util::StreamExt;
-use matrix_rtc_call::{CallEnd, CallStatus};
-use matrix_rtc_call_sdk::{CallEvent, LiveKitCall, LiveKitCallOptions};
+use matrix_rtc_call::{
+    CallEnd, CallJoinOptions, CallKind, CallStatus, JoinOptions, JoinTransport, RtcCall, RtcClient,
+    RtcError, RtcRoom,
+};
+use matrix_rtc_call_sdk::{
+    CallEngine, CallEvent, LiveKitAttachOptions, LiveKitAttachment, MediaAttachment, Participant,
+    SdkMatrixBackend, StabilityConfig, attach_livekit,
+};
+use matrix_rtc_core::{
+    BackendError, CommandError, EventIn, LeaveError, LiveKitTokenRequest, MatrixBackend,
+    OpenIdToken, RoomOptions, RoomSink, RoomSubjects, Subscription, ToDeviceDelivery,
+    ToDeviceRecipient, ToDeviceSink,
+};
+use matrix_rtc_livekit::{LiveKitTransportConnection, MediaKeyBridge};
 use matrix_rtc_transport::{
     AudioFrame, LocalTrackHandle, MediaStreamKind, PublishOptions, RemoteTrackHandle,
+    TransportConnection as _,
 };
 use matrix_sdk::ruma::{OwnedUserId, RoomId};
 use matrix_sdk::{Client, Room, RoomState};
 use serde::Deserialize;
-use tokio::sync::{broadcast, mpsc};
+use serde_json::Value;
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -279,9 +294,7 @@ impl Calls {
         tokio::fs::create_dir_all(&*self.dir)
             .await
             .with_context(|| format!("creating {}", self.dir.display()))?;
-        let call = LiveKitCall::join(room, LiveKitCallOptions::default())
-            .await
-            .context("joining the call")?;
+        let call = JoinedCall::join(room).await.context("joining the call")?;
         info!("joined the call in {room_id} as {}", call.local_identity());
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -305,7 +318,7 @@ impl Calls {
 
     async fn in_call(
         &self,
-        call: &LiveKitCall,
+        call: &JoinedCall,
         room_id: &str,
         mut controls: mpsc::UnboundedReceiver<Control>,
     ) -> Result<()> {
@@ -361,7 +374,7 @@ impl Calls {
 
     fn listen_to_all(
         &self,
-        call: &LiveKitCall,
+        call: &JoinedCall,
         room_id: &str,
         player: &Player,
         listeners: &mut HashMap<String, AbortOnDrop>,
@@ -375,7 +388,7 @@ impl Calls {
 
     fn listen(
         &self,
-        call: &LiveKitCall,
+        call: &JoinedCall,
         room_id: &str,
         member_id: &str,
         player: &Player,
@@ -710,6 +723,349 @@ fn live_members(client: &Client, room: &Room, allowed: &[OwnedUserId]) -> HashSe
         members.insert(format!("{sender}\0{member_id}"));
     }
     members
+}
+
+// matrix-rust-rtc v0.5.0 translates outbound MSC4143/MSC4354 identifiers to unstable spellings,
+// which peers on stable MSC4143 (such as Sable) reject.
+#[derive(Clone)]
+struct StableWireBackend<B> {
+    inner: B,
+}
+
+impl<B> StableWireBackend<B> {
+    fn new(inner: B) -> Self {
+        Self { inner }
+    }
+}
+
+fn stable_event_type(event_type: String) -> String {
+    match event_type.as_str() {
+        "org.matrix.msc4143.rtc.member" => "m.rtc.member".to_owned(),
+        "org.matrix.msc4143.rtc.slot" => "m.rtc.slot".to_owned(),
+        "io.element.call.encryption_keys" => "m.rtc.encryption_key".to_owned(),
+        _ => event_type,
+    }
+}
+
+fn with_stable_sticky_key(mut content: Value) -> Value {
+    if let Some(object) = content.as_object_mut()
+        && !object.contains_key("sticky_key")
+        && let Some(key) = object.remove("msc4354_sticky_key")
+    {
+        object.insert("sticky_key".to_owned(), key);
+    }
+    content
+}
+
+#[async_trait]
+impl<B: MatrixBackend + 'static> MatrixBackend for StableWireBackend<B> {
+    fn own_user_id(&self) -> String {
+        self.inner.own_user_id()
+    }
+
+    fn own_device_id(&self) -> String {
+        self.inner.own_device_id()
+    }
+
+    async fn send_sticky_event(
+        &self,
+        room_id: String,
+        event_type: String,
+        content: Value,
+        duration_ms: u64,
+    ) -> Result<String, CommandError> {
+        self.inner
+            .send_sticky_event(
+                room_id,
+                stable_event_type(event_type),
+                with_stable_sticky_key(content),
+                duration_ms,
+            )
+            .await
+    }
+
+    async fn send_delayed_state_event(
+        &self,
+        room_id: String,
+        event_type: String,
+        state_key: String,
+        content: Value,
+        delay_ms: u64,
+    ) -> Result<String, CommandError> {
+        self.inner
+            .send_delayed_state_event(room_id, event_type, state_key, content, delay_ms)
+            .await
+    }
+
+    async fn send_delayed_sticky_event(
+        &self,
+        room_id: String,
+        event_type: String,
+        content: Value,
+        sticky_duration_ms: u64,
+        delay_ms: u64,
+    ) -> Result<String, CommandError> {
+        self.inner
+            .send_delayed_sticky_event(
+                room_id,
+                stable_event_type(event_type),
+                with_stable_sticky_key(content),
+                sticky_duration_ms,
+                delay_ms,
+            )
+            .await
+    }
+
+    async fn restart_delayed_event(
+        &self,
+        room_id: String,
+        delay_id: String,
+    ) -> Result<(), CommandError> {
+        self.inner.restart_delayed_event(room_id, delay_id).await
+    }
+
+    async fn cancel_delayed_event(
+        &self,
+        room_id: String,
+        delay_id: String,
+    ) -> Result<(), CommandError> {
+        self.inner.cancel_delayed_event(room_id, delay_id).await
+    }
+
+    async fn send_to_device_message(
+        &self,
+        recipients: Vec<ToDeviceRecipient>,
+        message_type: String,
+        content: Value,
+    ) -> Result<Vec<ToDeviceDelivery>, CommandError> {
+        self.inner
+            .send_to_device_message(recipients, stable_event_type(message_type), content)
+            .await
+    }
+
+    async fn send_state_event(
+        &self,
+        room_id: String,
+        event_type: String,
+        state_key: String,
+        content: Value,
+    ) -> Result<String, CommandError> {
+        self.inner
+            .send_state_event(room_id, stable_event_type(event_type), state_key, content)
+            .await
+    }
+
+    async fn send_room_event(
+        &self,
+        room_id: String,
+        event_type: String,
+        content: Value,
+    ) -> Result<String, CommandError> {
+        self.inner
+            .send_room_event(room_id, event_type, content)
+            .await
+    }
+
+    async fn redact_event(
+        &self,
+        room_id: String,
+        event_id: String,
+        reason: Option<String>,
+    ) -> Result<(), CommandError> {
+        self.inner.redact_event(room_id, event_id, reason).await
+    }
+
+    async fn subscribe_room(
+        &self,
+        room_id: String,
+        subjects: RoomSubjects,
+        sink: Arc<dyn RoomSink>,
+    ) -> Result<Arc<dyn Subscription>, BackendError> {
+        self.inner.subscribe_room(room_id, subjects, sink).await
+    }
+
+    async fn subscribe_to_device(
+        &self,
+        event_types: Vec<String>,
+        sink: Arc<dyn ToDeviceSink>,
+    ) -> Result<Arc<dyn Subscription>, BackendError> {
+        self.inner.subscribe_to_device(event_types, sink).await
+    }
+
+    async fn relations(
+        &self,
+        room_id: String,
+        event_id: String,
+        rel_type: String,
+        event_type: String,
+    ) -> Result<Vec<EventIn>, BackendError> {
+        self.inner
+            .relations(room_id, event_id, rel_type, event_type)
+            .await
+    }
+
+    async fn openid_token(&self) -> Result<OpenIdToken, BackendError> {
+        self.inner.openid_token().await
+    }
+
+    async fn livekit_token(&self, request: &LiveKitTokenRequest) -> Result<String, BackendError> {
+        self.inner.livekit_token(request).await
+    }
+
+    async fn rtc_transports(&self) -> Result<Value, BackendError> {
+        self.inner.rtc_transports().await
+    }
+}
+
+struct JoinedCall {
+    call: Arc<RtcCall<StableWireBackend<SdkMatrixBackend>>>,
+    _room: RtcRoom<StableWireBackend<SdkMatrixBackend>>,
+    engine: CallEngine,
+    connection: LiveKitTransportConnection,
+    _bridge: Arc<MediaKeyBridge>,
+    own_identity: String,
+}
+
+impl JoinedCall {
+    async fn join(room: &Room) -> Result<Self> {
+        let client = room.client();
+        anyhow::ensure!(
+            client.user_id().is_some(),
+            "client has no user id (not logged in)"
+        );
+        anyhow::ensure!(
+            client.device_id().is_some(),
+            "client has no device id (not logged in)"
+        );
+        let room_id = room.room_id().to_string();
+
+        let rtc_client = RtcClient::new(Arc::new(StableWireBackend::new(SdkMatrixBackend::new(
+            client,
+        ))));
+        let rtc_room = rtc_client.room(room_id, RoomOptions::default()).await?;
+        rtc_room.seeded().await;
+
+        let mut join = JoinOptions {
+            slot_id: ROOM_CALL_SLOT_ID.to_owned(),
+            ..JoinOptions::application(CALL_APPLICATION)
+        };
+        join.transport = JoinTransport::Advertised;
+        let call = Arc::new(
+            rtc_room
+                .join_call(CallJoinOptions {
+                    join,
+                    kind: CallKind::default(),
+                    reactions: None,
+                    intent: None,
+                })
+                .await?,
+        );
+
+        let attached = attach_livekit(
+            &call,
+            rtc_room.backend().clone(),
+            LiveKitAttachOptions {
+                http: None,
+                auto_subscribe: true,
+                stability: StabilityConfig::default(),
+                own_reconnect_budget: None,
+                sfu_fallback: false,
+            },
+        )
+        .await;
+        let (engine, connection, own_identity, bridge) = match attached {
+            Ok(LiveKitAttachment {
+                media:
+                    MediaAttachment {
+                        engine,
+                        own_connection: Some(connection),
+                        own_identity,
+                        ..
+                    },
+                key_bridge,
+            }) => (engine, connection, own_identity, key_bridge),
+            Ok(_) => {
+                let _ = call.leave(Default::default()).await;
+                anyhow::bail!("the joined call publishes on no LiveKit focus");
+            }
+            Err(error) => {
+                let _ = call.leave(Default::default()).await;
+                return Err(error.into());
+            }
+        };
+
+        let mut status = call.subscribe_status();
+        tokio::select! {
+            _ = connection.wait_connected() => {}
+            _ = status.wait_for(|status| matches!(status, CallStatus::Ended { .. })) => {
+                anyhow::bail!("our own focus was given up: {:?}", call.status());
+            }
+        }
+
+        Ok(Self {
+            call,
+            _room: rtc_room,
+            engine,
+            connection,
+            _bridge: bridge,
+            own_identity,
+        })
+    }
+
+    fn local_identity(&self) -> &str {
+        &self.own_identity
+    }
+
+    fn subscribe_call_events(&self) -> broadcast::Receiver<CallEvent> {
+        self.engine.subscribe_events()
+    }
+
+    fn subscribe_status(&self) -> watch::Receiver<CallStatus> {
+        self.call.subscribe_status()
+    }
+
+    fn participants(&self) -> Vec<Participant> {
+        self.engine.participants()
+    }
+
+    fn remote_track(
+        &self,
+        member_id: &str,
+        kind: MediaStreamKind,
+    ) -> Option<Arc<dyn RemoteTrackHandle>> {
+        self.engine.remote_track(member_id, kind)
+    }
+
+    async fn publish(&self, options: PublishOptions) -> Result<Arc<dyn LocalTrackHandle>> {
+        Ok(self.engine.publish(options).await?)
+    }
+
+    async fn leave(self) -> Result<()> {
+        let Self {
+            call,
+            _room,
+            engine,
+            connection,
+            ..
+        } = self;
+        let leave_result = call.leave(Default::default()).await;
+        let auto_left = matches!(
+            leave_result,
+            Err(RtcError::SessionOver | RtcError::Leave(LeaveError::NotJoined))
+        );
+        let leave_result = if auto_left {
+            Ok(())
+        } else {
+            leave_result.map_err(anyhow::Error::from)
+        };
+        drop(_room);
+        engine.shutdown().await;
+        let close_result = match connection.close().await {
+            Err(_) if auto_left => Ok(()),
+            result => result.map_err(anyhow::Error::from),
+        };
+        leave_result.and(close_result)
+    }
 }
 
 #[cfg(test)]

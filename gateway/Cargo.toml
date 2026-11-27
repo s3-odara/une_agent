@@ -22,7 +22,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # AGPL-3.0 (or Element's commercial licence); pulls a prebuilt libwebrtc at build time.
 matrix-rtc-call-sdk = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0", features = ["matrix-sdk"] }
 matrix-rtc-call = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
+matrix-rtc-core = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
+matrix-rtc-livekit = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
 matrix-rtc-transport = { git = "https://github.com/element-hq/matrix-rust-rtc", tag = "v0.5.0" }
+async-trait = "0.1"
 # livekit and reqwest bring rustls with `ring`, matrix-sdk with `aws-lc-rs`; with both, rustls cannot pick a provider
 # by itself, so `main` installs this one.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
