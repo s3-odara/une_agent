@@ -775,7 +775,7 @@ fn build_message(
     } else {
         RoomMessageEventContent::text_markdown(body)
     };
-    if let Some(summary) = details_summary.filter(|summary| !summary.is_empty()) {
+    if let Some(summary) = details_summary.filter(|summary| !summary.trim().is_empty()) {
         let (plain, formatted) = match &mut content.msgtype {
             MessageType::Notice(notice) => (&notice.body, &mut notice.formatted),
             MessageType::Text(text) => (&text.body, &mut text.formatted),
@@ -1019,12 +1019,14 @@ mod tests {
 
     #[test]
     fn empty_details_summary_leaves_the_message_uncollapsed() {
-        let MessageType::Notice(notice) =
-            build_message("plain text".to_owned(), true, Some("")).msgtype
-        else {
-            panic!("expected a notice");
-        };
-        assert_eq!(notice.body, "plain text");
-        assert!(notice.formatted.is_none());
+        for blank in ["", "   "] {
+            let MessageType::Notice(notice) =
+                build_message("plain text".to_owned(), true, Some(blank)).msgtype
+            else {
+                panic!("expected a notice");
+            };
+            assert_eq!(notice.body, "plain text");
+            assert!(notice.formatted.is_none());
+        }
     }
 }

@@ -97,12 +97,11 @@ function liveNested(callId: string, live: LiveState | undefined): Nested[] {
 		});
 }
 
-function toolLine(
+function renderTool(
 	call: ToolCall,
 	results: Results,
 	live: LiveState | undefined,
-	counts: SummaryCounts,
-): string {
+): { readonly text: string; readonly tools: number; readonly failed: number; readonly stopped: number } {
 	const running = live?.run !== undefined;
 	const result = results.get(call.id);
 	const status =
@@ -111,13 +110,15 @@ function toolLine(
 	const statuses = nested.length > 0 ? nested.map((inner) => inner.status) : [status];
 	const failed = statuses.filter((s) => s === TOOL_FAILED).length;
 	const stopped = statuses.filter((s) => s === TOOL_STOPPED).length;
-	counts.tools += statuses.length;
-	counts.failed += failed > 0 ? failed : stopped === 0 && status === TOOL_FAILED ? 1 : 0;
-	counts.stopped += stopped;
-	return [
-		line("", status, call.name, JSON.stringify(call.arguments), result?.isError === true ? result.text : undefined),
-		...nested.map((inner) => line("  ", inner.status, inner.name, inner.args, inner.error)),
-	].join("\n");
+	return {
+		text: [
+			line("", status, call.name, JSON.stringify(call.arguments), result?.isError === true ? result.text : undefined),
+			...nested.map((inner) => line("  ", inner.status, inner.name, inner.args, inner.error)),
+		].join("\n"),
+		tools: statuses.length,
+		failed: failed > 0 ? failed : stopped === 0 && status === TOOL_FAILED ? 1 : 0,
+		stopped,
+	};
 }
 
 /** Avoid showing half-written words or Markdown in the model's thinking. */
@@ -161,7 +162,13 @@ function buildProgress(
 				blocks.push(block.text.trim());
 			}
 		}
-		blocks.push(calls.map((call) => toolLine(call, results, live, counts)).join("\n"));
+		const rendered = calls.map((call) => renderTool(call, results, live));
+		for (const tool of rendered) {
+			counts.tools += tool.tools;
+			counts.failed += tool.failed;
+			counts.stopped += tool.stopped;
+		}
+		blocks.push(rendered.map((tool) => tool.text).join("\n"));
 	}
 	// Until a tool call is recorded, its preceding text is indistinguishable from the final reply.
 	for (const block of live?.generation?.message?.content ?? []) {
@@ -172,16 +179,13 @@ function buildProgress(
 		blocks.push(`⚠️ モデルの呼び出しに失敗しました。再試行します（${clipped(retry.error, MAX_ERROR_CHARS)}）`);
 	if ((live?.compactions ?? []).length > 0) blocks.push("🗜 これまでの会話を要約しています");
 
-	const full = blocks.filter((block) => block !== "").join("\n\n");
-	if (full === "") return undefined;
-	const body =
-		full.length <= MAX_CHARS
-			? full
-			: (() => {
-					const tail = full.slice(onCharacter(full, full.length - MAX_CHARS));
-					const cut = tail.indexOf("\n\n");
-					return `…\n\n${cut < 0 ? tail : tail.slice(cut + 2)}`;
-				})();
+	let body = blocks.filter((block) => block !== "").join("\n\n");
+	if (body === "") return undefined;
+	if (body.length > MAX_CHARS) {
+		const tail = body.slice(onCharacter(body, body.length - MAX_CHARS));
+		const cut = tail.indexOf("\n\n");
+		body = `…\n\n${cut < 0 ? tail : tail.slice(cut + 2)}`;
+	}
 	const detailsSummary = collapse ? formatSummary(counts) : undefined;
 	return detailsSummary === undefined ? { body } : { body, detailsSummary };
 }
