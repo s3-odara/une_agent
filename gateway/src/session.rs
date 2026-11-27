@@ -2,7 +2,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use matrix_sdk::Client;
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
@@ -48,6 +48,13 @@ pub async fn restore(config: &Config) -> Result<Client> {
         Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
     };
     let session: MatrixSession = serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
+    ensure!(
+        session.meta.user_id == config.matrix.user_id,
+        "Matrix session at {} is for {}, but config expects {}",
+        path.display(),
+        session.meta.user_id,
+        config.matrix.user_id
+    );
     let client = build_client(config).await?;
     client.restore_session(session).await.context("restoring the Matrix session")?;
     Ok(client)
