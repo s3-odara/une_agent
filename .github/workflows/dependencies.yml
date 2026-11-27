@@ -71,6 +71,7 @@ jobs:
         with:
           extra_nix_config: access-tokens = github.com=${{ github.token }}
       - run: nix develop -c npm ci --ignore-scripts --no-audit --no-fund
+      - run: nix develop -c npm audit signatures
       - run: nix develop -c just check
       - run: nix build --no-link .#agent
       - name: Transcribe synthetic speech with the updated server or models
