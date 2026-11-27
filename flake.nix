@@ -79,6 +79,8 @@
       devShells.${system}.default = pkgs.mkShell.override { stdenv = pkgs.clangStdenv; } {
         packages = with pkgs; [
           nodejs_26
+          biome
+          nixfmt
           cargo
           rustc
           rustfmt

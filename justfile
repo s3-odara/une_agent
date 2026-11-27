@@ -15,6 +15,20 @@ default:
 # Type-check, and run the tests of the agent and the gateway.
 check: typecheck test test-gateway
 
+# Format TypeScript/JSON, Rust, and Nix files.
+fmt:
+    biome format --write
+    cargo fmt --manifest-path gateway/Cargo.toml
+    cargo fmt --manifest-path sandbox/Cargo.toml
+    nixfmt flake.nix nix/*.nix
+
+# Check formatting without modifying files.
+fmt-check:
+    biome format
+    cargo fmt --manifest-path gateway/Cargo.toml --check
+    cargo fmt --manifest-path sandbox/Cargo.toml --check
+    nixfmt --check flake.nix nix/*.nix
+
 typecheck:
     npx tsc --noEmit
 
