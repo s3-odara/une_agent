@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { Message } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/chord/context";
-import { defineExtension, defineTool, section, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, GenerationTask, hook, section, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { type BrowserPage, type Browsers, VIEWPORT } from "./browser.ts";
 import { type CodeRequests, noCode } from "./codes.ts";
@@ -20,6 +21,10 @@ export type BrowserToolsOptions = {
 	readonly db: HostDb;
 	readonly profileOf: (conversationId: number) => string | undefined;
 	readonly maxChars?: number;
+	readonly snapshotWindow?: {
+		readonly keep?: number;
+		readonly batch?: number;
+	};
 	readonly codes?: CodeRequests;
 	readonly screenshots?: {
 		readonly send: (
@@ -30,6 +35,40 @@ export type BrowserToolsOptions = {
 		readonly dir: string;
 	};
 };
+
+export const OMITTED_SNAPSHOT = "（古いスナップショット。省略）";
+
+const SNAPSHOT_MARKER = `\n\n${UNTRUSTED}\n\n`;
+
+const SNAPSHOT_TOOLS = new Set([
+	"browser_open",
+	"browser_snapshot",
+	"browser_click",
+	"browser_type",
+	"browser_press",
+	"browser_back",
+	"browser_fill_credential",
+	"browser_request_code",
+]);
+
+function isSnapshotResult(message: Message): message is Extract<Message, { role: "toolResult" }> {
+	return (
+		message.role === "toolResult" &&
+		!message.isError &&
+		SNAPSHOT_TOOLS.has(message.toolName) &&
+		message.content.some((block) => block.type === "text" && block.text.includes(SNAPSHOT_MARKER))
+	);
+}
+
+function omitSnapshot(message: Extract<Message, { role: "toolResult" }>): Message {
+	const content = message.content.map((block) => {
+		if (block.type !== "text") return block;
+		const cut = block.text.indexOf(SNAPSHOT_MARKER);
+		if (cut === -1) return block;
+		return { ...block, text: `${block.text.slice(0, cut)}\n\n${OMITTED_SNAPSHOT}` };
+	});
+	return { ...message, content };
+}
 
 export function pngSize(png: Buffer): { width: number; height: number } {
 	return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
@@ -361,6 +400,9 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 				]),
 	];
 
+	const keep = options.snapshotWindow?.keep ?? 2;
+	const batch = options.snapshotWindow?.batch ?? 3;
+
 	return defineExtension({
 		name: "browser",
 		sections: [
@@ -379,6 +421,23 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 						: "- 画像認証は browser_screenshot で見て、browser_click_at で解いてよい。何度か試して解けなければ、browser_screenshot（share=true）でユーザーに画面を見せて止まる。",
 				].join("\n"),
 			),
+		],
+		hooks: [
+			hook(GenerationTask, {
+				// Dropped in batches so the prefix stays unchanged between drops and the provider's prompt cache holds.
+				beforeRequest: ({ messages }) => {
+					const total = messages.reduce((count, message) => count + (isSnapshotResult(message) ? 1 : 0), 0);
+					const over = total - keep;
+					if (over < batch) return undefined;
+					let drop = over - (over % batch);
+					const sent = messages.map((message) => {
+						if (drop === 0 || !isSnapshotResult(message)) return message;
+						drop--;
+						return omitSnapshot(message);
+					});
+					return { messages: sent };
+				},
+			}),
 		],
 		tools,
 	});

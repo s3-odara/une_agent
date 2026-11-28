@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type BrowserPage, type Browsers, type FieldInfo, VIEWPORT } from "../src/browser.ts";
-import { createBrowserExtension, pngSize } from "../src/browser-tools.ts";
+import { createBrowserExtension, OMITTED_SNAPSHOT, pngSize } from "../src/browser-tools.ts";
 import { UNTRUSTED } from "../src/untrusted.ts";
 import { CodeRequests, noCode } from "../src/codes.ts";
 import { persona, personaFor } from "../src/config.ts";
@@ -469,4 +469,60 @@ test("a click outside the window is refused without clicking", async () => {
 	await t.say("押して");
 	assert.equal(t.results[0]?.isError, true);
 	assert.ok(!t.browsers.log.some((line) => line.startsWith("click")));
+});
+
+for (const [opens, kept] of [
+	[2, [1, 2]],
+	[4, [1, 2, 3, 4]],
+	[5, [4, 5]],
+	[7, [4, 5, 6, 7]],
+	[8, [7, 8]],
+] as const) {
+	test(`after ${opens} snapshots, only trees ${kept.join(", ")} are sent while older URLs and titles remain`, async () => {
+		await using t = await setup();
+		const basePage = t.browsers.page.bind(t.browsers);
+		let seq = 0;
+		t.browsers.page = async (profile, roomId) => {
+			const page = await basePage(profile, roomId);
+			return {
+				...page,
+				snapshot: async () => {
+					const n = ++seq;
+					return { url: `https://example.com/p/${n}`, title: `ページ${n}`, tree: `- text: ツリー内容-${n}` };
+				},
+			};
+		};
+		t.env.faux.setResponses([
+			...Array.from({ length: opens }, (_, i) => call("browser_open", { url: `https://example.com/p/${i + 1}` })),
+			t.noting,
+		]);
+		await t.say("順に見る");
+		const sent = everything(t.requests[0]!);
+		const present = [...sent.matchAll(/ツリー内容-(\d+)/g)].map((m) => Number(m[1]));
+		assert.deepEqual(present, kept);
+		assert.equal(sent.split(OMITTED_SNAPSHOT).length - 1, opens - kept.length);
+		for (let i = 1; i <= opens; i++) {
+			assert.ok(sent.includes(`URL: https://example.com/p/${i}`));
+			assert.ok(sent.includes(`タイトル: ページ${i}`));
+		}
+	});
+}
+
+test("article text from browser_read and errors are kept even when older snapshots are omitted", async () => {
+	await using t = await setup();
+	t.browsers.text = "残すべき記事本文";
+	t.env.faux.setResponses([
+		call("browser_open", { url: "https://example.com/article" }),
+		call("browser_read", {}),
+		call("browser_open", { url: "file:///etc/passwd" }),
+		call("browser_open", { url: "https://example.com/2" }),
+		call("browser_open", { url: "https://example.com/3" }),
+		call("browser_open", { url: "https://example.com/4" }),
+		call("browser_open", { url: "https://example.com/5" }),
+		t.noting,
+	]);
+	await t.say("読んでから移動して");
+	const sent = everything(t.requests[0]!);
+	assert.ok(sent.includes("残すべき記事本文"));
+	assert.equal(sent.split(OMITTED_SNAPSHOT).length - 1, 3);
 });
