@@ -339,6 +339,45 @@ test("idle compaction skips a conversation with an open proactive aside", async 
 	assert.equal(summaries.length, 1);
 });
 
+test("native compaction sends messages prepared for the provider", async () => {
+	const nativeRequests: Request[] = [];
+	await using env = await agentEnv({
+		api: "openai-responses",
+		extensions: ({ db }) => [
+			createCompactionExtension({
+				db,
+				log: () => {},
+				prepare: (messages) =>
+					messages.map((item) =>
+						item.role === "user" && typeof item.content === "string"
+							? { ...item, content: item.content.replace("秘密の全文", "省略済み") }
+							: item,
+					),
+			}),
+		],
+	});
+	const bridge = env.bridge();
+	const respond: FauxResponseFactory = async (request, options) => {
+		if (options?.onProviderStreamEvent !== undefined) {
+			nativeRequests.push(request as unknown as Request);
+			await options.onProviderStreamEvent({ type: "response.output_item.done", item: ITEM }, undefined as never);
+			return fauxAssistantMessage([], { stopReason: "stop" });
+		}
+		return fauxAssistantMessage("要約。");
+	};
+	env.faux.setResponses([answer("了解"), answer("はい"), respond, respond]);
+	env.link.emit(message(ROOM, "$1", "秘密の全文"));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$2", "次"));
+	await bridge.idle();
+	const conversation = (await env.harness.conversation(env.db.conversationOf(ROOM) as never, context))!;
+	await conversation.configure({ compaction: { keepRecentTokens: 1 } }, context);
+	await env.harness.waitForTask(await conversation.compact(undefined, context), context);
+	assert.equal(nativeRequests.length, 1);
+	assert.ok(everything(nativeRequests[0]!).includes("省略済み"));
+	assert.ok(!everything(nativeRequests[0]!).includes("秘密の全文"));
+});
+
 test("scheduler tick finishes idle compaction before weighing proactive wakes", async () => {
 	const order: string[] = [];
 	await using env = await agentEnv();

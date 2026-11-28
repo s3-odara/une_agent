@@ -9,6 +9,7 @@ import { type BrowserPage, type Browsers, VIEWPORT } from "./browser.ts";
 import { type CodeRequests, noCode } from "./codes.ts";
 import type { Credentials } from "./credentials.ts";
 import type { HostDb } from "./hostdb.ts";
+import { batchedDropCount } from "./images.ts";
 import { startedByUser } from "./run.ts";
 import { elide, textOutput } from "./text.ts";
 import { UNTRUSTED } from "./untrusted.ts";
@@ -21,10 +22,6 @@ export type BrowserToolsOptions = {
 	readonly db: HostDb;
 	readonly profileOf: (conversationId: number) => string | undefined;
 	readonly maxChars?: number;
-	readonly snapshotWindow?: {
-		readonly keep?: number;
-		readonly batch?: number;
-	};
 	readonly codes?: CodeRequests;
 	readonly screenshots?: {
 		readonly send: (
@@ -38,36 +35,33 @@ export type BrowserToolsOptions = {
 
 export const OMITTED_SNAPSHOT = "（古いスナップショット。省略）";
 
-const SNAPSHOT_MARKER = `\n\n${UNTRUSTED}\n\n`;
-
-const SNAPSHOT_TOOLS = new Set([
-	"browser_open",
-	"browser_snapshot",
-	"browser_click",
-	"browser_type",
-	"browser_press",
-	"browser_back",
-	"browser_fill_credential",
-	"browser_request_code",
-]);
+const SNAPSHOT_KEEP = 1;
+const SNAPSHOT_BATCH = 3;
+const SNAPSHOT_PREFIX = `${UNTRUSTED}\n\n`;
 
 function isSnapshotResult(message: Message): message is Extract<Message, { role: "toolResult" }> {
 	return (
 		message.role === "toolResult" &&
 		!message.isError &&
-		SNAPSHOT_TOOLS.has(message.toolName) &&
-		message.content.some((block) => block.type === "text" && block.text.includes(SNAPSHOT_MARKER))
+		message.content.length === 2 &&
+		message.content[0]?.type === "text" &&
+		message.content[1]?.type === "text" &&
+		message.content[1].text.startsWith(SNAPSHOT_PREFIX)
 	);
 }
 
-function omitSnapshot(message: Extract<Message, { role: "toolResult" }>): Message {
-	const content = message.content.map((block) => {
-		if (block.type !== "text") return block;
-		const cut = block.text.indexOf(SNAPSHOT_MARKER);
-		if (cut === -1) return block;
-		return { ...block, text: `${block.text.slice(0, cut)}\n\n${OMITTED_SNAPSHOT}` };
+export function omitOldSnapshots(messages: readonly Message[]): readonly Message[] {
+	const total = messages.reduce((count, message) => count + (isSnapshotResult(message) ? 1 : 0), 0);
+	let drop = batchedDropCount(total, SNAPSHOT_KEEP, SNAPSHOT_BATCH);
+	if (drop <= 0) return messages;
+	return messages.map((message) => {
+		if (drop === 0 || !isSnapshotResult(message)) return message;
+		drop--;
+		return {
+			...message,
+			content: [message.content[0]!, { type: "text" as const, text: OMITTED_SNAPSHOT }],
+		};
 	});
-	return { ...message, content };
 }
 
 export function pngSize(png: Buffer): { width: number; height: number } {
@@ -135,17 +129,20 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 				: [
 						`このサイト（${origin}）には認証情報が登録されています。ログインフォームなら browser_fill_credential で入力できます。`,
 					];
-		const text = [
+		const header = [
 			...(note === undefined ? [] : [note, ""]),
 			`URL: ${snapshot.url}`,
 			`タイトル: ${snapshot.title}`,
 			...stored,
-			"",
-			UNTRUSTED,
-			"",
-			clip(snapshot.tree),
 		].join("\n");
-		return textOutput(credentials.scrub(text, ...(secret === undefined ? [] : [secret])));
+		const scrub = (text: string) => credentials.scrub(text, ...(secret === undefined ? [] : [secret]));
+		// Two blocks so omitOldSnapshots drops only the tree without parsing the header.
+		return {
+			output: [
+				{ type: "text" as const, text: `${scrub(header)}\n\n` },
+				{ type: "text" as const, text: scrub(`${SNAPSHOT_PREFIX}${clip(snapshot.tree)}`) },
+			],
+		};
 	};
 
 	/** The common shape of a page action: do it, then show the page it left. */
@@ -400,9 +397,6 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 				]),
 	];
 
-	const keep = options.snapshotWindow?.keep ?? 2;
-	const batch = options.snapshotWindow?.batch ?? 3;
-
 	return defineExtension({
 		name: "browser",
 		sections: [
@@ -426,16 +420,8 @@ export function createBrowserExtension(options: BrowserToolsOptions) {
 			hook(GenerationTask, {
 				// Dropped in batches so the prefix stays unchanged between drops and the provider's prompt cache holds.
 				beforeRequest: ({ messages }) => {
-					const total = messages.reduce((count, message) => count + (isSnapshotResult(message) ? 1 : 0), 0);
-					const over = total - keep;
-					if (over < batch) return undefined;
-					let drop = over - (over % batch);
-					const sent = messages.map((message) => {
-						if (drop === 0 || !isSnapshotResult(message)) return message;
-						drop--;
-						return omitSnapshot(message);
-					});
-					return { messages: sent };
+					const sent = omitOldSnapshots(messages);
+					return sent === messages ? undefined : { messages: [...sent] };
 				},
 			}),
 		],

@@ -82,6 +82,7 @@ const modelKey = (model: Model<Api>) => `${model.provider}/${model.id}`;
 
 export type CompactionOptions = {
 	readonly db: HostDb;
+	readonly prepare?: (messages: readonly Message[]) => readonly Message[];
 	readonly log?: (message: string) => void;
 };
 
@@ -160,7 +161,7 @@ export function createCompactionExtension(options: CompactionOptions) {
 		let compaction: unknown;
 		await api.models.completeSimple(
 			model,
-			{ messages: [...messages] },
+			{ messages: [...(options.prepare?.(messages) ?? messages)] },
 			{
 				signal: context.abortSignal,
 				...(sessionId === undefined ? {} : { sessionId }),

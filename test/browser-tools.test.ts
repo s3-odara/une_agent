@@ -472,11 +472,11 @@ test("a click outside the window is refused without clicking", async () => {
 });
 
 for (const [opens, kept] of [
-	[2, [1, 2]],
-	[4, [1, 2, 3, 4]],
-	[5, [4, 5]],
-	[7, [4, 5, 6, 7]],
-	[8, [7, 8]],
+	[1, [1]],
+	[3, [1, 2, 3]],
+	[4, [4]],
+	[6, [4, 5, 6]],
+	[7, [7]],
 ] as const) {
 	test(`after ${opens} snapshots, only trees ${kept.join(", ")} are sent while older URLs and titles remain`, async () => {
 		await using t = await setup();
@@ -508,21 +508,21 @@ for (const [opens, kept] of [
 	});
 }
 
-test("article text from browser_read and errors are kept even when older snapshots are omitted", async () => {
+test("action notes, browser_read articles, and errors remain when older snapshots are omitted", async () => {
 	await using t = await setup();
 	t.browsers.text = "残すべき記事本文";
 	t.env.faux.setResponses([
-		call("browser_open", { url: "https://example.com/article" }),
+		call("browser_open", { url: "https://shop.example.com/login" }),
+		call("browser_fill_credential", { usernameRef: "user", passwordRef: "pass" }),
 		call("browser_read", {}),
 		call("browser_open", { url: "file:///etc/passwd" }),
-		call("browser_open", { url: "https://example.com/2" }),
 		call("browser_open", { url: "https://example.com/3" }),
 		call("browser_open", { url: "https://example.com/4" }),
-		call("browser_open", { url: "https://example.com/5" }),
 		t.noting,
 	]);
-	await t.say("読んでから移動して");
+	await t.say("ログインして読んでから移動して");
 	const sent = everything(t.requests[0]!);
+	assert.ok(sent.includes("https://shop.example.com の認証情報を入力しました。"));
 	assert.ok(sent.includes("残すべき記事本文"));
 	assert.equal(sent.split(OMITTED_SNAPSHOT).length - 1, 3);
 });

@@ -8,7 +8,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createAttachExtension } from "./attach.ts";
 import { PlaywrightBrowsers } from "./browser.ts";
-import { createBrowserExtension } from "./browser-tools.ts";
+import { createBrowserExtension, omitOldSnapshots } from "./browser-tools.ts";
 import { connectCalDav } from "./caldav.ts";
 import { compactionSettings, createCompactionExtension, createIdleCompactor } from "./compaction.ts";
 import { Calendars } from "./calendar.ts";
@@ -26,7 +26,7 @@ import { spawnGateway } from "./gateway.ts";
 import { createGeocodeExtension } from "./geocode.ts";
 import { createAgentModels, openAgentHarness, openConfig } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
-import { createImageWindowExtension } from "./images.ts";
+import { createImageWindowExtension, omitOldImages } from "./images.ts";
 import { createToolAccessExtensions, McpServers, mcpReads, serversFromConfig } from "./mcp.ts";
 import { createMemoryExtension, MemoryStore } from "./memory.ts";
 import { createProactiveExtension, Proactive } from "./proactive.ts";
@@ -113,7 +113,7 @@ const mcpServers = serversFromConfig(config.mcp, process.env);
 const codemodeSandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
 const extensions = [
 	CodingTools,
-	createCompactionExtension({ db }),
+	createCompactionExtension({ db, prepare: (messages) => omitOldSnapshots(omitOldImages(messages)) }),
 	createImageWindowExtension(),
 	createSelfExtension({
 		configPath: resolve(configPath),
