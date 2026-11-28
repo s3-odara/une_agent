@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -29,14 +29,11 @@ import type { HostDb } from "./hostdb.ts";
  */
 const NATIVE_APIS: ReadonlySet<string> = new Set(["openai-codex-responses", "openai-responses"]);
 
-/**
- * How pi-durable puts a summary before the model. The summary is found by it, and its stored item by a hash of it, so
- * nothing is added to the summary that a model would read or copy into the next one. Should pi-durable change it, the
- * summary in words is sent as it is.
- */
-const SUMMARY = /<summary>\n([\s\S]*)\n<\/summary>/;
+/** Matches pi-durable's `<summary>` wrapper around a native compaction placeholder to extract its DB key. */
+const NATIVE_SUMMARY = /<summary>\n[\s\S]*?\[native:([0-9a-f-]+)\]\n<\/summary>/;
 
-const hashOf = (summary: string) => createHash("sha256").update(summary).digest("hex");
+const nativePlaceholder = (id: string) =>
+	`（この時点より前の会話はネイティブ圧縮されており、モデル変更後は参照できません）\n[native:${id}]`;
 
 const SUMMARY_SYSTEM = "あなたは会話の要約係です。会話を続けずに、指示された形の要約だけを書いてください。";
 
@@ -87,10 +84,9 @@ export type CompactionOptions = {
 };
 
 /**
- * Compaction writes the summary itself, so it keeps what this agent needs: what the user said they would do and how it
- * went is what a check follows up later. With a model whose server compacts natively, the opaque item it makes is kept
- * too and sent in the summary's place while the conversation stays on that model; on any other model the summary in
- * words stands.
+ * Compaction writes the summary itself so it keeps what this agent needs (such as upcoming matters for later checks).
+ * On APIs that support native server compaction, only native compaction runs to avoid paying for a duplicate uncached
+ * summary; the text summary is used only as a fallback when native compaction fails.
  */
 export function createCompactionExtension(options: CompactionOptions) {
 	const { db } = options;
@@ -98,20 +94,19 @@ export function createCompactionExtension(options: CompactionOptions) {
 
 	/** Parsed once: an item never changes once stored, and every request of a compacted conversation looks it up. */
 	const items = new Map<string, { readonly model: string; readonly item: unknown } | undefined>();
-	const stored = (hash: string) => {
-		if (!items.has(hash)) items.set(hash, db.nativeCompaction(hash));
-		return items.get(hash);
+	const stored = (id: string) => {
+		if (!items.has(id)) items.set(id, db.nativeCompaction(id));
+		return items.get(id);
 	};
 
-	/** The summary messages that have a native item for this model, swapped for it. */
 	const withNativeItems = (model: Model<Api>, input: readonly unknown[]): unknown[] | undefined => {
 		let changed = false;
 		const swapped = input.map((item) => {
 			if (!isRecord(item) || item.role !== "user" || !Array.isArray(item.content)) return item;
-			const summary = item.content
-				.flatMap((part) => (isRecord(part) && typeof part.text === "string" ? [SUMMARY.exec(part.text)?.[1]] : []))
+			const id = item.content
+				.flatMap((part) => (isRecord(part) && typeof part.text === "string" ? [NATIVE_SUMMARY.exec(part.text)?.[1]] : []))
 				.find((found) => found !== undefined);
-			const native = summary === undefined ? undefined : stored(hashOf(summary));
+			const native = id === undefined ? undefined : stored(id);
 			if (native === undefined || native.model !== modelKey(model)) return item;
 			changed = true;
 			return native.item;
@@ -188,6 +183,33 @@ export function createCompactionExtension(options: CompactionOptions) {
 		return compaction;
 	};
 
+	const storeNative = (model: Model<Api>, item: unknown): string => {
+		const id = randomUUID();
+		const entry = { model: modelKey(model), item };
+		db.addNativeCompaction(id, entry.model, entry.item);
+		items.set(id, entry);
+		return nativePlaceholder(id);
+	};
+
+	const compact = async (
+		model: Model<Api>,
+		messages: readonly Message[],
+		api: HookApi,
+		context: Context,
+	): Promise<string | undefined> => {
+		if (NATIVE_APIS.has(model.api)) {
+			const native = await compactNatively(model, messages, api, context).catch((error) => {
+				log(`native compaction failed, falling back to summary: ${errorMessage(error)}`);
+				return undefined;
+			});
+			if (native !== undefined) return storeNative(model, native);
+		}
+		return summarize(model, messages, api, context).catch((error) => {
+			log(`compaction summary failed, using the default one: ${errorMessage(error)}`);
+			return undefined;
+		});
+	};
+
 	return defineExtension({
 		name: "compaction",
 		hooks: [
@@ -199,21 +221,8 @@ export function createCompactionExtension(options: CompactionOptions) {
 					const ref = (await api.snapshot(AgentDoc, api.conversationId, context))?.model;
 					const model = ref === undefined ? undefined : api.models.getModel(ref.provider, ref.modelId);
 					if (model === undefined) return undefined;
-
-					const [summary, native] = await Promise.all([
-						summarize(model, compaction.messages, api, context).catch((error) => {
-							log(`compaction summary failed, using the default one: ${errorMessage(error)}`);
-							return undefined;
-						}),
-						NATIVE_APIS.has(model.api)
-							? compactNatively(model, compaction.messages, api, context).catch((error) => {
-									log(`native compaction failed, using the summary alone: ${errorMessage(error)}`);
-									return undefined;
-								})
-							: undefined,
-					]);
+					const summary = await compact(model, compaction.messages, api, context);
 					if (summary === undefined) return undefined;
-					if (native !== undefined) db.addNativeCompaction(hashOf(summary), modelKey(model), native);
 					return { kind: "summary", summary: await api.memo("summary", summary, context) };
 				},
 			}),

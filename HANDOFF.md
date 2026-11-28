@@ -92,7 +92,7 @@
 ### compaction・モデル
 
 - 裏の compaction は `compaction.maxTokens`（既定 200,000）で始め、さらに `Scheduler.tick()` で定時チェックの前にアイドル状態の会話（`idleMinutes` 経過かつ `idleTokens` 以上、既定 60 分 / 64,000）を圧縮する（アクティブ中はキャッシュと文脈を活かしつつ、キャッシュが切れた後の定時チェック・再開コストを抑えるため）。要約は「あとで聞くとよさそうなこと」を残す独自指示。
-- OpenAI Responses API ではサーバー compaction（`compaction_trigger`）も併用し、`host.sqlite` に保存して `beforeProviderRequest` で差し替える。
+- OpenAI Responses API では通常のテキスト要約を行わずサーバー compaction（`compaction_trigger`）のみを実行し、`host.sqlite` に保存して `beforeProviderRequest` で差し替える（失敗時のみテキスト要約にフォールバック）。
 - モデルカタログは pi.dev から取得して `dataDir/model-catalog.json` にキャッシュする（User-Agent に pi-ai の版が必要）。
 - API キーは `~/.config/agent/env`、`just model-login` は OAuth 専用（`auth.json` のキーが環境変数より優先される）。
 

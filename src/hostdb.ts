@@ -257,7 +257,6 @@ export class HostDb {
 		);
 	}
 
-	/** An opaque item a model's server compacted a conversation into, for that model, by a hash of the summary it stands for. */
 	addNativeCompaction(id: string, model: string, item: unknown): void {
 		this.#db
 			.prepare("INSERT OR REPLACE INTO native_compactions (id, model, item) VALUES (?, ?, ?)")

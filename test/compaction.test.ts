@@ -45,27 +45,24 @@ async function setup(api?: string) {
 	};
 }
 
-/**
- * Answers the two requests a compaction makes: the summary in words, and (when asked with a compaction trigger at the
- * end, as an OpenAI server is) the native item.
- */
-function compactionResponses(
-	summary: string,
-	requests: Request[],
-	native: "item" | "none" = "item",
-): FauxResponseFactory {
+function summaryResponse(summary: string, requests: Request[] = []): FauxResponseFactory {
 	return async (request, options: Options) => {
-		const trigger = options?.onProviderStreamEvent !== undefined;
-		if (!trigger) {
-			requests.push(request as unknown as Request);
-			return fauxAssistantMessage(summary);
-		}
+		assert.equal(options?.onProviderStreamEvent, undefined, "expected a text summary request, not native compaction");
+		requests.push(request as unknown as Request);
+		return fauxAssistantMessage(summary);
+	};
+}
+
+function nativeResponse(item: unknown = ITEM, payloads: { input: unknown[] }[] = []): FauxResponseFactory {
+	return async (request, options: Options) => {
+		assert.notEqual(options?.onProviderStreamEvent, undefined, "expected a native compaction request");
 		const payload = (await options?.onPayload?.(
 			responsesPayload(request as unknown as Request),
 			undefined as never,
-		)) as { input: { type?: string }[] };
-		if (native === "item" && payload.input.at(-1)?.type === "compaction_trigger")
-			await options?.onProviderStreamEvent?.({ type: "response.output_item.done", item: ITEM }, undefined as never);
+		)) as { input: unknown[] };
+		payloads.push(payload);
+		if (item !== null && (payload.input.at(-1) as { type?: string } | undefined)?.type === "compaction_trigger")
+			await options?.onProviderStreamEvent?.({ type: "response.output_item.done", item }, undefined as never);
 		return fauxAssistantMessage([], { stopReason: "stop" });
 	};
 }
@@ -88,7 +85,7 @@ test("a compaction keeps the summary the model wrote of the conversation, asked 
 	t.env.faux.setResponses([
 		answer("覚えました"),
 		answer("はい"),
-		compactionResponses("猫はミケ。", summaries),
+		summaryResponse("猫はミケ。", summaries),
 		answer("ミケです", requests),
 	]);
 	await t.say("猫の名前はミケ");
@@ -100,44 +97,52 @@ test("a compaction keeps the summary the model wrote of the conversation, asked 
 	assert.match(everything(requests[0]!), /猫はミケ。/);
 });
 
-test("on a model whose server compacts natively, the provider is given its item in place of the summary from then on", async () => {
+test("on a model whose server compacts natively, only native compaction runs and its item is sent from then on", async () => {
 	await using t = await setup("openai-responses");
 	const bodies: unknown[] = [];
-	t.env.faux.setResponses([
-		answer("覚えました"),
-		answer("はい"),
-		compactionResponses("猫はミケ。", []),
-		compactionResponses("猫はミケ。", []),
-		sending(bodies),
-	]);
+	t.env.faux.setResponses([answer("覚えました"), answer("はい"), nativeResponse(), sending(bodies)]);
 	await t.say("猫の名前はミケ");
 	await t.say("覚えた？");
 	await t.compact();
 	await t.say("猫の名前は？");
 	const input = (bodies[0] as { input: unknown[] }).input;
 	assert.deepEqual(input[0], ITEM);
-	assert.ok(!JSON.stringify(input).includes("猫はミケ。"));
 });
 
-test("on a model whose server does not compact natively, the summary in words stands and the server is not asked", async () => {
-	await using t = await setup();
+test("a second native compaction sends the first native item instead of its placeholder", async () => {
+	await using t = await setup("openai-responses");
+	const item2 = { type: "compaction", id: "cmp_2", encrypted_content: "opaque-2" };
+	const nativePayloads: { input: unknown[] }[] = [];
 	const bodies: unknown[] = [];
-	let triggers = 0;
-	const summary = compactionResponses("猫はミケ。", []);
 	t.env.faux.setResponses([
 		answer("覚えました"),
 		answer("はい"),
-		async (request, options) => {
-			if (options?.onProviderStreamEvent !== undefined) triggers++;
-			return summary(request, options, undefined as never, undefined as never);
-		},
+		nativeResponse(ITEM, nativePayloads),
+		answer("続けます"),
+		answer("はい"),
+		nativeResponse(item2, nativePayloads),
 		sending(bodies),
 	]);
 	await t.say("猫の名前はミケ");
 	await t.say("覚えた？");
 	await t.compact();
+	await t.say("犬の名前はポチ");
+	await t.say("覚えた？");
+	await t.compact();
+	await t.say("名前は？");
+	assert.equal(nativePayloads.length, 2);
+	assert.deepEqual(nativePayloads[1]!.input[0], ITEM);
+	assert.deepEqual((bodies[0] as { input: unknown[] }).input[0], item2);
+});
+
+test("on a model whose server does not compact natively, the summary in words stands and the server is not asked", async () => {
+	await using t = await setup();
+	const bodies: unknown[] = [];
+	t.env.faux.setResponses([answer("覚えました"), answer("はい"), summaryResponse("猫はミケ。"), sending(bodies)]);
+	await t.say("猫の名前はミケ");
+	await t.say("覚えた？");
+	await t.compact();
 	await t.say("猫の名前は？");
-	assert.equal(triggers, 0);
 	assert.ok(JSON.stringify(bodies[0]).includes("猫はミケ。"));
 });
 
@@ -147,8 +152,8 @@ test("when the server returns no item, the summary in words stands", async () =>
 	t.env.faux.setResponses([
 		answer("覚えました"),
 		answer("はい"),
-		compactionResponses("猫はミケ。", [], "none"),
-		compactionResponses("猫はミケ。", [], "none"),
+		nativeResponse(null),
+		summaryResponse("猫はミケ。"),
 		sending(bodies),
 	]);
 	await t.say("猫の名前はミケ");
@@ -175,7 +180,7 @@ for (const [maxTokens, compacted] of [
 		env.faux.setResponses([
 			answer("読みました"),
 			answer("はい"),
-			compactionResponses("長い話。", summaries),
+			summaryResponse("長い話。", summaries),
 			answer("はい"),
 		]);
 		env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
@@ -198,7 +203,7 @@ test("background compaction still runs at pi-durable's default threshold when ma
 	env.faux.setResponses([
 		answer("読みました"),
 		answer("はい"),
-		compactionResponses("長い話。", summaries),
+		summaryResponse("長い話。", summaries),
 		answer("はい"),
 	]);
 	env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
@@ -223,7 +228,7 @@ test("idle compaction waits until the room has been quiet long enough and is lar
 	env.faux.setResponses([
 		answer("読みました"),
 		answer("はい"),
-		compactionResponses("長い話の要約。", summaries),
+		summaryResponse("長い話の要約。", summaries),
 		answer("覚えています", requests),
 	]);
 	env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
@@ -274,7 +279,7 @@ test("idle compaction retries on the next tick when a compaction fails", async (
 		answer("はい"),
 		fail,
 		fail,
-		compactionResponses("再試行で成功。", summaries),
+		summaryResponse("再試行で成功。", summaries),
 	]);
 	env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
 	await bridge.idle();
@@ -310,7 +315,7 @@ test("idle compaction skips a conversation with an open proactive aside", async 
 	});
 	const bridge = env.bridge();
 	const summaries: Request[] = [];
-	env.faux.setResponses([answer("読みました"), answer("はい"), compactionResponses("要約。", summaries)]);
+	env.faux.setResponses([answer("読みました"), answer("はい"), summaryResponse("要約。", summaries)]);
 	env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
 	await bridge.idle();
 	env.link.emit(message(ROOM, "$2", "い".repeat(4 * 30_000)));
@@ -340,7 +345,7 @@ test("idle compaction skips a conversation with an open proactive aside", async 
 });
 
 test("native compaction sends messages prepared for the provider", async () => {
-	const nativeRequests: Request[] = [];
+	const payloads: { input: unknown[] }[] = [];
 	await using env = await agentEnv({
 		api: "openai-responses",
 		extensions: ({ db }) => [
@@ -357,15 +362,7 @@ test("native compaction sends messages prepared for the provider", async () => {
 		],
 	});
 	const bridge = env.bridge();
-	const respond: FauxResponseFactory = async (request, options) => {
-		if (options?.onProviderStreamEvent !== undefined) {
-			nativeRequests.push(request as unknown as Request);
-			await options.onProviderStreamEvent({ type: "response.output_item.done", item: ITEM }, undefined as never);
-			return fauxAssistantMessage([], { stopReason: "stop" });
-		}
-		return fauxAssistantMessage("要約。");
-	};
-	env.faux.setResponses([answer("了解"), answer("はい"), respond, respond]);
+	env.faux.setResponses([answer("了解"), answer("はい"), nativeResponse(ITEM, payloads)]);
 	env.link.emit(message(ROOM, "$1", "秘密の全文"));
 	await bridge.idle();
 	env.link.emit(message(ROOM, "$2", "次"));
@@ -373,9 +370,9 @@ test("native compaction sends messages prepared for the provider", async () => {
 	const conversation = (await env.harness.conversation(env.db.conversationOf(ROOM) as never, context))!;
 	await conversation.configure({ compaction: { keepRecentTokens: 1 } }, context);
 	await env.harness.waitForTask(await conversation.compact(undefined, context), context);
-	assert.equal(nativeRequests.length, 1);
-	assert.ok(everything(nativeRequests[0]!).includes("省略済み"));
-	assert.ok(!everything(nativeRequests[0]!).includes("秘密の全文"));
+	assert.equal(payloads.length, 1);
+	assert.ok(JSON.stringify(payloads[0]).includes("省略済み"));
+	assert.ok(!JSON.stringify(payloads[0]).includes("秘密の全文"));
 });
 
 test("scheduler tick finishes idle compaction before weighing proactive wakes", async () => {
