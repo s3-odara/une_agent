@@ -10,7 +10,7 @@ import { createAttachExtension } from "./attach.ts";
 import { PlaywrightBrowsers } from "./browser.ts";
 import { createBrowserExtension } from "./browser-tools.ts";
 import { connectCalDav } from "./caldav.ts";
-import { createCompactionExtension } from "./compaction.ts";
+import { compactionSettings, createCompactionExtension, createIdleCompactor } from "./compaction.ts";
 import { Calendars } from "./calendar.ts";
 import { createCalendarExtension } from "./calendar-tools.ts";
 import { Calls } from "./call.ts";
@@ -24,7 +24,7 @@ import { errorMessage, fail } from "./errors.ts";
 import { PlaywrightReader } from "./extract.ts";
 import { spawnGateway } from "./gateway.ts";
 import { createGeocodeExtension } from "./geocode.ts";
-import { compactionSettings, createAgentModels, openAgentHarness, openConfig } from "./harness.ts";
+import { createAgentModels, openAgentHarness, openConfig } from "./harness.ts";
 import { HostDb } from "./hostdb.ts";
 import { createImageWindowExtension } from "./images.ts";
 import { createToolAccessExtensions, McpServers, mcpReads, serversFromConfig } from "./mcp.ts";
@@ -176,7 +176,7 @@ const harness = await openAgentHarness(
 		extensions,
 		registry,
 		env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? config.baseDir }),
-		compaction: compactionSettings(models, usedModels(config), config.compaction.at),
+		compaction: compactionSettings(models, usedModels(config), config.compaction.maxTokens),
 	},
 );
 // Their tools are installed when each server answers; the agent does not wait for them.
@@ -238,6 +238,17 @@ scheduler = new Scheduler({
 	weather: config.weather === undefined ? undefined : () => weather(),
 	// Weighing takes a model request or more for each wake; the tick does not wait for it.
 	weigh: () => void proactive.run(),
+	...(config.compaction.idleMinutes === null
+		? {}
+		: {
+				compactIdle: createIdleCompactor({
+					harness,
+					db,
+					context,
+					idleMinutes: config.compaction.idleMinutes,
+					idleTokens: config.compaction.idleTokens,
+				}),
+			}),
 	runTimer: (roomId, id, content) => bridge.runTimer(roomId, id, content),
 	notice: (roomId, key, body) => bridge.notice(roomId, key, body),
 	filesDir: join(config.dataDir, "files", "in"),

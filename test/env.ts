@@ -9,8 +9,9 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createRegistry, type Extension, type Harness, type Registry } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { compactionSettings } from "../src/compaction.ts";
 import { type Config, parseConfig } from "../src/config.ts";
-import { compactionSettings, openAgentHarness } from "../src/harness.ts";
+import { openAgentHarness } from "../src/harness.ts";
 import { HostDb } from "../src/hostdb.ts";
 import { createToolAccessExtensions, type McpServer } from "../src/mcp.ts";
 import { Bridge, type BridgeOptions } from "../src/rooms.ts";
@@ -56,8 +57,8 @@ export type EnvOptions = {
 	readonly api?: string;
 	/** The fake model's context window. */
 	readonly contextWindow?: number;
-	/** The share of the window at which compaction starts (`compaction.at`); none gives pi-durable's defaults. */
-	readonly compactAt?: number;
+	/** Context tokens at which background compaction starts (`compaction.maxTokens`); none gives pi-durable's defaults. */
+	readonly compactMaxTokens?: number;
 	/** Gives the model `codemode` and `tool_search` as the agent does, knowing of these MCP servers. */
 	readonly codemode?: { readonly servers?: Readonly<Record<string, McpServer>> };
 };
@@ -93,13 +94,13 @@ export async function agentEnv(options: EnvOptions = {}) {
 			env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? dir.path }),
 			now: options.now,
 			registry,
-			...(options.compactAt === undefined
+			...(options.compactMaxTokens === undefined
 				? {}
 				: {
 						compaction: compactionSettings(
 							models,
 							[{ provider: model.provider, modelId: model.id }],
-							options.compactAt,
+							options.compactMaxTokens,
 						),
 					}),
 		});

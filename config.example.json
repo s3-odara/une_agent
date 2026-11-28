@@ -13,7 +13,7 @@
 	"defaultPersona": "default",
 	"rooms": {},
 	"timezone": "Asia/Tokyo",
-	"compaction": { "at": 0.5 },
+	"compaction": { "maxTokens": 200000, "idleMinutes": 60, "idleTokens": 64000 },
 	"memory": { "sharedLimit": 2000, "privateLimit": 1000, "tidyTime": "02:00", "tidyEveryDays": 1 },
 	"caldav": {
 		"url": "https://dav.example.org",

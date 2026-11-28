@@ -81,6 +81,7 @@ export type SchedulerOptions = {
 	readonly calendars?: Calendars;
 	readonly weather?: WeatherSource;
 	readonly weigh?: () => void;
+	readonly compactIdle?: () => Promise<void>;
 	readonly runTimer?: (roomId: string, id: string, content: string) => Promise<void>;
 	readonly notice: (roomId: string, key: string, body: string) => Promise<void>;
 	readonly tidy?: { fingerprint(): string; run(date: string): Promise<TidyChange[]> };
@@ -169,6 +170,7 @@ export class Scheduler {
 			await this.#cleanFiles(now).catch((error) => this.#log(`cleaning received files failed: ${errorMessage(error)}`));
 			await this.#tidy(now).catch((error) => this.#log(`memory tidy failed: ${errorMessage(error)}`));
 			await this.#dueTimers(now).catch((error) => this.#log(`timers failed: ${errorMessage(error)}`));
+			await this.#options.compactIdle?.().catch((error) => this.#log(`idle compaction failed: ${errorMessage(error)}`));
 			await this.#proactive(now).catch((error) => this.#log(`proactive check failed: ${errorMessage(error)}`));
 			this.#options.weigh?.();
 		} finally {

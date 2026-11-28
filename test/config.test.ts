@@ -49,3 +49,12 @@ test("a model is written as provider/model, and only the first slash splits it",
 		assert.throws(() => testConfig("/nowhere", { model }), /provider\/model/, JSON.stringify(model));
 	}
 });
+
+test("compaction.idleTokens defaults within maxTokens and rejects values above maxTokens", () => {
+	assert.equal(testConfig("/nowhere", { compaction: { maxTokens: 50_000 } }).compaction.idleTokens, 50_000);
+	assert.equal(testConfig("/nowhere", { compaction: { maxTokens: 200_000 } }).compaction.idleTokens, 64_000);
+	assert.throws(
+		() => testConfig("/nowhere", { compaction: { maxTokens: 100_000, idleTokens: 120_000 } }),
+		/compaction\.idleTokens/,
+	);
+});

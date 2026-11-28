@@ -2,13 +2,7 @@ import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { createModels, type Models, type Provider } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import {
-	type CompactionSettings,
-	createRegistry,
-	DEFAULT_COMPACTION_POLICY,
-	Harness,
-	type Registry,
-} from "@earendil-works/pi-durable";
+import { type CompactionSettings, createRegistry, Harness, type Registry } from "@earendil-works/pi-durable";
 import { type Config, loadConfig, type ModelRef, readSoul, usedModels } from "./config.ts";
 import { FileCredentialStore } from "./model-auth.ts";
 import { FileModelsStore, withRemoteCatalog } from "./model-catalog.ts";
@@ -84,26 +78,6 @@ export async function prepareModels(models: Models, refs: readonly ModelRef[], t
 				.join(", ")})`,
 		);
 	}
-}
-
-/**
- * Background compaction starts at the share `at` of each model's context window rather than near its end: every message
- * and every check reads the whole conversation, so a long one costs at each of them, and answers come slower. The
- * blocking threshold stays near the end, for when the background compaction has not caught up.
- */
-export function compactionSettings(models: Models, refs: readonly ModelRef[], at: number): CompactionSettings {
-	const { reserveTokens } = DEFAULT_COMPACTION_POLICY;
-	const overrides = refs.flatMap(({ provider, modelId }) => {
-		const window = models.getModel(provider, modelId)?.contextWindow;
-		if (window === undefined) return [];
-		return [
-			[
-				`${provider}/${modelId}`,
-				{ backgroundTokens: Math.max(0, Math.floor(window - reserveTokens - window * at)) },
-			] as const,
-		];
-	});
-	return { modelOverrides: Object.fromEntries(overrides) };
 }
 
 /** What the agent needs to start, checked up front: every persona's SOUL file and every model the config names. */

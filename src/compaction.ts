@@ -1,17 +1,25 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
+import type { Models } from "@earendil-works/pi-ai/models";
+import { calculateContextTokens, estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { contentText } from "@earendil-works/pi-ai/utils/text";
 import {
 	AgentDoc,
+	type CompactionSettings,
 	CompactionTask,
+	type ContextView,
+	type Conversation,
+	DEFAULT_COMPACTION_POLICY,
 	defineExtension,
 	GenerationTask,
+	type Harness,
 	type HookApi,
 	hook,
+	LiveDoc,
 	ProviderDoc,
 } from "@earendil-works/pi-durable";
-import { isRecord } from "./config.ts";
+import { isRecord, type ModelRef } from "./config.ts";
 import { errorMessage } from "./errors.ts";
 import type { HostDb } from "./hostdb.ts";
 
@@ -217,4 +225,83 @@ export function createCompactionExtension(options: CompactionOptions) {
 			}),
 		],
 	});
+}
+
+type ConversationId = Conversation["id"];
+
+export function compactionSettings(models: Models, refs: readonly ModelRef[], maxTokens: number): CompactionSettings {
+	const { reserveTokens, backgroundTokens } = DEFAULT_COMPACTION_POLICY;
+	const overrides = refs.flatMap(({ provider, modelId }) => {
+		const window = models.getModel(provider, modelId)?.contextWindow;
+		if (window === undefined) return [];
+		// pi-durable treats backgroundTokens: 0 as disabled, so only override when starting earlier than its default.
+		const desired = window - reserveTokens - maxTokens;
+		return desired > backgroundTokens ? [[`${provider}/${modelId}`, { backgroundTokens: desired }] as const] : [];
+	});
+	return { modelOverrides: Object.fromEntries(overrides) };
+}
+
+function estimateContextTokens(view: ContextView): number {
+	let measured: Extract<Message, { role: "assistant" }> | undefined;
+	const after = view.head?.id ?? Number.NEGATIVE_INFINITY;
+	for (let index = view.entries.length - 1; index >= 0 && measured === undefined; index--) {
+		if (Number(view.entries[index]!.id) <= Number(after)) continue;
+		measured = view.contributions[index]!.findLast(
+			(message): message is Extract<Message, { role: "assistant" }> =>
+				message.role === "assistant" && calculateContextTokens(message.usage) > 0,
+		);
+	}
+	const from = measured === undefined ? 0 : view.messages.lastIndexOf(measured) + 1;
+	let tokens = measured === undefined ? 0 : calculateContextTokens(measured.usage);
+	for (const message of view.messages.slice(from)) tokens += estimateMessageTokens(message);
+	return tokens;
+}
+
+export type IdleCompactorOptions = {
+	readonly harness: Harness;
+	readonly db: HostDb;
+	readonly context: Context;
+	readonly idleMinutes: number;
+	readonly idleTokens: number;
+	readonly now?: () => number;
+	readonly log?: (message: string) => void;
+};
+
+export function createIdleCompactor(options: IdleCompactorOptions): () => Promise<void> {
+	const { harness, db, context, idleMinutes, idleTokens } = options;
+	const now = options.now ?? Date.now;
+	const log = options.log ?? ((message: string) => console.error(message));
+	// Avoid retrying every tick when the newest messages alone exceed `idleTokens` and nothing can be cut.
+	const tried = new Map<number, number>();
+
+	return async () => {
+		const idleMs = idleMinutes * 60_000;
+		await Promise.all(
+			db.roomConversations().map(async (conversationId) => {
+				if (db.hasOpenWakeFrom(conversationId)) return;
+				const id = conversationId as unknown as ConversationId;
+				const live = await harness.snapshot(LiveDoc, id, context);
+				if (live?.run !== undefined || (live?.compactions ?? []).length > 0) return;
+				const conversation = await harness.conversation(id, context);
+				if (conversation === undefined) return;
+				const view = await conversation.context(context);
+				const latest = view.entries.at(-1);
+				const last = view.messages.at(-1);
+				if (latest === undefined || last === undefined) return;
+				const latestId = Number(latest.id);
+				if (tried.get(conversationId) === latestId) return;
+				if (now() - last.timestamp < idleMs) return;
+				if (estimateContextTokens(view) < idleTokens) return;
+				try {
+					const settled = await harness.waitForTask(await conversation.compact(undefined, context), context);
+					const outcome = settled.state.outcome;
+					if (outcome?.status === "completed") tried.set(conversationId, latestId);
+					else if (outcome?.status === "failed")
+						log(`idle compaction of conversation ${conversationId} failed: ${outcome.error.message}`);
+				} catch (error) {
+					log(`idle compaction of conversation ${conversationId} failed: ${errorMessage(error)}`);
+				}
+			}),
+		);
+	};
 }

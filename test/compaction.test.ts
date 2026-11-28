@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fauxAssistantMessage, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
-import { SUMMARY_PROMPT, createCompactionExtension } from "../src/compaction.ts";
+import { SUMMARY_PROMPT, createCompactionExtension, createIdleCompactor } from "../src/compaction.ts";
+import { Scheduler } from "../src/scheduler.ts";
 import { agentEnv, context } from "./env.ts";
 import { answer, everything, message, type Request } from "./fakes.ts";
 
@@ -158,15 +159,15 @@ test("when the server returns no item, the summary in words stands", async () =>
 	assert.ok(!JSON.stringify(bodies[0]).includes("opaque"));
 });
 
-for (const [at, compacted] of [
-	[0.5, true],
-	[0.9, false],
+for (const [maxTokens, compacted] of [
+	[50_000, true],
+	[90_000, false],
 ] as const) {
-	test(`a conversation at about 60% of the model's window is ${compacted ? "" : "not "}compacted in the background when compaction starts at ${at * 100}%`, async () => {
-		// Two messages of about 30% of the window each; the recent part kept verbatim leaves the older one to summarize.
+	test(`a conversation of about 60k tokens is ${compacted ? "" : "not "}compacted in the background when maxTokens is ${maxTokens}`, async () => {
+		// Two messages of about 30k tokens each; the recent part kept verbatim leaves the older one to summarize.
 		await using env = await agentEnv({
-			contextWindow: 100_000,
-			compactAt: at,
+			contextWindow: 200_000,
+			compactMaxTokens: maxTokens,
 			extensions: ({ db }) => [createCompactionExtension({ db, log: () => {} })],
 		});
 		const bridge = env.bridge();
@@ -185,3 +186,174 @@ for (const [at, compacted] of [
 		assert.equal(summaries.length > 0, compacted);
 	});
 }
+
+test("background compaction still runs at pi-durable's default threshold when maxTokens exceeds the model's window", async () => {
+	await using env = await agentEnv({
+		contextWindow: 100_000,
+		compactMaxTokens: 200_000,
+		extensions: ({ db }) => [createCompactionExtension({ db, log: () => {} })],
+	});
+	const bridge = env.bridge();
+	const summaries: Request[] = [];
+	env.faux.setResponses([
+		answer("読みました"),
+		answer("はい"),
+		compactionResponses("長い話。", summaries),
+		answer("はい"),
+	]);
+	env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$2", "い".repeat(4 * 30_000)));
+	await bridge.idle();
+	await env.harness.waitForIdle(context);
+	assert.equal(summaries.length, 1);
+});
+
+test("idle compaction waits until the room has been quiet long enough and is large enough, then summarizes once", async () => {
+	let now = Date.now();
+	await using env = await agentEnv({
+		contextWindow: 200_000,
+		compactMaxTokens: 180_000,
+		now: () => now,
+		extensions: ({ db }) => [createCompactionExtension({ db, log: () => {} })],
+	});
+	const bridge = env.bridge();
+	const summaries: Request[] = [];
+	const requests: Request[] = [];
+	env.faux.setResponses([
+		answer("読みました"),
+		answer("はい"),
+		compactionResponses("長い話の要約。", summaries),
+		answer("覚えています", requests),
+	]);
+	env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$2", "い".repeat(4 * 30_000)));
+	await bridge.idle();
+
+	const compactIdle = createIdleCompactor({
+		harness: env.harness,
+		db: env.db,
+		context,
+		idleMinutes: 60,
+		idleTokens: 50_000,
+		now: () => now,
+		log: () => {},
+	});
+
+	now += 30 * 60_000;
+	await compactIdle();
+	assert.equal(summaries.length, 0);
+
+	now += 31 * 60_000;
+	await compactIdle();
+	assert.equal(summaries.length, 1);
+
+	await compactIdle();
+	assert.equal(summaries.length, 1);
+
+	env.link.emit(message(ROOM, "$3", "さっきの話は？"));
+	await bridge.idle();
+	assert.match(everything(requests[0]!), /長い話の要約。/);
+});
+
+test("idle compaction retries on the next tick when a compaction fails", async () => {
+	let now = Date.now();
+	await using env = await agentEnv({
+		contextWindow: 200_000,
+		compactMaxTokens: 180_000,
+		now: () => now,
+		extensions: ({ db }) => [createCompactionExtension({ db, log: () => {} })],
+	});
+	const bridge = env.bridge();
+	const summaries: Request[] = [];
+	const logs: string[] = [];
+	const fail = () => fauxAssistantMessage([], { stopReason: "error", errorMessage: "temporary failure" });
+	env.faux.setResponses([
+		answer("読みました"),
+		answer("はい"),
+		fail,
+		fail,
+		compactionResponses("再試行で成功。", summaries),
+	]);
+	env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$2", "い".repeat(4 * 30_000)));
+	await bridge.idle();
+
+	const compactIdle = createIdleCompactor({
+		harness: env.harness,
+		db: env.db,
+		context,
+		idleMinutes: 60,
+		idleTokens: 50_000,
+		now: () => now,
+		log: (msg) => void logs.push(msg),
+	});
+
+	now += 61 * 60_000;
+	await compactIdle();
+	assert.equal(summaries.length, 0);
+	assert.ok(logs.some((line) => line.includes("temporary failure")));
+
+	await compactIdle();
+	assert.equal(summaries.length, 1);
+});
+
+test("idle compaction skips a conversation with an open proactive aside", async () => {
+	let now = Date.now();
+	await using env = await agentEnv({
+		contextWindow: 200_000,
+		compactMaxTokens: 180_000,
+		now: () => now,
+		extensions: ({ db }) => [createCompactionExtension({ db, log: () => {} })],
+	});
+	const bridge = env.bridge();
+	const summaries: Request[] = [];
+	env.faux.setResponses([answer("読みました"), answer("はい"), compactionResponses("要約。", summaries)]);
+	env.link.emit(message(ROOM, "$1", "あ".repeat(4 * 30_000)));
+	await bridge.idle();
+	env.link.emit(message(ROOM, "$2", "い".repeat(4 * 30_000)));
+	await bridge.idle();
+
+	const mainId = env.db.conversationOf(ROOM)!;
+	env.db.addWake({ key: "check:1", roomId: ROOM, kind: "check", content: "確認", createdAt: now });
+	env.db.setAside("check:1", { conversationId: mainId + 1, from: { conversationId: mainId, entryId: 1 } });
+
+	const compactIdle = createIdleCompactor({
+		harness: env.harness,
+		db: env.db,
+		context,
+		idleMinutes: 60,
+		idleTokens: 50_000,
+		now: () => now,
+		log: () => {},
+	});
+
+	now += 61 * 60_000;
+	await compactIdle();
+	assert.equal(summaries.length, 0);
+
+	env.db.endWake("check:1", "silent");
+	await compactIdle();
+	assert.equal(summaries.length, 1);
+});
+
+test("scheduler tick finishes idle compaction before weighing proactive wakes", async () => {
+	const order: string[] = [];
+	await using env = await agentEnv();
+	const scheduler = new Scheduler({
+		config: env.config,
+		db: env.db,
+		notice: async () => {},
+		compactIdle: async () => {
+			order.push("compactIdle");
+		},
+		weigh: () => {
+			order.push("weigh");
+		},
+		log: () => {},
+	});
+	await scheduler.tick();
+	assert.deepEqual(order, ["compactIdle", "weigh"]);
+});

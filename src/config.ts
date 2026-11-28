@@ -102,8 +102,9 @@ const ConfigSchema = obj({
 	),
 	compaction: section(
 		obj({
-			// The share of the model's context window at which older messages start to be summarized.
-			at: num({ exclusiveMinimum: 0, exclusiveMaximum: 1, default: 0.5 }),
+			maxTokens: count(200_000),
+			idleMinutes: nullable(count(60), { default: 60 }),
+			idleTokens: opt(int({ minimum: 1 })),
 		}),
 	),
 	timezone: text({ default: Intl.DateTimeFormat().resolvedOptions().timeZone }),
@@ -179,9 +180,14 @@ const ConfigSchema = obj({
 	),
 });
 
-export type Config = Omit<Static<typeof ConfigSchema>, "weather"> & {
+export type Config = Omit<Static<typeof ConfigSchema>, "weather" | "compaction"> & {
 	readonly baseDir: string;
 	readonly weather?: ForecastArea;
+	readonly compaction: {
+		readonly maxTokens: number;
+		readonly idleMinutes: number | null;
+		readonly idleTokens: number;
+	};
 };
 export type Persona = Static<typeof Persona>;
 export type McpServerConfig = Static<typeof McpServer>;
@@ -253,8 +259,11 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 		fail("voice.call needs voice.tts: the bot speaks in calls");
 	if (config.proactive !== undefined && config.proactive.windowEnd <= config.proactive.windowStart)
 		fail("proactive.windowEnd must be later than proactive.windowStart");
+	const idleTokens = config.compaction.idleTokens ?? Math.min(64_000, config.compaction.maxTokens);
+	if (config.compaction.idleMinutes !== null && idleTokens > config.compaction.maxTokens)
+		fail("compaction.idleTokens must not exceed compaction.maxTokens");
 
-	const { weather, ...rest } = config;
+	const { weather, compaction, ...rest } = config;
 	const defaultArea =
 		weather === undefined
 			? undefined
@@ -262,6 +271,7 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
 	const stt = config.voice?.stt;
 	return {
 		...rest,
+		compaction: { ...compaction, idleTokens },
 		...(defaultArea === undefined ? {} : { weather: defaultArea }),
 		baseDir,
 		dataDir: resolve(baseDir, config.dataDir),

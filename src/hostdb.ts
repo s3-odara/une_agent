@@ -160,6 +160,13 @@ export class HostDb {
 		return row === undefined ? undefined : Number(row.conversation_id);
 	}
 
+	roomConversations(): number[] {
+		return this.#db
+			.prepare("SELECT conversation_id FROM rooms")
+			.all()
+			.map((row) => Number(row.conversation_id));
+	}
+
 	/** Also for a conversation the room has moved on from, or one made aside from it. */
 	roomOf(conversationId: number): string | undefined {
 		const row = this.#db
@@ -223,6 +230,12 @@ export class HostDb {
 					"SELECT 1 FROM wakes WHERE aside_id = ? AND outcome IS NULL AND NOT EXISTS (SELECT 1 FROM rooms WHERE conversation_id = ?)",
 				)
 				.get(conversationId, conversationId) !== undefined
+		);
+	}
+
+	hasOpenWakeFrom(conversationId: number): boolean {
+		return (
+			this.#db.prepare("SELECT 1 FROM wakes WHERE from_id = ? AND outcome IS NULL").get(conversationId) !== undefined
 		);
 	}
 
